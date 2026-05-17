@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="مساعد نخبة الأشعة - نظام ذكاء اصطناعي متخصص في تدريس الأشعة">
+    <meta name="theme-color" content="#2C3E50">
+    <link rel="manifest" href="manifest.json">
+    <title>مساعد نخبة الأشعة</title>
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html, body {
+            font-family: 'Segoe UI', 'Tahoma', 'Arial', sans-serif;
+            background: linear-gradient(135deg, #2C3E50 0%, #34495E 100%);
+            height: 100%;
+            width: 100%;
+        }
+
+        body {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            color: #2C3E50;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            background: #ECF0F1;
+        }
+
+        /* HEADER */
+        .header {
+            background: linear-gradient(135deg, #E74C3C 0%, #C0392B 100%);
+            color: white;
+            padding: 15px 20px;
+            text-align: center;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            flex-shrink: 0;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            font-weight: bold;
+            letter-spacing: 1px;
+        }
+
+        .header-subtitle {
+            font-size: 12px;
+            opacity: 0.9;
+            margin-top: 5px;
+        }
+
+        /* CHAT MESSAGES AREA */
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            background: #ECF0F1;
+            scroll-behavior: smooth;
+        }
+
+        .message {
+            margin-bottom: 15px;
+            display: flex;
+            animation: slideIn 0.3s ease-in-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .message.user {
+            justify-content: flex-start;
+        }
+
+        .message.ai {
+            justify-content: flex-end;
+        }
+
+        .message-content {
+            max-width: 85%;
+            padding: 12px 15px;
+            border-radius: 18px;
+            word-wrap: break-word;
+            line-height: 1.5;
+            font-size: 15px;
+        }
+
+        .message.user .message-content {
+            background: #3498DB;
+            color: white;
+            border-bottom-left-radius: 4px;
+        }
+
+        .message.ai .message-content {
+            background: white;
+            color: #2C3E50;
+            border: 1px solid #BDC3C7;
+            border-bottom-right-radius: 4px;
+        }
+
+        .message-time {
+            font-size: 11px;
+            opacity: 0.7;
+            margin-top: 5px;
+            padding: 0 5px;
+        }
+
+        .typing-indicator {
+            display: flex;
+            gap: 4px;
+            align-items: center;
+            background: white;
+            padding: 12px 15px;
+            border-radius: 18px;
+            width: fit-content;
+            border: 1px solid #BDC3C7;
+        }
+
+        .typing-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #95A5A6;
+            animation: typing 1.4s infinite;
+        }
+
+        .typing-dot:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+
+        .typing-dot:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+
+        @keyframes typing {
+            0%, 60%, 100% {
+                opacity: 0.5;
+                transform: translateY(0);
+            }
+            30% {
+                opacity: 1;
+                transform: translateY(-8px);
+            }
+        }
+
+        /* INPUT AREA */
+        .input-area {
+            background: white;
+            border-top: 1px solid #BDC3C7;
+            padding: 15px;
+            display: flex;
+            gap: 10px;
+            flex-shrink: 0;
+            flex-wrap: wrap;
+        }
+
+        .input-group {
+            display: flex;
+            gap: 10px;
+            flex: 1;
+            align-items: center;
+        }
+
+        input[type="text"] {
+            flex: 1;
+            border: 1px solid #BDC3C7;
+            border-radius: 25px;
+            padding: 12px 18px;
+            font-size: 15px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        input[type="text"]:focus {
+            border-color: #E74C3C;
+        }
+
+        button {
+            border: none;
+            border-radius: 50%;
+            width: 45px;
+            height: 45px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            cursor: pointer;
+            transition: all 0.3s;
+            flex-shrink: 0;
+        }
+
+        .btn-send {
+            background: #E74C3C;
+            color: white;
+        }
+
+        .btn-send:hover {
+            background: #C0392B;
+            transform: scale(1.05);
+        }
+
+        .btn-send:active {
+            transform: scale(0.95);
+        }
+
+        .btn-voice {
+            background: #27AE60;
+            color: white;
+        }
+
+        .btn-voice:hover {
+            background: #229954;
+            transform: scale(1.05);
+        }
+
+        .btn-voice.recording {
+            background: #E74C3C;
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.7);
+            }
+            50% {
+                box-shadow: 0 0 0 10px rgba(231, 76, 60, 0);
+            }
+        }
+
+        .recording-timer {
+            font-size: 12px;
+            font-weight: bold;
+            color: #E74C3C;
+            min-width: 40px;
+            text-align: center;
+        }
+
+        /* RESPONSIVE */
+        @media (max-width: 600px) {
+            .header h1 {
+                font-size: 20px;
+            }
+
+            .message-content {
+                max-width: 100%;
+                font-size: 14px;
+            }
+
+            .input-area {
+                padding: 10px;
+                gap: 8px;
+            }
+
+            button {
+                width: 40px;
+                height: 40px;
+                font-size: 18px;
+            }
+
+            input[type="text"] {
+                padding: 10px 15px;
+                font-size: 14px;
+            }
+        }
+
+        /* INSTALL PROMPT */
+        .install-prompt {
+            background: linear-gradient(135deg, #3498DB, #2980B9);
+            color: white;
+            padding: 15px 20px;
+            border-radius: 10px;
+            margin: 10px;
+            display: none;
+            flex-direction: row;
+            align-items: center;
+            gap: 15px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .install-prompt.show {
+            display: flex;
+        }
+
+        .install-prompt-text {
+            flex: 1;
+        }
+
+        .install-prompt button {
+            background: white;
+            color: #3498DB;
+            font-weight: bold;
+            padding: 8px 16px;
+            border-radius: 8px;
+            min-width: auto;
+            width: auto;
+            height: auto;
+        }
+
+        .install-prompt button:hover {
+            background: #ECF0F1;
+        }
+
+        .status-badge {
+            display: inline-block;
+            background: rgba(255, 255, 255, 0.3);
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="install-prompt" id="installPrompt">
+            <div class="install-prompt-text">
+                <strong>📱 أضف التطبيق لشاشتك الرئيسية</strong>
+                <p style="font-size: 13px; margin-top: 5px;">استمتع بتجربة أفضل كتطبيق مستقل</p>
+            </div>
+            <button onclick="installPWA()" style="background: white; color: #3498DB;">تثبيت</button>
+            <button onclick="dismissInstall()" style="background: rgba(255,255,255,0.2); color: white;">إغلاق</button>
+        </div>
+
+        <div class="header">
+            <h1>🏥 مساعد نخبة الأشعة</h1>
+            <div class="header-subtitle">نظام ذكاء اصطناعي متخصص في تدريس الأشعة الطبية</div>
+            <div class="status-badge">🎤 صوت مجاني 100% | 💬 ذكي بقوة GPT-4o-mini</div>
+        </div>
+
+        <div class="chat-messages" id="chatMessages"></div>
+
+        <div class="input-area">
+            <div class="input-group">
+                <input 
+                    type="text" 
+                    id="messageInput" 
+                    placeholder="اكتب سؤالك هنا..."
+                    onkeypress="handleKeyPress(event)"
+                >
+                <button class="btn-send" onclick="sendMessage()" title="إرسال الرسالة">📤</button>
+            </div>
+            <div class="input-group" style="flex: 0 1 auto;">
+                <button 
+                    class="btn-voice" 
+                    id="voiceBtn" 
+                    onclick="toggleVoiceRecording()" 
+                    title="تسجيل صوتي"
+                >🎤</button>
+                <div class="recording-timer" id="recordingTimer" style="display: none;">0s</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ============ SERVICE WORKER REGISTRATION ============
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js').catch(err => {
+                console.log('⚠️ Service Worker registration failed:', err);
+            });
+        }
+
+        // ============ PWA INSTALL PROMPT ============
+        let deferredPrompt;
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            document.getElementById('installPrompt').classList.add('show');
+        });
+
+        function installPWA() {
+            if (deferredPrompt) {
+                deferredPrompt.prompt();
+                deferredPrompt.userChoice.then((choiceResult) => {
+                    if (choiceResult.outcome === 'accepted') {
+                        console.log('✅ PWA installed');
+                    }
+                    deferredPrompt = null;
+                    dismissInstall();
+                });
+            }
+        }
+
+        function dismissInstall() {
+            document.getElementById('installPrompt').classList.remove('show');
+        }
+
+        // ============ GLOBAL STATE ============
+        let conversationHistory = [];
+        let isRecording = false;
+        let recordingStartTime = null;
+        let recordingInterval = null;
+        let recognitionInstance = null;
+
+        // ============ VOICE RECOGNITION (FREE - Browser Web Speech API) ============
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+        if (!SpeechRecognition) {
+            console.warn('⚠️ Speech Recognition not supported in this browser');
+        }
+
+        function initializeSpeechRecognition() {
+            if (!SpeechRecognition) return;
+
+            recognitionInstance = new SpeechRecognition();
+            recognitionInstance.continuous = false;
+            recognitionInstance.interimResults = false;
+            recognitionInstance.lang = 'ar-SA';
+
+            recognitionInstance.onstart = () => {
+                console.log('🎤 Listening...');
+                document.getElementById('voiceBtn').classList.add('recording');
+                recordingStartTime = Date.now();
+                recordingInterval = setInterval(updateRecordingTimer, 100);
+                document.getElementById('recordingTimer').style.display = 'block';
+            };
+
+            recognitionInstance.onend = () => {
+                console.log('🛑 Stopped listening');
+                document.getElementById('voiceBtn').classList.remove('recording');
+                isRecording = false;
+                clearInterval(recordingInterval);
+                document.getElementById('recordingTimer').style.display = 'none';
+            };
+
+            recognitionInstance.onerror = (event) => {
+                console.error('❌ Speech recognition error:', event.error);
+                document.getElementById('voiceBtn').classList.remove('recording');
+                isRecording = false;
+                clearInterval(recordingInterval);
+                addMessage('خطأ في التعرف على الصوت. حاول مرة أخرى.', 'ai');
+            };
+
+            recognitionInstance.onresult = (event) => {
+                let transcript = '';
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    transcript += event.results[i][0].transcript;
+                }
+
+                if (transcript.trim()) {
+                    console.log('✅ Transcribed:', transcript);
+                    addMessage(transcript, 'user');
+                    conversationHistory.push({ role: 'user', content: transcript });
+                    processVoiceMessage(transcript);
+                }
+            };
+        }
+
+        function updateRecordingTimer() {
+            if (recordingStartTime) {
+                const seconds = Math.floor((Date.now() - recordingStartTime) / 1000);
+                document.getElementById('recordingTimer').textContent = seconds + 's';
+            }
+        }
+
+        function toggleVoiceRecording() {
+            if (!SpeechRecognition) {
+                addMessage('⚠️ مرحبا بك! لسوء الحظ، المتصفح الخاص بك لا يدعم التعرف على الكلام. يرجى استخدام Chrome أو Edge.', 'ai');
+                return;
+            }
+
+            if (!recognitionInstance) {
+                initializeSpeechRecognition();
+            }
+
+            if (isRecording) {
+                recognitionInstance.stop();
+                isRecording = false;
+            } else {
+                recognitionInstance.start();
+                isRecording = true;
+            }
+        }
+
+        async function processVoiceMessage(transcription) {
+            try {
+                showTypingIndicator();
+
+                const response = await fetch('/api/voice', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        transcription,
+                        history: JSON.stringify(conversationHistory)
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error('Voice processing failed');
+                }
+
+                const data = await response.json();
+                removeTypingIndicator();
+
+                addMessage(data.reply, 'ai');
+                conversationHistory.push({ role: 'assistant', content: data.reply });
+
+                // AUTO-PLAY RESPONSE USING BROWSER'S FREE TEXT-TO-SPEECH
+                speakText(data.reply);
+
+            } catch (error) {
+                console.error('❌ Voice processing error:', error);
+                removeTypingIndicator();
+                addMessage('عذراً، حدث خطأ. حاول مرة أخرى.', 'ai');
+            }
+        }
+
+        // ============ TEXT-TO-SPEECH (FREE - Browser Web Speech Synthesis API) ============
+        function speakText(text) {
+            if (!('speechSynthesis' in window)) {
+                console.warn('⚠️ Text-to-Speech not supported');
+                return;
+            }
+
+            // Cancel any ongoing speech
+            window.speechSynthesis.cancel();
+
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'ar-SA';
+            utterance.rate = 1.0;
+            utterance.pitch = 1.0;
+            utterance.volume = 1.0;
+
+            utterance.onstart = () => {
+                console.log('🔊 Speaking...');
+            };
+
+            utterance.onend = () => {
+                console.log('✅ Finished speaking');
+            };
+
+            utterance.onerror = (event) => {
+                console.warn('⚠️ Speech synthesis error:', event.error);
+            };
+
+            // CRITICAL: Use setTimeout to ensure near-zero latency
+            setTimeout(() => {
+                window.speechSynthesis.speak(utterance);
+            }, 50);
+        }
+
+        // ============ TEXT MESSAGE HANDLING ============
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                sendMessage();
+            }
+        }
+
+        async function sendMessage() {
+            const messageInput = document.getElementById('messageInput');
+            const message = messageInput.value.trim();
+
+            if (!message) return;
+
+            messageInput.value = '';
+
+            addMessage(message, 'user');
+            conversationHistory.push({ role: 'user', content: message });
+
+            try {
+                showTypingIndicator();
+
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message,
+                        history: conversationHistory
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error('API request failed');
+                }
+
+                const data = await response.json();
+                removeTypingIndicator();
+
+                addMessage(data.reply, 'ai');
+                conversationHistory.push({ role: 'assistant', content: data.reply });
+
+                // AUTO-PLAY RESPONSE USING BROWSER'S FREE TEXT-TO-SPEECH
+                speakText(data.reply);
+
+            } catch (error) {
+                console.error('❌ Chat error:', error);
+                removeTypingIndicator();
+                addMessage('عذراً، حدث خطأ في الخادم. حاول مرة أخرى.', 'ai');
+            }
+        }
+
+        // ============ UI HELPERS ============
+        function addMessage(content, sender) {
+            const chatMessages = document.getElementById('chatMessages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${sender}`;
+
+            const time = new Date().toLocaleTimeString('ar-SA', {
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+
+            messageDiv.innerHTML = `
+                <div>
+                    <div class="message-content">${escapeHtml(content)}</div>
+                    <div class="message-time">${time}</div>
+                </div>
+            `;
+
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        function showTypingIndicator() {
+            const chatMessages = document.getElementById('chatMessages');
+            const typingDiv = document.createElement('div');
+            typingDiv.className = 'message ai';
+            typingDiv.id = 'typingIndicator';
+            typingDiv.innerHTML = `
+                <div class="typing-indicator">
+                    <div class="typing-dot"></div>
+                    <div class="typing-dot"></div>
+                    <div class="typing-dot"></div>
+                </div>
+            `;
+            chatMessages.appendChild(typingDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        function removeTypingIndicator() {
+            const typingIndicator = document.getElementById('typingIndicator');
+            if (typingIndicator) {
+                typingIndicator.remove();
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // ============ WELCOME MESSAGE ============
+        window.addEventListener('DOMContentLoaded', () => {
+            addMessage('أهلاً بك! 👋\n\nأنا مساعدك الذكي في تدريس الأشعة. يمكنك:\n• الكتابة 📝\n• التحدث بالصوت 🎤\n\nكيف أستطيع مساعدتك اليوم؟', 'ai');
+            speakText('أهلاً بك! أنا مساعدك الذكي في تدريس الأشعة. يمكنك الكتابة أو التحدث بالصوت. كيف أستطيع مساعدتك اليوم؟');
+        });
+    </script>
+</body>
+</html>
