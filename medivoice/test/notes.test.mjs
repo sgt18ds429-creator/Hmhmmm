@@ -332,7 +332,7 @@ test('إذا خلصت حصة Gemini أثناء الكتابة يكمل Groq بأ
   io.gemini = origGemini;
 });
 
-test('الأقسام تُكتب معاً (4 مع Gemini) والصور والقاموس والمراجعة تعمل في نفس الوقت', async () => {
+test('الأقسام تُكتب معاً (3 مع Gemini) والصور والقاموس والمراجعة تعمل في نفس الوقت', async () => {
   const sections = Array.from({ length: 8 }, (_, i) => ({ from: i * 2, title: `موضوع ${i + 1}` }));
   const paras = Array.from({ length: 16 }, (_, i) => `فقرة ${i} عن [[topic ${Math.floor(i / 2)}]] ${'وشرح طويل لها. '.repeat(30)}`);
   const doc = transcriptDoc();
@@ -355,7 +355,7 @@ test('الأقسام تُكتب معاً (4 مع Gemini) والصور والقا
   };
   const engine = new Engine(io, CAPS);
   await writeNotes(doc, engine);
-  assert.equal(maxWriting, 4, 'أربعة أقسام في نفس الوقت');
+  assert.equal(maxWriting, 3, 'ثلاثة أقسام في نفس الوقت');
   // القاموس يبدأ مع الصور، لا بعدها
   const order = [];
   const base2 = io.gemini;
@@ -368,5 +368,17 @@ test('الأقسام تُكتب معاً (4 مع Gemini) والصور والقا
   assert.ok(order.indexOf('glossary') < order.lastIndexOf('figure'), `الترتيب: ${order.join(',')}`);
   assert.ok(order.indexOf('review') < order.lastIndexOf('figure'), 'المراجعة لا تنتظر الصور');
   assert.equal(doc.blocks[doc.blocks.length - 1].box, true);
+});
+
+test('الشرح الأقصر من الكلام المنطوق (حذف الحشو والتكرار) لا يُعاد بلا داعٍ', async () => {
+  // التفريغ نحو 330 كلمة لكل قسم، والشرح نحو 40% منه ويذكر كل المصطلحات
+  const { io, calls } = makeIO({
+    section: (user) => gemResponse(user.includes('«استرواح الصدر»')
+      ? `## استرواح الصدر\n[[pneumothorax]] هو دخول هواء إلى [[pleural space]]، وعلامته [[visceral pleural line]] مع غياب [[lung markings]]، و[[tension pneumothorax]] طارئ. ${'شرح مركز بلا تكرار. '.repeat(30)}`
+      : `## الانصباب الجنبي\n[[pleural effusion]] سائل يظهر بـ [[meniscus sign]] و[[blunting]] للـ [[costophrenic angle]]. ${'شرح مركز بلا تكرار. '.repeat(30)}`),
+  });
+  const doc = transcriptDoc();
+  await writeNotes(doc, new Engine(io, CAPS));
+  assert.equal(calls.section.length, 2, 'طلب واحد لكل قسم');
 });
 

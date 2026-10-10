@@ -661,14 +661,15 @@ async function writeSection(engine, meta, plan, s, paras, opts, depth = 0) {
       const halves = splitRange(paras, s.from, s.to, Math.ceil(words / 2));
       if (halves.length > 1) return inPieces(halves);
     }
-    // الشرح بالفصحى يحذف الحشو والتكرار فيقصر طبيعياً عن الكلام المنطوق، لكن ليس لهذا الحد
-    const short = words >= 150 && outWords < words * 0.5;
-    const lost = srcTerms.size >= 6 && missing.length > srcTerms.size * 0.35;
+    // الشرح بالفصحى يحذف الحشو والتكرار والكلام الإداري، فيخرج طبيعياً بنصف كلام المحاضر أو أقل.
+    // نعيد الكتابة (وهي طلب طويل ثانٍ) فقط إذا خرج أقصر بكثير من ذلك أو أسقط أغلب المصطلحات
+    const short = words >= 200 && outWords < words * 0.3;
+    const lost = srcTerms.size >= 8 && missing.length > srcTerms.size * 0.4;
     if (!short && !lost) break;
-    retry = { prevWords: short ? outWords : 0, missing: lost ? missing.slice(0, 30) : [] };
+    retry = { prevWords: short ? outWords : 0, missing: missing.slice(0, 30) };
   }
   if (!best || (words >= 120 && best.words < words * 0.25)) return { markup: fallbackMarkup(s, source), fallback: true, review: true, words };
-  return { markup: best.text, review: best.truncated || (words >= 150 && best.words < words * 0.45), model: best.model, words: best.words };
+  return { markup: best.text, review: best.truncated || (words >= 200 && best.words < words * 0.3), model: best.model, words: best.words };
 }
 
 function joinResults(outs) {
@@ -746,8 +747,8 @@ export async function writeNotes(doc, engine, { emit = () => {}, checkpoint = nu
       }
     }
   };
-  // كل قسم طلب طويل (دقيقة تقريباً)، فنكتب عدة أقسام معاً. حدود Groq بالدقيقة أضيق
-  await Promise.all(Array.from({ length: engine.hasGemini ? 4 : 2 }, worker));
+  // كل قسم طلب طويل (دقيقة تقريباً)، فنكتب عدة أقسام معاً، دون تجاوز حد الطلبات بالدقيقة. حدود Groq أضيق
+  await Promise.all(Array.from({ length: engine.hasGemini ? 3 : 2 }, worker));
   if (failure) throw failure;
 
   if (results.every((r) => r.fallback)) {

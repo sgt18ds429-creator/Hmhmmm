@@ -184,7 +184,18 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
   };
   grabWake();
   document.addEventListener('visibilitychange', onVisible);
-  const tick = setInterval(() => { if (running && !waitTimer) sub.textContent = `${fmtTime((Date.now() - t0) / 1000)} · خلّي الصفحة مفتوحة وقدّامك`; }, 1000);
+  // كتابة الجزء طلب واحد طويل بلا تقدم وسيط، فنقدّر تقدمه بالوقت (حتى 85% من حصته) حتى لا تبدو النسبة عالقة
+  const writing = { start: new Map(), done: 0, total: 0 };
+  const tick = setInterval(() => {
+    if (!running) return;
+    if (!waitTimer) sub.textContent = `${fmtTime((Date.now() - t0) / 1000)} · خلّي الصفحة مفتوحة وقدّامك`;
+    if (writing.start.size && writing.total) {
+      let partial = 0;
+      for (const t of writing.start.values()) partial += Math.min(0.85, (Date.now() - t) / 100_000);
+      P.write = Math.max(P.write, (writing.done + partial) / writing.total);
+      paintPct();
+    }
+  }, 1000);
 
   // ── تقدم ──
   const P = { total: 1, chunk: [], write: 0, extra: 0 };
@@ -208,12 +219,12 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
     live.scrollTop = live.scrollHeight;
   }
   const pending = new Map();
-  let nextLive = 0, writing = false;
+  let nextLive = 0, showingNotes = false;
   function showParts() {
     while (pending.has(nextLive)) {
       const blocks = parseMarkup(pending.get(nextLive).markup);
       pending.delete(nextLive); nextLive++;
-      if (!writing) showLive(blocks);
+      if (!showingNotes) showLive(blocks);
     }
   }
 
@@ -252,7 +263,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
     } else if (e.type === 'notes') {
       if (e.stage === 'plan') status.textContent = 'أفهم المحاضرة وأقسّمها حسب المواضيع';
       else if (e.stage === 'write') {
-        status.textContent = `أكتب الشرح المفصل: ${countOf(e.total, ['جزء واحد', 'جزآن', 'أجزاء', 'جزءاً'])}، عدة أجزاء في نفس الوقت`;
+        status.textContent = `أكتب الشرح المفصل (${countOf(e.total, ['جزء واحد', 'جزآن', 'أجزاء', 'جزءاً'])}). الجزء يأخذ دقيقة أو دقيقتين`;
         clear(strip);
         for (let i = 0; i < e.total; i++) strip.append(h('i'));
         P.write = 0.03;
@@ -260,14 +271,18 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
       paintPct();
     } else if (e.type === 'section') {
       const cell = strip.children[e.index];
+      writing.total = e.total;
       if (e.stage === 'write') {
         if (cell) cell.className = 'listen';
+        writing.start.set(e.index, Date.now());
       } else if (e.stage === 'done') {
+        writing.start.delete(e.index);
+        writing.done = e.done;
         if (cell) cell.className = e.fallback ? 'review' : 'done';
         status.textContent = e.done < e.total ? `أكتب الشرح المفصل: جاهز ${e.done} من ${e.total}` : 'أراجع الشرح وأجهّز الخطوة الأخيرة';
         P.write = Math.max(P.write, e.done / e.total);
-        showLive(parseMarkup(e.markup), { reset: !writing, keep: 18 });
-        writing = true;
+        showLive(parseMarkup(e.markup), { reset: !showingNotes, keep: 18 });
+        showingNotes = true;
         ctx.ribbon.kick(0.5);
       }
       paintPct();
