@@ -9,7 +9,7 @@ import {
 } from './text.js';
 import {
   whisperPrompt, audioPrompt, cleanupPrompt, glossaryPrompt, figuresPrompt,
-  notesPlanPrompt, notesSectionPrompt, reviewPrompt, figureVerifyPrompt, figureTextPickPrompt,
+  notesPlanPrompt, notesSectionPrompt, reviewPrompt, proofreadPrompt, figureVerifyPrompt, figureTextPickPrompt,
 } from './prompts.js';
 import { findCandidates } from './images.js';
 
@@ -672,6 +672,40 @@ async function writeSection(engine, meta, plan, s, paras, opts, depth = 0) {
   return { markup: best.text, review: best.truncated || (words >= 200 && best.words < words * 0.3), model: best.model, words: best.words };
 }
 
+/** هل بقي محتوى القسم كما هو بعد التدقيق؟ نفس البنية والصور والمصطلحات وعدد الكلمات تقريباً. */
+export function sameContent(before, after) {
+  const A = parseMarkup(before), B = parseMarkup(after);
+  const count = (list, t) => list.filter((b) => b.t === t).length;
+  for (const t of ['h', 'ul', 'ol', 'table', 'note', 'figreq']) if (count(A, t) !== count(B, t)) return false;
+  if (Math.abs(count(A, 'p') - count(B, 'p')) > 2) return false;
+  const items = (list) => list.reduce((n, b) => n + (b.items ? b.items.length : b.rows ? b.rows.length : 0), 0);
+  if (items(A) !== items(B)) return false;
+  const figs = (list) => list.filter((b) => b.t === 'figreq').map((b) => `${b.kind}|${b.query}`).join('\n');
+  if (figs(A) !== figs(B)) return false;
+  const words = (list) => list.reduce((n, b) => n + countWords(blockText(b)), 0);
+  const wa = words(A), wb = words(B);
+  if (wb < wa * 0.93 || wb > wa * 1.07) return false;
+  // المصطلحات: يُسمح بتصحيح إملاء القليل منها
+  const ta = termsIn(before), tb = termsIn(after);
+  let kept = 0;
+  for (const k of ta.keys()) if (tb.has(k)) kept++;
+  return kept >= ta.size * 0.85;
+}
+
+/**
+ * تدقيق إملائي ولغوي للقسم بنموذج خفيف وسريع، دون أي تغيير في المحتوى. إذا غيّر المدقق شيئاً غير
+ * الإملاء (حذف أو أضاف أو أعاد الترتيب) يُرفض تصحيحه ويبقى النص كما كُتب.
+ */
+async function proofread(engine, markup, lang) {
+  if (!engine.hasGemini || countWords(markup) < 30) return markup;
+  const { system, user } = proofreadPrompt(markup, { lang });
+  const r = await engine.gemini({ system, parts: [{ text: user }], maxTokens: 12000, lite: true });
+  if (!r?.text || r.blocked || r.truncated) return markup;
+  const out = r.text.replace(/\r/g, '').replace(/^```[a-z]*\n?|```\s*$/gim, '').trim()
+    .replace(/^(?:الملزمة|The notes)\s*:\s*\n/i, '').replace(/^<<<\n?|\n?>>>$/g, '').trim();
+  return sameContent(markup, out) ? out : markup;
+}
+
 function joinResults(outs) {
   return {
     markup: outs.map((o) => o.markup).join('\n\n'),
@@ -737,6 +771,9 @@ export async function writeNotes(doc, engine, { emit = () => {}, checkpoint = nu
         if (!r || r.sig !== sig) {
           emit({ type: 'section', index: i, total, stage: 'write', title: s.title, part: s.part, parts: s.parts });
           r = { ...(await writeSection(engine, meta, plan, s, paras, { lang, known: [...seen.values()].slice(-60), images: meta.images !== false })), sig };
+          if (!r.fallback) {
+            try { r.markup = await proofread(engine, r.markup, lang); } catch (e) { if (isFatal(e)) throw e; }
+          }
           if (checkpoint && !r.fallback) await checkpoint.set(`n:s${i}`, r);
         }
         results[i] = r;

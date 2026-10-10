@@ -6,6 +6,7 @@ import { runLecture, rewriteLecture, PipelineError } from './pipeline.js';
 import { parseMarkup, splitInline, fmtTime } from './text.js';
 import { fmtDuration } from './pdf.js';
 import * as db from './db.js';
+import { openGame } from './game.js';
 
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 
@@ -158,9 +159,17 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
   const live = h('div', { class: 'live', dir: 'auto' });
   const stages = h('ul', { class: 'stages' }, stageNames.map(([k, label]) => h('li', { dataset: { k } }, label)));
   const cancelBtn = h('button', { class: 'btn ghost', onclick: () => history.back() }, 'إلغاء');
+  // لعبة تسلّي الانتظار؛ التحويل يكمل بالخلفية، واللعبة تنغلق وحدها عندما تجهز الملزمة
+  let game = null;
+  const playGame = () => {
+    if (game || !running) return;
+    game = openGame({ onClose: () => { game = null; } });
+    game.update(shown, status.textContent);
+  };
+  const gameBtn = h('button', { class: 'btn game-btn', onclick: playGame }, icon('play'), 'العب سباق سيارات لحد ما تجهز');
   const body = h('div', { class: 'run' },
     h('div', { class: 'run-head' }, h('div', { class: 'run-pct num' }, pct, h('small', null, '%')), status, sub),
-    strip, stages, live, h('div', { class: 'row', style: { justifyContent: 'center' } }, cancelBtn));
+    strip, stages, h('div', { class: 'row', style: { justifyContent: 'center' } }, gameBtn), live, h('div', { class: 'row', style: { justifyContent: 'center' } }, cancelBtn));
   el.append(body);
 
   ctx.ribbon.set({ y: Math.min(0.24, 170 / innerHeight), energy: 1, alpha: 1 });
@@ -189,6 +198,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
   const tick = setInterval(() => {
     if (!running) return;
     if (!waitTimer) sub.textContent = `${fmtTime((Date.now() - t0) / 1000)} · خلّي الصفحة مفتوحة وقدّامك`;
+    game?.update(shown, status.textContent);
     if (writing.start.size && writing.total) {
       let partial = 0;
       for (const t of writing.start.values()) partial += Math.min(0.85, (Date.now() - t) / 100_000);
@@ -316,6 +326,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
 
   function fail(code, extra = {}) {
     cleanup();
+    game?.close();
     ctx.ribbon.set({ energy: 0.25, alpha: 0.5 });
     const [title, message, action] = ERRORS[code] || ['توقف التحويل', 'صار خطأ غير متوقع. الأجزاء المكتملة محفوظة، جرّب مرة ثانية.', 'retry'];
     let msg = message;
@@ -334,11 +345,13 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
     status.textContent = 'الملزمة جاهزة';
     ctx.ribbon.kick(1);
     cleanup();
-    setTimeout(() => ctx.go('doc', { id: doc.id, fresh: true }, { replace: true }), 650);
+    // اللعبة تعلن الجاهزية لحظة، ثم يُفتح المستند (فتح المستند يغلق اللعبة)
+    game?.done();
+    setTimeout(() => ctx.go('doc', { id: doc.id, fresh: true }, { replace: true }), game ? 1500 : 650);
   }
 
   function failWith(e) {
-    if (e?.name === 'AbortError' || e?.code === 'aborted') { cleanup(); return; }
+    if (e?.name === 'AbortError' || e?.code === 'aborted') { cleanup(); game?.close(); return; }
     console.error(e);
     if (e instanceof PipelineError) fail(e.code, e);
     else fail(navigator.onLine === false ? 'network' : 'unknown');

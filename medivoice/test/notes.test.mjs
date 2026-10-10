@@ -1,7 +1,7 @@
 // اختبارات الشرح المفصل والصور: النماذج والمصادر كلها وهمية، فلا يحتاج الاختبار مفاتيح ولا إنترنت.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Engine, writeNotes, enrich, complete, normalizePlan, rewriteLecture, PipelineError } from '../public/app/pipeline.js';
+import { Engine, writeNotes, enrich, complete, normalizePlan, rewriteLecture, sameContent, PipelineError } from '../public/app/pipeline.js';
 import { parseMarkup, blockText, countWords, uid } from '../public/app/text.js';
 import { buildPdfHtml } from '../public/app/pdf.js';
 
@@ -53,8 +53,8 @@ function gemResponse(text, finishReason = 'STOP') {
 }
 
 /** io وهمي: يرد على كل نوع طلب حسب نص التعليمات، ويسجّل الطلبات. */
-function makeIO({ section = (user, n) => null, verify = () => ({ choice: 'A', confidence: 0.9, caption: 'تعليق مطابق للصورة' }), plan = null, figPlan = null } = {}) {
-  const calls = { plan: 0, section: [], review: 0, glossary: 0, verify: [] };
+function makeIO({ section = (user, n) => null, verify = () => ({ choice: 'A', confidence: 0.9, caption: 'تعليق مطابق للصورة' }), plan = null, figPlan = null, proof = null } = {}) {
+  const calls = { plan: 0, section: [], review: 0, glossary: 0, verify: [], proof: 0 };
   const io = {
     sleep: async () => {},
     blobToBase64: async () => '',
@@ -79,6 +79,10 @@ function makeIO({ section = (user, n) => null, verify = () => ({ choice: 'A', co
       if (system.includes('قاموس')) {
         calls.glossary++;
         return gemResponse(JSON.stringify({ terms: [{ en: 'Pneumothorax', ar: 'استرواح الصدر', def: 'هواء في المسافة الجنبية' }] }));
+      }
+      if (system.includes('مدقق لغوي') && proof) {
+        calls.proof++;
+        return gemResponse(proof(user.match(/<<<\n([\s\S]*)\n>>>/)[1]));
       }
       if (system.includes('تضع عنواناً لنص مفرّغ')) {
         calls.planner = (calls.planner || 0) + 1;
@@ -380,5 +384,42 @@ test('الشرح الأقصر من الكلام المنطوق (حذف الحش�
   const doc = transcriptDoc();
   await writeNotes(doc, new Engine(io, CAPS));
   assert.equal(calls.section.length, 2, 'طلب واحد لكل قسم');
+});
+
+test('التدقيق الإملائي يصحح الأخطاء دون أن يغير المحتوى', async () => {
+  const typo = (md) => md.replace('تجمع سائل', 'تجمّع سائلل').replace('استرواح الصدر هو', 'استرواح الصدر هوو');
+  const { io, calls } = makeIO({
+    section: (user) => gemResponse(typo(user.includes('«استرواح الصدر»') ? SECTION_NOTES.pneumothorax : SECTION_NOTES.effusion)),
+    proof: (md) => md.replace('سائلل', 'سائل').replace('هوو', 'هو'),
+  });
+  const doc = transcriptDoc();
+  await writeNotes(doc, new Engine(io, CAPS));
+  assert.equal(calls.proof, 2, 'كل قسم يُدقق');
+  const text = doc.blocks.map(blockText).join(' ');
+  assert.ok(!text.includes('سائلل') && !text.includes('هوو'), 'الأخطاء صُححت');
+  assert.equal(doc.blocks.filter((b) => b.t === 'figreq').length, 3, 'طلبات الصور باقية');
+  assert.ok(doc.blocks.some((b) => b.t === 'table'), 'الجدول باق');
+});
+
+test('إذا حذف المدقق أو غيّر المحتوى يُرفض تصحيحه ويبقى النص كما كُتب', async () => {
+  const { io, calls } = makeIO({
+    // المدقق «يختصر»: يحذف نقطة من القائمة ويغير صورة
+    proof: (md) => md.replace(/^- غياب العلامات الرئوية.*$/m, '').replace('pneumothorax chest x-ray', 'lung x-ray'),
+  });
+  const doc = transcriptDoc();
+  await writeNotes(doc, new Engine(io, CAPS));
+  assert.equal(calls.proof, 2);
+  const text = doc.blocks.map(blockText).join(' ');
+  assert.ok(text.includes('غياب العلامات الرئوية'), 'النقطة المحذوفة باقية');
+  assert.ok(doc.blocks.some((b) => b.t === 'figreq' && b.query === 'pneumothorax chest x-ray'));
+});
+
+test('sameContent يقبل تصحيح الإملاء ويرفض الحذف والإضافة', () => {
+  const md = SECTION_NOTES.effusion;
+  assert.equal(sameContent(md, md.replace('الانصباب الجنبي تجمع', 'الانصباب الجنبي تجمّع')), true);
+  assert.equal(sameContent(md, md.replace('[[meniscus sign]] | سطح', '[[meniscus sign]] | سطح')), true);
+  assert.equal(sameContent(md, md.replace(/^\| \[\[blunting.*$/m, '')), false, 'حذف صف من الجدول');
+  assert.equal(sameContent(md, `${md}\n\n- نقطة جديدة لم يقلها المحاضر`), false, 'إضافة');
+  assert.equal(sameContent(md, md.replace(/وهنا شرح مفصل للكمية والأنواع وما قاله المحاضر\. /g, '')), false, 'اختصار الشرح');
 });
 

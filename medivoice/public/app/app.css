@@ -246,3 +246,14 @@
 .transcript ul { padding-inline-start: 18px; }
 .transcript blockquote { padding-inline-start: 10px; border-inline-start: 3px solid var(--amber); }
 .transcript .t { font-family: 'IBM Plex Sans', sans-serif; font-weight: 600; color: var(--lilac); direction: ltr; unicode-bidi: isolate; }
+
+/* ── لعبة الانتظار ── */
+.game-btn { min-height: 44px; }
+.sheet-panel.game-panel { width: min(100%, 520px); }
+.game { display: grid; gap: 10px; }
+.game-progress { position: relative; display: flex; align-items: center; gap: 10px; min-height: 38px; padding: 6px 12px; border-radius: 12px; background: rgba(183, 156, 255, 0.1); overflow: hidden; }
+.game-progress i { position: absolute; inset-block: 0; inset-inline-start: 0; width: 0; background: linear-gradient(90deg, rgba(77, 26, 206, 0.55), rgba(176, 31, 176, 0.55)); transition: width 0.8s var(--ease); }
+.game-progress b { position: relative; font-size: 0.95rem; color: var(--text); }
+.game-progress small { position: relative; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text-2); font-size: 0.8rem; }
+.game-canvas { display: block; width: 100%; height: min(58dvh, 540px); border-radius: 16px; background: #0f0820; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+.game-hint { margin: 0; text-align: center; color: var(--text-3); font-size: 0.8rem; }

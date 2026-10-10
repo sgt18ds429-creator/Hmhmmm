@@ -192,7 +192,7 @@ const NOTES_RULES = {
 - لا تضف مواضيع أو معلومات لم يذكرها المحاضر. يُسمح فقط بتوضيح قصير جداً (تعريف مصطلح ذكره أو ربط بين فكرتين قالهما) إذا كان ضرورياً لفهم كلامه.
 
 3) الوضوح والترتيب:
-- اكتب بعربية فصحى مبسطة وواضحة بجمل قصيرة ومباشرة، لا باللهجة العامية.
+- اكتب بعربية فصحى مبسطة وواضحة بجمل قصيرة ومباشرة، لا باللهجة العامية، وبإملاء صحيح: انتبه للهمزات والتاء المربوطة والألف المقصورة، ولا تلصق كلمتين ببعض.
 - رتّب المعلومات ترتيباً منطقياً يسهل فهمه وحفظه: الفكرة العامة أو التعريف أولاً ثم التفاصيل. إذا تنقّل المحاضر بين الأفكار ثم رجع إليها فاجمع كل ما قاله عن الفكرة الواحدة في مكان واحد.
 - استخدم هذا الترميز فقط:
   ## عنوان القسم
@@ -217,7 +217,7 @@ const NOTES_RULES = {
 - Do not add topics or facts the lecturer did not mention. Only a very short clarification (defining a term he used, or linking two things he said) is allowed when needed to understand him.
 
 3) Clarity and structure:
-- Write in clear, simple English with short direct sentences.
+- Write in clear, simple English with short direct sentences and correct spelling.
 - Order the information logically so it is easy to understand and memorise: the general idea or definition first, then the details. If the lecturer jumped between ideas and came back, gather everything he said about one idea in one place.
 - Use only this markup:
   ## Section title
@@ -344,3 +344,37 @@ ${cands.map((c, i) => `${String.fromCharCode(65 + i)}: ${c.title}${c.desc ? ` �
 أخرج: {"choice":"A","confidence":0.9,"caption":"..."}`;
   return { system, user };
 }
+
+/** تدقيق إملائي ولغوي لقسم مكتوب: يعيد النص نفسه بعد تصحيح الأخطاء فقط. */
+export function proofreadPrompt(markup, { lang = 'ar' } = {}) {
+  const system = lang === 'en'
+    ? `You are a meticulous proofreader of medical study notes written in a simple markup. Return the notes exactly as they are, correcting only spelling, grammar and typos.
+
+Fix: misspelled words, merged or split words, missing, extra or repeated letters, obvious grammar mistakes, and misspelled medical terms inside [[ ]].
+
+Do not change:
+- the meaning or the information: do not delete, add, shorten or rephrase anything;
+- the markup: keep every ##, ###, -, 1., > and table | line as it is, the [[ ]] brackets, and the blank lines;
+- lines starting with @fig: copy them exactly.
+
+Output the complete corrected notes only, with no introduction or comment.`
+    : `أنت مدقق لغوي محترف للعربية الفصحى وللمصطلحات الطبية الإنجليزية. تصلك ملزمة طبية مكتوبة بترميز بسيط، فتعيدها كما هي تماماً بعد تصحيح الأخطاء الإملائية والنحوية فقط.
+
+صحّح:
+- الهمزات (أ، إ، آ، ء، ؤ، ئ) وهمزة الوصل والقطع.
+- التاء المربوطة والهاء، والألف المقصورة والياء.
+- الكلمات الملتصقة أو المفصولة خطأً، والحروف الناقصة أو الزائدة أو المكررة.
+- الأخطاء النحوية الواضحة، والتذكير والتأنيث.
+- إملاء المصطلحات الإنجليزية داخل [[ ]] إذا كان فيها خطأ واضح.
+- علامات الترقيم العربية (، ؛ ؟) بلا مسافة قبلها.
+
+لا تغيّر:
+- المعنى والمعلومات: لا تحذف ولا تضف ولا تختصر ولا تعِد صياغة أي جملة.
+- الترميز: أسطر ## و ### و - و 1. و > وأسطر الجداول | كما هي، والأقواس [[ ]]، والأسطر الفارغة.
+- الأسطر التي تبدأ بـ @fig: انسخها حرفياً بلا أي تغيير.
+
+أخرج الملزمة كاملة بعد التصحيح فقط، بدون أي مقدمة أو تعليق.`;
+  const user = `${lang === 'en' ? 'The notes' : 'الملزمة'}:\n<<<\n${markup}\n>>>`;
+  return { system, user };
+}
+
