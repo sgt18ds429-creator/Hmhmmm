@@ -1,7 +1,7 @@
 // اختبارات الشرح المفصل والصور: النماذج والمصادر كلها وهمية، فلا يحتاج الاختبار مفاتيح ولا إنترنت.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Engine, writeNotes, enrich, normalizePlan, rewriteLecture, PipelineError } from '../public/app/pipeline.js';
+import { Engine, writeNotes, enrich, complete, normalizePlan, rewriteLecture, PipelineError } from '../public/app/pipeline.js';
 import { parseMarkup, blockText, countWords, uid } from '../public/app/text.js';
 import { buildPdfHtml } from '../public/app/pdf.js';
 
@@ -116,6 +116,7 @@ test('يكتب شرحاً مفصلاً مقسماً حسب المواضيع وي
   const engine = new Engine(io, CAPS);
   const original = doc.blocks;
   assert.equal(await writeNotes(doc, engine), true);
+  await complete(doc, engine, { io });
   assert.equal(calls.plan, 1);
   assert.equal(calls.section.length, 2);
   assert.equal(doc.meta.mode, 'notes');
@@ -124,7 +125,9 @@ test('يكتب شرحاً مفصلاً مقسماً حسب المواضيع وي
   const h2 = doc.blocks.filter((b) => b.t === 'h' && b.level === 2).map((b) => b.text);
   assert.deepEqual(h2, ['استرواح الصدر [[pneumothorax]]', 'الانصباب الجنبي [[pleural effusion]]', 'أهم النقاط للمراجعة']);
   assert.ok(doc.blocks.some((b) => b.t === 'table' && b.rows.length === 2), 'الجدول محفوظ');
-  assert.equal(doc.blocks.filter((b) => b.t === 'figreq').length, 3);
+  assert.equal(doc.blocks.filter((b) => b.t === 'figreq').length, 0, 'طلبات الصور تحوّلت لصور أو حُذفت');
+  assert.equal(calls.verify.length, 3, 'كل طلب صورة فُحص');
+  assert.equal(doc.blocks[doc.blocks.length - 1].box, true, 'قائمة المراجعة آخر شيء في الملزمة');
   const box = doc.blocks.find((b) => b.box);
   assert.ok(box && box.items.length === 4, 'قائمة المراجعة في الآخر');
   assert.equal(doc.stats.sections, 2);
@@ -248,7 +251,7 @@ test('ملف PDF يعرض الجداول وصندوق المراجعة ونوع 
   const doc = transcriptDoc();
   const engine = new Engine(io, CAPS);
   await writeNotes(doc, engine);
-  await enrich(doc, engine, { io });
+  await complete(doc, engine, { io });
   const html = buildPdfHtml(doc, { paged: true });
   assert.match(html, /<table class="tbl" dir="rtl"><thead><tr><th dir="rtl">العلامة<\/th>/);
   assert.match(html, /<ul class="box" dir="rtl">/);
@@ -327,5 +330,43 @@ test('إذا خلصت حصة Gemini أثناء الكتابة يكمل Groq بأ
   sections.slice(1).forEach((u, k) => assert.match(u, new RegExp(`هذا الجزء ${k + 2} من ${sections.length} من القسم نفسه`)));
   assert.equal(doc.stats.fallback, 0);
   io.gemini = origGemini;
+});
+
+test('الأقسام تُكتب معاً (4 مع Gemini) والصور والقاموس والمراجعة تعمل في نفس الوقت', async () => {
+  const sections = Array.from({ length: 8 }, (_, i) => ({ from: i * 2, title: `موضوع ${i + 1}` }));
+  const paras = Array.from({ length: 16 }, (_, i) => `فقرة ${i} عن [[topic ${Math.floor(i / 2)}]] ${'وشرح طويل لها. '.repeat(30)}`);
+  const doc = transcriptDoc();
+  doc.blocks = parseMarkup(paras.join('\n\n')).map((b) => ({ id: uid(), ...b }));
+  let inFlight = 0, maxWriting = 0;
+  const { io } = makeIO({
+    plan: { kind: 'lecture', title: 'T', sections },
+    section: (user) => {
+      const n = Number(user.match(/«موضوع (\d+)»/)[1]);
+      return gemResponse(`## موضوع ${n}\n${'شرح مفصل جداً عن [[topic ' + (n - 1) + ']] وكل ما قيل فيه. '.repeat(26)}\n\n@fig: diagram | topic ${n} diagram | topic | a diagram of topic ${n} | رسم`);
+    },
+  });
+  const base = io.gemini;
+  io.gemini = async (model, body) => {
+    const system = body.systemInstruction?.parts?.[0]?.text || '';
+    const writing = system.includes('شرحاً مكتوباً مفصلاً');
+    if (writing) { inFlight++; maxWriting = Math.max(maxWriting, inFlight); }
+    await new Promise((r) => setTimeout(r, 15));
+    try { return await base(model, body); } finally { if (writing) inFlight--; }
+  };
+  const engine = new Engine(io, CAPS);
+  await writeNotes(doc, engine);
+  assert.equal(maxWriting, 4, 'أربعة أقسام في نفس الوقت');
+  // القاموس يبدأ مع الصور، لا بعدها
+  const order = [];
+  const base2 = io.gemini;
+  io.gemini = async (model, body) => {
+    const system = body.systemInstruction?.parts?.[0]?.text || '';
+    order.push(system.includes('قاموس') ? 'glossary' : system.includes('تختار صورة') ? 'figure' : system.includes('قائمة مراجعة') ? 'review' : 'other');
+    return base2(model, body);
+  };
+  await complete(doc, engine, { io });
+  assert.ok(order.indexOf('glossary') < order.lastIndexOf('figure'), `الترتيب: ${order.join(',')}`);
+  assert.ok(order.indexOf('review') < order.lastIndexOf('figure'), 'المراجعة لا تنتظر الصور');
+  assert.equal(doc.blocks[doc.blocks.length - 1].box, true);
 });
 

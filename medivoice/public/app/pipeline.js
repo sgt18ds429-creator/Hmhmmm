@@ -437,7 +437,7 @@ export async function runLecture({ file, meta, cfg, caps, io, emit = () => {}, s
       }).catch((e) => { failure = failure || e; }).finally(() => running.delete(task));
       running.add(task);
       // لا نتقدم كثيراً أمام التدقيق حتى لا تتراكم المقاطع في الذاكرة
-      while (running.size >= 3) await Promise.race(running);
+      while (running.size >= 4) await Promise.race(running);
       if (failure) throw failure;
     }
     await Promise.all(running);
@@ -469,7 +469,7 @@ export async function runLecture({ file, meta, cfg, caps, io, emit = () => {}, s
   if (!blocks.length) throw new PipelineError('empty', 'no speech found');
 
   if (meta.mode === 'notes' && !(await writeNotes(doc, engine, { emit, checkpoint }))) doc.meta.mode = 'transcript';
-  await enrich(doc, engine, { io, emit, signal });
+  await complete(doc, engine, { io, emit });
   emit({ type: 'stage', name: 'done' });
   return doc;
 }
@@ -493,7 +493,7 @@ export async function rewriteLecture({ doc, caps, io, emit = () => {}, signal, c
     stats: { ...doc.stats, review: [...(doc.stats?.review || [])] },
   };
   if (!(await writeNotes(copy, engine, { emit, checkpoint }))) throw new PipelineError('not_lecture', 'not a lecture');
-  await enrich(copy, engine, { io, emit, signal });
+  await complete(copy, engine, { io, emit });
   emit({ type: 'stage', name: 'done' });
   return copy;
 }
@@ -746,7 +746,8 @@ export async function writeNotes(doc, engine, { emit = () => {}, checkpoint = nu
       }
     }
   };
-  await Promise.all([worker(), worker()]);
+  // كل قسم طلب طويل (دقيقة تقريباً)، فنكتب عدة أقسام معاً. حدود Groq بالدقيقة أضيق
+  await Promise.all(Array.from({ length: engine.hasGemini ? 4 : 2 }, worker));
   if (failure) throw failure;
 
   if (results.every((r) => r.fallback)) {
@@ -757,11 +758,6 @@ export async function writeNotes(doc, engine, { emit = () => {}, checkpoint = nu
 
   const blocks = [];
   for (const r of results) for (const b of parseMarkup(r.markup)) blocks.push({ id: uid(), ...b });
-  emit({ type: 'notes', stage: 'review' });
-  try {
-    const kp = await keyPoints(engine, meta, blocks, lang);
-    if (kp) blocks.push(...kp);
-  } catch (e) { if (isFatal(e)) throw e; }
 
   const countText = (list) => list.reduce((n, b) => n + countWords(blockText(b)), 0);
   doc.transcript = transcript;
@@ -814,13 +810,32 @@ function spreadRequests(blocks, max) {
   return picked.sort((a, b) => a - b);
 }
 
-/** قاموس المصطلحات + العنوان + الصور التوضيحية (كلها اختيارية: فشلها لا يُفشل المحاضرة). */
+/**
+ * المراحل الأخيرة معاً: نقاط المراجعة (للشرح المفصل) + القاموس + الصور.
+ * كلها اختيارية: فشل أي منها لا يُفشل المحاضرة.
+ */
+export async function complete(doc, engine, { io, emit = () => {} }) {
+  const lang = doc.lang || langOf(doc.blocks.map(blockText).join(' '));
+  // نص الشرح يُقرأ الآن قبل أن تُدرج الصور
+  const review = doc.meta.mode === 'notes'
+    ? keyPoints(engine, doc.meta, doc.blocks, lang).catch((e) => { if (isFatal(e)) throw e; return null; })
+    : null;
+  const [points] = await Promise.all([review, enrich(doc, engine, { io, emit })]);
+  if (points) {
+    doc.blocks.push(...points);
+    doc.stats.words = doc.blocks.reduce((n, b) => n + countWords(blockText(b)), 0);
+  }
+  return doc;
+}
+
+/** قاموس المصطلحات + العنوان + الصور التوضيحية، معاً (فشلها لا يُفشل المحاضرة). */
 export async function enrich(doc, engine, { io, emit = () => {} }) {
   const meta = doc.meta;
   const lang = doc.lang || langOf(doc.blocks.map(blockText).join(' '));
 
   // ── القاموس ──
-  if (meta.glossary !== false) {
+  const glossary = async () => {
+    if (meta.glossary === false) return;
     emit({ type: 'stage', name: 'glossary' });
     try {
       const found = collectTerms(doc.blocks).slice(0, 90).map((t) => t.term);
@@ -839,61 +854,66 @@ export async function enrich(doc, engine, { io, emit = () => {} }) {
       if (isFatal(e)) throw e;
       emit({ type: 'note', code: 'glossary_failed' });
     }
-  }
+  };
 
   // ── العنوان والصور ──
-  emit({ type: 'stage', name: 'figures' });
-  try {
-    const textWords = doc.stats?.words || doc.blocks.reduce((n, b) => n + countWords(blockText(b)), 0);
-    const maxFigures = meta.images === false ? 0 : Math.min(14, Math.max(2, Math.round(textWords / 300)));
-    let wanted = [];
-    if (doc.blocks.some((b) => b.t === 'figreq')) {
-      // الشرح المفصل: الكاتب حدد بنفسه موضع كل صورة وما يجب أن تُظهره
-      wanted = spreadRequests(doc.blocks, maxFigures).map((i) => {
-        const b = doc.blocks[i];
-        return { anchor: b.id, replace: true, query: b.query, alt: b.alt, kind: b.kind, show: b.show, caption: b.caption, ...contextBefore(doc.blocks, i) };
-      });
-    } else {
-      // النص المفرّغ: مخطط يقترح العنوان ومواضع الصور
-      const textBlocks = doc.blocks.map((b, i) => ({ b, i })).filter(({ b }) => b.t !== 'fig');
-      const outline = textBlocks.map(({ b, i }) => {
-        const kind = b.t === 'h' ? 'H' : b.t === 'note' ? 'N' : b.items || b.rows ? 'L' : 'P';
-        const words = stripMarkup(blockText(b)).split(/\s+/);
-        return `${i} ${kind}: ${words.slice(0, b.t === 'h' ? 14 : 26).join(' ')}${words.length > 26 ? '…' : ''}`;
-      }).join('\n').slice(0, 14000);
-      const { system, user } = figuresPrompt(meta, outline, Math.max(maxFigures, 1));
-      const plan = await engine.json({ system, user, maxTokens: 3000 });
-      if (plan?.title && !String(meta.title || '').trim()) doc.meta.title = cleanTitle(plan.title);
-      if (maxFigures > 0 && Array.isArray(plan?.figures)) {
-        wanted = plan.figures
-          .filter((f) => f && typeof f.query === 'string' && f.query.trim() && Number.isInteger(f.after) && f.after >= 0 && f.after < doc.blocks.length && doc.blocks[f.after].t !== 'fig')
-          .slice(0, maxFigures)
-          .map((f) => ({
-            anchor: doc.blocks[f.after].id, replace: false, query: f.query.trim().slice(0, 80), alt: String(f.alt || '').trim().slice(0, 80),
-            kind: ['radiograph', 'diagram', 'photo', 'micrograph'].includes(f.kind) ? f.kind : 'diagram',
-            show: String(f.show || '').trim().slice(0, 300), caption: String(f.caption || '').trim().slice(0, 200), ...contextBefore(doc.blocks, f.after + 1),
-          }));
+  const figures = async () => {
+    emit({ type: 'stage', name: 'figures' });
+    try {
+      const textWords = doc.stats?.words || doc.blocks.reduce((n, b) => n + countWords(blockText(b)), 0);
+      const maxFigures = meta.images === false ? 0 : Math.min(14, Math.max(2, Math.round(textWords / 300)));
+      let wanted = [];
+      if (doc.blocks.some((b) => b.t === 'figreq')) {
+        // الشرح المفصل: الكاتب حدد بنفسه موضع كل صورة وما يجب أن تُظهره
+        wanted = spreadRequests(doc.blocks, maxFigures).map((i) => {
+          const b = doc.blocks[i];
+          return { anchor: b.id, replace: true, query: b.query, alt: b.alt, kind: b.kind, show: b.show, caption: b.caption, ...contextBefore(doc.blocks, i) };
+        });
+      } else {
+        // النص المفرّغ: مخطط يقترح العنوان ومواضع الصور
+        const textBlocks = doc.blocks.map((b, i) => ({ b, i })).filter(({ b }) => b.t !== 'fig');
+        const outline = textBlocks.map(({ b, i }) => {
+          const kind = b.t === 'h' ? 'H' : b.t === 'note' ? 'N' : b.items || b.rows ? 'L' : 'P';
+          const words = stripMarkup(blockText(b)).split(/\s+/);
+          return `${i} ${kind}: ${words.slice(0, b.t === 'h' ? 14 : 26).join(' ')}${words.length > 26 ? '…' : ''}`;
+        }).join('\n').slice(0, 14000);
+        const { system, user } = figuresPrompt(meta, outline, Math.max(maxFigures, 1));
+        const plan = await engine.json({ system, user, maxTokens: 3000 });
+        if (plan?.title && !String(meta.title || '').trim()) doc.meta.title = cleanTitle(plan.title);
+        if (maxFigures > 0 && Array.isArray(plan?.figures)) {
+          wanted = plan.figures
+            .filter((f) => f && typeof f.query === 'string' && f.query.trim() && Number.isInteger(f.after) && f.after >= 0 && f.after < doc.blocks.length && doc.blocks[f.after].t !== 'fig')
+            .slice(0, maxFigures)
+            .map((f) => ({
+              anchor: doc.blocks[f.after].id, replace: false, query: f.query.trim().slice(0, 80), alt: String(f.alt || '').trim().slice(0, 80),
+              kind: ['radiograph', 'diagram', 'photo', 'micrograph'].includes(f.kind) ? f.kind : 'diagram',
+              show: String(f.show || '').trim().slice(0, 300), caption: String(f.caption || '').trim().slice(0, 200), ...contextBefore(doc.blocks, f.after + 1),
+            }));
+        }
       }
-    }
-    if (wanted.length) {
-      emit({ type: 'stage', name: 'images', total: wanted.length });
-      const figs = await pickFigures(wanted, engine, io, emit, { lang });
-      for (const f of figs) {
-        const at = doc.blocks.findIndex((b) => b.id === f.anchor);
-        if (at < 0) continue;
-        const block = { id: uid(), t: 'fig', caption: f.caption, query: f.query, kind: f.kind, pick: f.pick, candidates: f.candidates, img: f.img };
-        if (f.replace) { doc.blocks.splice(at, 1, block); continue; }
-        let pos = at + 1;
-        if (doc.blocks[at].t === 'h' && doc.blocks[pos] && doc.blocks[pos].t !== 'h') pos++; // لا نضع الصورة بين العنوان وفقرته
-        doc.blocks.splice(pos, 0, block);
+      if (wanted.length) {
+        emit({ type: 'stage', name: 'images', total: wanted.length });
+        const figs = await pickFigures(wanted, engine, io, emit, { lang });
+        for (const f of figs) {
+          const at = doc.blocks.findIndex((b) => b.id === f.anchor);
+          if (at < 0) continue;
+          const block = { id: uid(), t: 'fig', caption: f.caption, query: f.query, kind: f.kind, pick: f.pick, candidates: f.candidates, img: f.img };
+          if (f.replace) { doc.blocks.splice(at, 1, block); continue; }
+          let pos = at + 1;
+          if (doc.blocks[at].t === 'h' && doc.blocks[pos] && doc.blocks[pos].t !== 'h') pos++; // لا نضع الصورة بين العنوان وفقرته
+          doc.blocks.splice(pos, 0, block);
+        }
       }
+    } catch (e) {
+      if (isFatal(e)) throw e;
+      emit({ type: 'note', code: 'figures_failed' });
+    } finally {
+      doc.blocks = doc.blocks.filter((b) => b.t !== 'figreq'); // طلبات صور لم تجد صورة مطابقة: تُحذف ولا توضع صورة خاطئة
     }
-  } catch (e) {
-    if (isFatal(e)) throw e;
-    emit({ type: 'note', code: 'figures_failed' });
-  } finally {
-    doc.blocks = doc.blocks.filter((b) => b.t !== 'figreq'); // طلبات صور لم تجد صورة مطابقة: تُحذف ولا توضع صورة خاطئة
-  }
+  };
+
+  // القاموس يقرأ المصطلحات قبل أن تبدأ الصور بتعديل المستند، ثم يعملان معاً
+  await Promise.all([glossary(), figures()]);
   if (!String(doc.meta.title || '').trim()) {
     const h = doc.blocks.find((b) => b.t === 'h');
     doc.meta.title = h ? stripMarkup(h.text) : doc.meta.subject || 'محاضرة';
@@ -930,7 +950,7 @@ export async function pickFigures(wanted, engine, io, emit = () => {}, { lang = 
     return { ...f, caption: verdict.caption || f.caption, pick, candidates: ok.map((x) => x.c), img: { dataUrl: img.dataUrl, w: img.w, h: img.h } };
   };
 
-  // صورتان في نفس الوقت احتراماً لحدود المصادر المفتوحة
+  // ثلاث صور في نفس الوقت: أسرع، وفي حدود المصادر المفتوحة وحد Gemini بالدقيقة
   const run = async () => {
     while (next < wanted.length) {
       const i = next++;
@@ -938,7 +958,7 @@ export async function pickFigures(wanted, engine, io, emit = () => {}, { lang = 
       if (results[i]) emit({ type: 'images', picked: ++picked, total: wanted.length });
     }
   };
-  await Promise.all([run(), run()]);
+  await Promise.all([run(), run(), run()]);
   return results.filter(Boolean);
 }
 

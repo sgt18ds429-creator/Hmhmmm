@@ -173,10 +173,18 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
   const beforeUnload = (e) => { e.preventDefault(); e.returnValue = ''; };
   addEventListener('beforeunload', beforeUnload);
   const grabWake = async () => { try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* غير مدعوم */ } };
-  const onVisible = () => { if (!document.hidden && running) grabWake(); };
+  // الجوال يوقف الصفحات التي في الخلفية، فيتوقف التحويل أو يبطأ كثيراً
+  let hiddenAt = 0;
+  const onVisible = () => {
+    if (document.hidden) { hiddenAt = Date.now(); return; }
+    if (!running) return;
+    grabWake();
+    if (hiddenAt && Date.now() - hiddenAt > 10_000) ctx.toast('خلّي الصفحة قدّامك لحد ما يخلص: إذا طلعت منها يتوقف التحويل أو يبطأ.');
+    hiddenAt = 0;
+  };
   grabWake();
   document.addEventListener('visibilitychange', onVisible);
-  const tick = setInterval(() => { if (running && !waitTimer) sub.textContent = `${fmtTime((Date.now() - t0) / 1000)} · خلّي الصفحة مفتوحة`; }, 1000);
+  const tick = setInterval(() => { if (running && !waitTimer) sub.textContent = `${fmtTime((Date.now() - t0) / 1000)} · خلّي الصفحة مفتوحة وقدّامك`; }, 1000);
 
   // ── تقدم ──
   const P = { total: 1, chunk: [], write: 0, extra: 0 };
@@ -237,14 +245,14 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
     } else if (e.type === 'stage') {
       if (e.name === 'write') { setStage('write'); status.textContent = 'أقرأ المحاضرة كاملة حتى أفهمها'; }
       else if (e.name === 'glossary') { setStage('glossary'); status.textContent = 'أجهّز قاموس المصطلحات'; P.write = 1; P.extra = 0.03; }
-      else if (e.name === 'figures') { setStage('figures'); status.textContent = 'أحدد الصور التوضيحية'; P.write = 1; P.extra = 0.07; }
+      else if (e.name === 'figures') { setStage('figures'); status.textContent = 'أجهّز القاموس وأختار صوراً مطابقة للشرح'; P.write = 1; P.extra = 0.07; }
       else if (e.name === 'images') { status.textContent = 'أبحث عن صور مطابقة للشرح في المصادر المفتوحة'; P.extra = 0.09; }
       else if (e.name === 'done') { setStage('done'); P.write = 1; P.extra = 0.14; }
       paintPct();
     } else if (e.type === 'notes') {
       if (e.stage === 'plan') status.textContent = 'أفهم المحاضرة وأقسّمها حسب المواضيع';
       else if (e.stage === 'write') {
-        status.textContent = `أكتب الشرح المفصل: ${countOf(e.total, ['جزء واحد', 'جزآن', 'أجزاء', 'جزءاً'])}`;
+        status.textContent = `أكتب الشرح المفصل: ${countOf(e.total, ['جزء واحد', 'جزآن', 'أجزاء', 'جزءاً'])}، عدة أجزاء في نفس الوقت`;
         clear(strip);
         for (let i = 0; i < e.total; i++) strip.append(h('i'));
         P.write = 0.03;
@@ -253,10 +261,10 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
     } else if (e.type === 'section') {
       const cell = strip.children[e.index];
       if (e.stage === 'write') {
-        status.textContent = `أكتب شرح «${e.title}»${e.parts > 1 ? ` (جزء ${e.part} من ${e.parts})` : ''}`;
         if (cell) cell.className = 'listen';
       } else if (e.stage === 'done') {
         if (cell) cell.className = e.fallback ? 'review' : 'done';
+        status.textContent = e.done < e.total ? `أكتب الشرح المفصل: جاهز ${e.done} من ${e.total}` : 'أراجع الشرح وأجهّز الخطوة الأخيرة';
         P.write = Math.max(P.write, e.done / e.total);
         showLive(parseMarkup(e.markup), { reset: !writing, keep: 18 });
         writing = true;
