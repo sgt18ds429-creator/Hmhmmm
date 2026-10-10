@@ -42,6 +42,7 @@ function summary(doc) {
     title: doc.meta.title || '', subject: doc.meta.subject || '', lecturer: doc.meta.lecturer || '',
     duration: doc.duration || 0, words: doc.stats?.words || 0,
     figures: doc.blocks.filter((b) => b.t === 'fig').length, terms: doc.terms?.length || 0,
+    mode: doc.meta.mode === 'notes' ? 'notes' : 'transcript',
   };
 }
 
@@ -80,7 +81,8 @@ export async function clearParts(job) {
 export async function countParts(job) {
   const db = await open();
   const keys = await req(db.transaction('parts').objectStore('parts').getAllKeys());
-  return keys.filter((k) => String(k).startsWith(`${job}:`)).length;
+  // مقاطع الصوت فقط (مفاتيحها أرقام)؛ خطة الشرح وأقسامه محفوظة بمفاتيح n:…
+  return keys.filter((k) => String(k).startsWith(`${job}:`) && /^\d+$/.test(String(k).slice(job.length + 1))).length;
 }
 /** يحذف نقاط استئناف أقدم من أسبوع. */
 export async function prune() {

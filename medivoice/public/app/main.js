@@ -4,7 +4,7 @@ import { h, icon, clear, sheet, closeTopSheet, confirm, fmtHM, fmtAgo, svgEl } f
 import { makeIO } from './api.js';
 import * as db from './db.js';
 import { LOGO_PATH, fmtDuration } from './pdf.js';
-import { viewNew, viewRun, openRecorder } from './run.js';
+import { viewNew, viewRun, viewRewrite, openRecorder } from './run.js';
 import { viewDoc } from './doc.js';
 
 const ACCEPT = 'audio/*,video/*,.m4a,.mp3,.wav,.ogg,.oga,.opus,.aac,.flac,.mp4,.mov,.m4v,.webm,.mkv,.3gp,.amr,.wma';
@@ -118,6 +118,7 @@ export async function start(MV, root) {
     else if (name === 'link') viewLink(el, params);
     else if (name === 'new') viewNew(ctx, el, params);
     else if (name === 'run') viewRun(ctx, el, params);
+    else if (name === 'rewrite') await viewRewrite(ctx, el, params);
     else if (name === 'doc') await viewDoc(ctx, el, params);
   }
   function back() { history.back(); }
@@ -153,8 +154,8 @@ export async function start(MV, root) {
     const list = h('div', { class: 'stack' });
     el.append(h('div', { class: 'stack lg' },
       h('div', { class: 'stack hero' },
-        h('h1', { class: 'h-display' }, 'محاضرتك الصوتية، ملزمة مكتوبة'),
-        h('p', { class: 'lead' }, 'ارفع التسجيل ويرجعلك نص كامل بمصطلحاته الطبية وصوره، جاهز PDF.')),
+        h('h1', { class: 'h-display' }, 'محاضرتك الصوتية، ملزمة مشروحة'),
+        h('p', { class: 'lead' }, 'ارفع التسجيل، يفهم الشرح ويكتبه لك ملزمة مفصّلة ومرتبة بدون اختصار، بمصطلحاتها الطبية وصور مطابقة، جاهزة PDF.')),
       s.notice ? h('div', { class: 'banner info' }, icon('info'), h('span', null, s.notice)) : null,
       noKeys
         ? h('div', { class: 'banner' }, icon('key'), h('span', null, 'قبل أول محاضرة اربط مفاتيحك المجانية. دقيقتين ومرة وحدة.'), h('button', { class: 'btn small amber', onclick: () => go('link') }, 'ربط'))
@@ -173,7 +174,7 @@ export async function start(MV, root) {
       list.append(h('button', { class: 'lec', onclick: () => go('doc', { id: it.id }) },
         h('b', { dir: 'auto' }, it.title || 'محاضرة بدون عنوان'),
         icon('back'),
-        h('small', null, [it.subject, fmtDuration(it.duration), `${it.words.toLocaleString('en-US')} كلمة`, fmtAgo(it.createdAt)].filter(Boolean).join('  ·  '))));
+        h('small', null, [it.mode === 'notes' ? 'شرح مفصّل' : 'نص مفرّغ', it.subject, fmtDuration(it.duration), `${it.words.toLocaleString('en-US')} كلمة`, fmtAgo(it.createdAt)].filter(Boolean).join('  ·  '))));
     }
   }
 

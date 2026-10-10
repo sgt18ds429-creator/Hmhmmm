@@ -137,23 +137,210 @@ ${outline}
    - "query": عبارة بحث إنجليزية قصيرة ودقيقة (2 إلى 5 كلمات) كما تُكتب في عنوان صورة طبية، مثل "pneumothorax chest radiograph" أو "circle of Willis diagram".
    - "alt": عبارة بحث بديلة أعم قليلاً.
    - "kind": واحد من "radiograph" (أشعة/CT/MRI/سونار) أو "diagram" (رسم تشريحي أو مخطط) أو "photo" (جهاز أو حالة سريرية) أو "micrograph" (مجهرية).
+   - "show": ما يجب أن تُظهره الصورة بالضبط، بالإنجليزية وبدقة (العضو، المنطقة، نوع التصوير، والعلامة أو التفصيل المطلوب).
    - "caption": تعليق عربي قصير يصف ما تبيّنه الصورة (المصطلحات بالإنجليزية).
 وزّع الصور على أقسام المحاضرة ولا تكرر المفهوم نفسه.
 
-أخرج: {"title":"...","figures":[{"after":0,"query":"...","alt":"...","kind":"...","caption":"..."}]}`;
+أخرج: {"title":"...","figures":[{"after":0,"query":"...","alt":"...","kind":"...","show":"...","caption":"..."}]}`;
   return { system, user };
 }
 
-/** اختيار الصورة الأنسب بالنظر (Gemini). الصور تُرفق بعد النص بالترتيب المذكور. */
-export function visionPickPrompt(figures) {
-  const system = `أنت طبيب ومحرر كتب طبية تختار الصور التوضيحية لمحاضرة. الدقة العلمية أهم من الجمال. أجب بصيغة JSON فقط.`;
-  const list = figures.map((f, i) => `الشكل ${i + 1}: «${f.caption}» (بحث: ${f.query}) — المرشحات: ${f.labels.join('، ')}`).join('\n');
-  const user = `لكل شكل مطلوب، مرفق عدة صور مرشحة. كل صورة يسبقها رمزها (مثل 1A).
+// ───────────── الشرح المفصل (الملزمة المشروحة) ─────────────
 
-${list}
+const KIND_LABEL = {
+  radiograph: 'صورة شعاعية (أشعة سينية أو CT أو MRI أو سونار)',
+  diagram: 'رسم تشريحي أو مخطط توضيحي',
+  photo: 'صورة حقيقية لجهاز أو أداة أو حالة سريرية',
+  micrograph: 'صورة مجهرية (شريحة نسيجية)',
+};
 
-لكل شكل اختر الصورة التي تبيّن المفهوم المطلوب بدقة ووضوح وتصلح للطباعة في ملزمة. اختر "none" إذا لم تكن أي صورة مناسبة أو كانت غير متعلقة أو رديئة أو فيها نصوص بلغة غير الإنجليزية والعربية تغطي الصورة.
+/** خطة المحاضرة: نوع التسجيل، العنوان، والأقسام حسب المواضيع. يرجع JSON. */
+export function notesPlanPrompt(meta, numbered, { lang = 'ar', condensed = false } = {}) {
+  const system = `أنت أستاذ جامعي خبير ومحرر كتب جامعية طبية. يصلك تفريغ آلي لتسجيل محاضرة (فيه أخطاء سمع وتكرار). مهمتك أن تفهم المحاضرة كلها وتقسمها إلى أقسام حسب المواضيع التي شرحها المحاضر. أجب بصيغة JSON فقط.`;
+  const user = `${metaLine(meta)}
 
-أخرج: {"picks":[{"fig":1,"choice":"A"}]}`;
+هذا تفريغ المحاضرة مقسماً إلى فقرات مرقمة، رقم كل فقرة بين قوسين مربعين في أولها${condensed ? ' (من كل فقرة بدايتها فقط)' : ''}:
+<<<
+${numbered}
+>>>
+
+المطلوب:
+1. "kind": "lecture" إذا كان التسجيل محاضرة أو مادة تعليمية أو علمية، أو "other" إذا لم يكن كذلك (أغنية، حديث عام، تسجيل بلا محتوى تعليمي).
+2. "title": عنوان دقيق للمحاضرة يصف موضوعها الفعلي كما شُرح (${lang === 'en' ? 'بالإنجليزية' : 'بالعربية، والمصطلحات بالإنجليزية'}، بدون [[ ]]). لا تخترع موضوعاً غير موجود.
+3. "sections": أقسام المحاضرة بالترتيب. كل قسم موضوع رئيسي واحد متماسك. لكل قسم:
+   - "from": رقم أول فقرة في القسم. القسم يمتد حتى الفقرة التي قبل بداية القسم التالي، والقسم الأول يبدأ من 0.
+   - "title": عنوان واضح ومحدد لموضوع القسم (${lang === 'en' ? 'بالإنجليزية' : 'بالعربية، والمصطلحات بالإنجليزية'}، بدون [[ ]]).
+   - "points": سطر واحد بأهم ما يشرحه القسم.
+   الأفضل أن يكون القسم بين 300 و 1500 كلمة تقريباً من التفريغ. الكلام الإداري في البداية (التحية والحضور والإعلانات) يُضم للقسم الذي يليه.
+
+أخرج: {"kind":"lecture","title":"...","sections":[{"from":0,"title":"...","points":"..."}]}`;
+  return { system, user };
+}
+
+const NOTES_RULES = {
+  ar: `أنت أستاذ جامعي خبير في العلوم الطبية ومؤلف ملازم دراسية مشهود له بالوضوح. يصلك جزء من تفريغ آلي لتسجيل محاضرة جامعية، وتكتب منه شرحاً مكتوباً مفصلاً يذاكر منه الطالب بدل سماع التسجيل، فيفهم منه كل ما قاله المحاضر.
+
+1) الشمول، وهو أهم قاعدة:
+- اكتب كل معلومة وردت في هذا الجزء: كل تعريف وشرح وسبب وآلية وعلامة وعرض وتصنيف ونوع وفرق ومثال وحالة ورقم ونسبة وقيمة وخطوة وعلاج وتنبيه.
+- هذا شرح مفصل وليس ملخصاً: ممنوع اختصار الأفكار أو دمجها بطريقة تُضيع تفاصيلها، وممنوع إسقاط أي نقطة علمية حتى الصغيرة أو الجانبية منها.
+- إذا وضّح المحاضر فكرة بمثال أو تشبيه أو حالة مريض فاكتبه أيضاً، لأنه يساعد على الفهم.
+- احذف فقط ما ليس علماً: التحية والكلام الإداري والمزاح والنداء على الطلبة، والتكرار الحرفي للفكرة نفسها (اكتبها مرة واحدة بأوضح وأكمل صيغة).
+
+2) الصحة:
+- التفريغ آلي وفيه أخطاء سمع، خصوصاً في المصطلحات والأرقام وأسماء التراكيب. افهم المقصود من السياق ومن معرفتك الطبية واكتبه صحيحاً (مثلاً «كارديو ميجالي» تُكتب [[cardiomegaly]]).
+- إذا كانت جملة غير مفهومة بسبب خطأ التفريغ ولم تستطع الجزم بمعناها فلا تخترع لها معنى، واكتب منها ما تستطيع تأكيده من السياق فقط.
+- لا تضف مواضيع أو معلومات لم يذكرها المحاضر. يُسمح فقط بتوضيح قصير جداً (تعريف مصطلح ذكره أو ربط بين فكرتين قالهما) إذا كان ضرورياً لفهم كلامه.
+
+3) الوضوح والترتيب:
+- اكتب بعربية فصحى مبسطة وواضحة بجمل قصيرة ومباشرة، لا باللهجة العامية.
+- رتّب المعلومات ترتيباً منطقياً يسهل فهمه وحفظه: الفكرة العامة أو التعريف أولاً ثم التفاصيل. إذا تنقّل المحاضر بين الأفكار ثم رجع إليها فاجمع كل ما قاله عن الفكرة الواحدة في مكان واحد.
+- استخدم هذا الترميز فقط:
+  ## عنوان القسم
+  ### عنوان فرعي لكل فكرة أو موضوع داخل القسم
+  فقرات شرح قصيرة، وبين كل فقرتين سطر فارغ
+  - نقاط عند تعداد أسباب أو أعراض أو علامات أو أنواع أو خصائص
+  1. خطوات أو مراحل مرتبة
+  | عمود | عمود | جدول (أول صف للعناوين) عند المقارنة بين حالتين أو أكثر أو عرض أنواع مع خصائص كل نوع
+  > ما شدّد عليه المحاضر أو قال إنه مهم أو يأتي بالامتحان (المعلومة نفسها كاملة في سطر واحد)
+- كل مصطلح طبي أو علمي أو اختصار يُكتب بالإنجليزية بإملائه الصحيح بين قوسين مزدوجين، مثل [[pleural effusion]] و [[CT]]، ويجوز ذكر معناه العربي قبله عند أول ذكر. لا تضع [[ ]] داخل العناوين.`,
+  en: `You are an expert medical professor and an outstanding author of study notes. You receive part of an automatic transcript of a recorded university lecture and write from it detailed written notes that a student can study from instead of listening to the recording, understanding everything the lecturer said.
+
+1) Completeness, the most important rule:
+- Write every piece of information in this part: every definition, explanation, cause, mechanism, sign, symptom, classification, type, difference, example, case, number, percentage, value, step, treatment and warning.
+- These are detailed notes, not a short summary: do not compress ideas in a way that loses details, and never drop any scientific point, however small.
+- If the lecturer explained an idea with an example, analogy or patient case, include it.
+- Remove only what is not content: greetings, admin talk, jokes, calling on students, and literal repetition of the same idea (write it once, in its clearest and most complete form).
+
+2) Correctness:
+- The transcript is automatic and has mis-heard words, especially terms, numbers and structure names. Infer what was meant from context and your medical knowledge, and write it correctly.
+- If a sentence is unintelligible because of transcription errors and you cannot be sure of its meaning, do not invent one; write only what you can confirm from context.
+- Do not add topics or facts the lecturer did not mention. Only a very short clarification (defining a term he used, or linking two things he said) is allowed when needed to understand him.
+
+3) Clarity and structure:
+- Write in clear, simple English with short direct sentences.
+- Order the information logically so it is easy to understand and memorise: the general idea or definition first, then the details. If the lecturer jumped between ideas and came back, gather everything he said about one idea in one place.
+- Use only this markup:
+  ## Section title
+  ### Subheading for each idea or subtopic in the section
+  Short explanatory paragraphs, separated by a blank line
+  - bullets when listing causes, symptoms, signs, types or features
+  1. ordered steps or stages
+  | column | column | a table (first row = headers) when comparing two or more conditions or listing types with their features
+  > what the lecturer stressed, called important, or said will be in the exam (the full fact on one line)
+- Wrap every medical or scientific term and abbreviation in double brackets with correct spelling, like [[pleural effusion]] and [[CT]]. No [[ ]] inside headings.`,
+};
+
+const FIG_RULES = {
+  ar: `4) الصور التوضيحية:
+- إذا شرح هذا الجزء شيئاً يُفهم أفضل بالصورة (تركيب تشريحي، مظهر علامة أو حالة على الأشعة أو CT أو MRI أو السونار، مخطط لآلية، شريحة مجهرية، جهاز أو أداة) فأضف بعد الفقرة التي تشرحه مباشرة سطراً مستقلاً بهذا الشكل بالضبط:
+  @fig: النوع | عبارة بحث إنجليزية دقيقة | عبارة بحث أعم | ما يجب أن تُظهره الصورة بالإنجليزية بدقة | تعليق عربي قصير
+- النوع واحد من: radiograph (أشعة أو CT أو MRI أو سونار) أو diagram (رسم تشريحي أو مخطط) أو photo (جهاز أو حالة سريرية) أو micrograph (مجهرية).
+- مثال:
+  @fig: radiograph | pneumothorax chest x-ray | pneumothorax | frontal chest radiograph with a visible visceral pleural line and no lung markings beyond it | صورة أشعة للصدر تُظهر استرواح الصدر [[pneumothorax]]
+- صورتان كحد أقصى لهذا الجزء، فقط لما شرحه المحاضر فعلاً، ولا صورة لمفهوم مجرد لا يُصوَّر.
+
+أخرج نص الشرح فقط، بدون مقدمة أو خاتمة أو أي تعليق منك.`,
+  en: `4) Illustrations:
+- If this part explains something best understood with a picture (an anatomical structure, the appearance of a sign or condition on X-ray, CT, MRI or ultrasound, a mechanism diagram, a histology slide, a device), add right after the paragraph that explains it a separate line in exactly this form:
+  @fig: kind | precise English search phrase | broader search phrase | exactly what the image must show, in English | short caption
+- kind is one of: radiograph (X-ray, CT, MRI or ultrasound), diagram (anatomical drawing or schematic), photo (device or clinical case), micrograph (histology).
+- Example:
+  @fig: radiograph | pneumothorax chest x-ray | pneumothorax | frontal chest radiograph with a visible visceral pleural line and no lung markings beyond it | Chest X-ray showing a [[pneumothorax]] with the visceral pleural line
+- At most two images for this part, only for what the lecturer actually explained, and none for abstract ideas.
+
+Output only the notes text, with no introduction, conclusion or comment of your own.`,
+};
+
+/**
+ * كتابة شرح مفصل لقسم واحد من المحاضرة.
+ * @param s { index, title, points, part, parts } القسم (part/parts عند تقسيم قسم طويل إلى أجزاء)
+ * @param ctx { outline:[titles], source, words, known:[terms], images:boolean, retry:{ prevWords, missing } }
+ */
+export function notesSectionPrompt(meta, s, { lang = 'ar', outline = [], source = '', words = 0, known = [], images = true, retry = null } = {}) {
+  const en = lang === 'en';
+  const system = `${NOTES_RULES[en ? 'en' : 'ar']}\n\n${images ? FIG_RULES[en ? 'en' : 'ar'] : (en ? 'Output only the notes text, with no introduction, conclusion or comment of your own.' : 'أخرج نص الشرح فقط، بدون مقدمة أو خاتمة أو أي تعليق منك.')}`;
+  const cont = s.part > 1;
+  const lines = [];
+  const info = metaLine(meta);
+  if (info) lines.push(info);
+  if (outline.length > 1) {
+    lines.push(`${en ? 'Full lecture plan (so you know where this part fits and leave other topics to their own sections)' : 'خطة المحاضرة كاملة (حتى تعرف موقع هذا الجزء وتترك المواضيع الأخرى لأقسامها)'}:\n${outline.map((t, i) => `${i + 1}. ${t}${i === s.index ? (en ? '   ← current section' : '   ← القسم الحالي') : ''}`).join('\n')}`);
+  }
+  lines.push(en
+    ? `Now write section ${s.index + 1}: "${s.title}"${s.points ? ` — ${s.points}` : ''}.`
+    : `المطلوب الآن القسم ${s.index + 1}: «${s.title}»${s.points ? ` — ${s.points}` : ''}.`);
+  if (cont) {
+    lines.push(en
+      ? `This is part ${s.part} of ${s.parts} of the same section, continuing directly from the previous part: do not write the "##" line; start with subheadings and explanation.`
+      : `هذا الجزء ${s.part} من ${s.parts} من القسم نفسه، وهو تكملة مباشرة لما قبله: لا تكتب سطر «##»، وابدأ بالعناوين الفرعية والشرح.`);
+  } else {
+    lines.push(en ? `Start with the heading line: ## ${s.title}` : `ابدأ بسطر العنوان: ## ${s.title}`);
+  }
+  if (known.length) {
+    lines.push(en
+      ? `Terms already used in this lecture with their correct spelling; use the same spelling if they come up: ${known.join(', ')}`
+      : `مصطلحات وردت في المحاضرة بإملائها الصحيح؛ إذا وردت هنا فاكتبها بالإملاء نفسه: ${known.join('، ')}`);
+  }
+  lines.push(`${en ? `Transcript of this part (${words} words)` : `تفريغ هذا الجزء (${words} كلمة)`}:\n<<<\n${source}\n>>>`);
+  if (retry?.prevWords) {
+    lines.push(en
+      ? `Warning: your previous attempt was too short (${retry.prevWords} words for a ${words}-word transcript) and dropped details. Write fuller notes that cover every point, example and number in the transcript.`
+      : `تنبيه: محاولتك السابقة كانت مختصرة (${retry.prevWords} كلمة مقابل ${words} كلمة في التفريغ) وأسقطت تفاصيل. اكتب شرحاً أوفى يغطي كل نقطة ومثال ورقم في التفريغ.`);
+  }
+  if (retry?.missing?.length) {
+    lines.push(en
+      ? `Warning: your previous attempt left out these terms from the transcript: ${retry.missing.join(', ')}. Make sure everything said about them is explained (unless one is clearly a mis-hearing).`
+      : `تنبيه: محاولتك السابقة لم تذكر هذه المصطلحات الواردة في التفريغ: ${retry.missing.join('، ')}. تأكد أن كل ما قيل عنها مشروح (إلا إذا كان أحدها خطأ سمع واضحاً).`);
+  }
+  lines.push(en ? 'Now write the complete detailed notes for this part, following the rules.' : 'اكتب الآن الشرح المفصل لهذا الجزء كاملاً وفق القواعد.');
+  return { system, user: lines.join('\n\n') };
+}
+
+/** نقاط مراجعة سريعة من الملزمة كاملة. */
+export function reviewPrompt(meta, notes, { lang = 'ar' } = {}) {
+  const en = lang === 'en';
+  const system = en
+    ? 'You are a university professor preparing a quick pre-exam revision list from a student\'s lecture notes.'
+    : 'أنت أستاذ جامعي تُعدّ للطالب قائمة مراجعة سريعة قبل الامتحان من ملزمة محاضرته.';
+  const info = metaLine(meta);
+  const user = en
+    ? `${info ? info + '\n\n' : ''}The notes:\n<<<\n${notes}\n>>>\n\nWrite 8 to 15 revision points, each on its own line starting with "- ": one clear sentence carrying a complete important fact from the notes (a key definition, an important difference, a number or value, a distinguishing sign, or what the lecturer stressed). Terms in [[ ]]. Add nothing that is not in the notes. Output only the points.`
+    : `${info ? info + '\n\n' : ''}الملزمة:\n<<<\n${notes}\n>>>\n\nاكتب من 8 إلى 15 نقطة مراجعة، كل نقطة في سطر يبدأ بـ "- ": جملة واحدة واضحة تحمل معلومة مهمة كاملة من الملزمة (تعريف أساسي، فرق مهم، رقم أو قيمة، علامة مميزة، أو ما شدّد عليه المحاضر). المصطلحات بالإنجليزية بين [[ ]]. لا تضف شيئاً غير موجود في الملزمة. أخرج النقاط فقط.`;
+  return { system, user };
+}
+
+/** التحقق بالنظر من مطابقة صورة لشرحها (Gemini). الصور تُرفق بعد النص، قبل كل صورة حرفها. */
+export function figureVerifyPrompt(fig, letters, { lang = 'ar' } = {}) {
+  const system = `أنت طبيب ومحرر كتب طبية دقيق جداً تختار صورة توضيحية لملزمة جامعية. الصورة غير المطابقة أسوأ من عدم وجود صورة، فلا تختر إلا صورة تُظهر المطلوب فعلاً. أجب بصيغة JSON فقط.`;
+  const user = `الشرح الذي ستوضّحه الصورة${fig.section ? ` (من قسم «${fig.section}»)` : ''}:
+«${clip(String(fig.context || ''), 900)}»
+
+المطلوب أن تُظهره الصورة: ${fig.show || fig.query}
+نوع الصورة المطلوب: ${KIND_LABEL[fig.kind] || KIND_LABEL.diagram}
+
+مرفق ${letters.length} صور مرشحة، قبل كل صورة حرفها (${letters.join('، ')}) وعنوانها في مصدرها.
+اختر الصورة التي تُظهر المطلوب نفسه بوضوح وبدقة علمية. أجب "none" إذا:
+- لم تُظهر أي صورة المطلوب بالتحديد (عضو آخر، أو حالة أخرى، أو منطقة أخرى من الجسم، أو نوع تصوير آخر)،
+- أو كانت الصورة المناسبة جدولاً أو لوحة من صور صغيرة كثيرة أو مزدحمة بنصوص بلغة غير الإنجليزية أو رديئة الوضوح،
+- أو لم تكن متأكداً.
+ثم اكتب في "caption" تعليقاً ${lang === 'en' ? 'بالإنجليزية' : 'بالعربية'} دقيقاً من جملة أو جملتين يصف ما تُظهره الصورة المختارة فعلاً وعلاقته بالشرح، والمصطلحات بالإنجليزية بين [[ ]].
+
+أخرج: {"choice":"A","confidence":0.9,"why":"...","caption":"..."} حيث confidence رقم من 0 إلى 1 يعبّر عن تأكدك أن الصورة تُظهر المطلوب.`;
+  return { system, user };
+}
+
+/** اختيار صورة من عناوين المرشحات ووصفها فقط (عند عدم توفر نموذج يرى الصور). */
+export function figureTextPickPrompt(fig, cands, { lang = 'ar' } = {}) {
+  const system = `أنت طبيب ومحرر كتب طبية دقيق جداً تختار صورة توضيحية لملزمة جامعية. لا ترى الصور نفسها بل عناوينها ووصفها في مصدرها، فلا تختر إلا إذا دلّ العنوان أو الوصف بوضوح أنها تُظهر المطلوب بالتحديد. الصورة غير المطابقة أسوأ من عدم وجود صورة. أجب بصيغة JSON فقط.`;
+  const user = `الشرح الذي ستوضّحه الصورة: «${clip(String(fig.context || ''), 700)}»
+المطلوب أن تُظهره الصورة: ${fig.show || fig.query}
+نوع الصورة المطلوب: ${KIND_LABEL[fig.kind] || KIND_LABEL.diagram}
+
+المرشحات:
+${cands.map((c, i) => `${String.fromCharCode(65 + i)}: ${c.title}${c.desc ? ` — ${clip(c.desc, 200)}` : ''}`).join('\n')}
+
+أجب "none" إذا لم يدل أي عنوان بوضوح على المطلوب نفسه. اكتب في "caption" تعليقاً ${lang === 'en' ? 'بالإنجليزية' : 'بالعربية'} قصيراً يصف الصورة المختارة كما يدل عليها عنوانها ووصفها، والمصطلحات بين [[ ]].
+
+أخرج: {"choice":"A","confidence":0.9,"caption":"..."}`;
   return { system, user };
 }

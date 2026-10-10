@@ -152,3 +152,10 @@ export const fmtAgo = (ts) => {
   if (d < 30) return `قبل ${d} يوم`;
   return new Date(ts).toLocaleDateString('ar-IQ-u-nu-latn', { year: 'numeric', month: 'short', day: 'numeric' });
 };
+
+/** عدد مع معدوده بالعربية: countOf(3, ['قسم واحد', 'قسمان', 'أقسام', 'قسماً']) ← «3 أقسام». */
+export function countOf(n, [one, two, few, many]) {
+  if (n === 1) return one;
+  if (n === 2) return two;
+  return `${n} ${n >= 3 && n <= 10 ? few : many}`;
+}

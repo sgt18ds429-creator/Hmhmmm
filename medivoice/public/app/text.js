@@ -32,7 +32,34 @@ export const uid = () => Math.random().toString(36).slice(2, 10);
 //  ## عنوان      ### عنوان فرعي
 //  - عنصر قائمة   1. عنصر مرقّم
 //  > ملاحظة مهمة
+//  | عمود | عمود |   (جدول: أول صف للعناوين)
+//  @fig: النوع | بحث | بحث أعم | ما تُظهره الصورة | تعليق   (طلب صورة توضيحية في هذا الموضع)
 //  [[medical term]]
+
+const FIG_KINDS = ['radiograph', 'diagram', 'photo', 'micrograph'];
+
+/** سطر طلب صورة: «النوع | بحث | بحث أعم | ما يجب أن تُظهره | تعليق». يرجع null إذا كان ناقصاً. */
+function parseFigLine(rest) {
+  const parts = String(rest || '').split('|').map((s) => s.replace(/[`*]+/g, '').trim());
+  if (!FIG_KINDS.includes(parts[0]?.toLowerCase())) parts.unshift('diagram');
+  const [kind, query = '', alt = '', show = '', caption = ''] = parts;
+  if (!/[A-Za-z]{3}/.test(query)) return null;
+  return {
+    t: 'figreq', kind: kind.toLowerCase(), query: query.slice(0, 90),
+    alt: /[A-Za-z]{3}/.test(alt) ? alt.slice(0, 90) : '', show: show.slice(0, 300), caption: fixInline(caption).slice(0, 240),
+  };
+}
+
+const splitRow = (line) => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+const isRuleRow = (cells) => cells.length > 0 && cells.every((c) => /^:?-{2,}:?$/.test(c.replace(/\s+/g, '')));
+
+/** يوحّد عدد أعمدة الجدول، ويحوّل جدولاً بلا صفوف إلى فقرة. */
+function closeTable(b) {
+  const cols = b.head.length;
+  b.rows = b.rows.map((r) => (r.length > cols ? [...r.slice(0, cols - 1), r.slice(cols - 1).join(' ')] : [...r, ...Array(cols - r.length).fill('')]));
+  if (!b.rows.length) return { t: 'p', text: b.head.filter(Boolean).join(' — ') };
+  return b;
+}
 
 const fixInline = (s) => s
   .replace(/\*\*(.+?)\*\*/g, '$1')
@@ -54,11 +81,23 @@ export function parseMarkup(raw) {
     const line = lineRaw.trim();
     if (!line || /^[-=_*]{3,}$/.test(line)) {
       flush();
-      for (const b of blocks) if (b.t === 'note') delete b._open; // سطر فارغ ينهي الملاحظة
+      for (const b of blocks) if (b.t === 'note' || b.t === 'table') delete b._open; // سطر فارغ ينهي الملاحظة والجدول
       continue;
     }
     let m;
-    if ((m = line.match(/^(#{1,4})\s+(.+)$/))) {
+    if ((m = line.replace(/^[`*_\s]+/, '').match(/^(?:[-•]\s*)?@fig\b[`*_]*\s*:?\s*(.*)$/i))) {
+      flush();
+      const fig = parseFigLine(m[1]);
+      if (fig) blocks.push(fig);
+    } else if (/^\|.+\|/.test(line)) {
+      flush();
+      const cells = splitRow(line);
+      const last = blocks[blocks.length - 1];
+      if (isRuleRow(cells)) continue; // سطر الفاصل تحت العناوين
+      if (last?.t === 'table' && last._open) last.rows.push(cells.map(fixInline));
+      else blocks.push({ t: 'table', head: cells.map(fixInline), rows: [], _open: true });
+      continue;
+    } else if ((m = line.match(/^(#{1,4})\s+(.+)$/))) {
       flush();
       const title = fixInline(m[2]).replace(/[:：.]+$/, '');
       if (title) blocks.push({ t: 'h', level: m[1].length >= 3 ? 3 : 2, text: title });
@@ -83,17 +122,22 @@ export function parseMarkup(raw) {
   }
   flush();
   for (const b of blocks) delete b._open;
-  return blocks.filter((b) => (b.items ? b.items.length : b.text));
+  return blocks
+    .map((b) => (b.t === 'table' ? closeTable(b) : b))
+    .filter((b) => (b.items ? b.items.length : b.rows ? b.rows.length : b.t === 'figreq' || b.text));
 }
 
 export function blocksToMarkup(blocks) {
   const out = [];
+  const row = (cells) => `| ${cells.map((c) => String(c).replace(/\|/g, '/')).join(' | ')} |`;
   for (const b of blocks) {
     if (b.t === 'h') out.push(`${b.level === 3 ? '###' : '##'} ${b.text}`);
     else if (b.t === 'p') out.push(b.text);
     else if (b.t === 'note') out.push(`> ${b.text}`);
     else if (b.t === 'ul') out.push(b.items.map((i) => `- ${i}`).join('\n'));
     else if (b.t === 'ol') out.push(b.items.map((i, n) => `${n + 1}. ${i}`).join('\n'));
+    else if (b.t === 'table') out.push([row(b.head), row(b.head.map(() => '---')), ...b.rows.map(row)].join('\n'));
+    else if (b.t === 'figreq') out.push(`@fig: ${b.kind} | ${b.query} | ${b.alt || ''} | ${b.show || ''} | ${b.caption || ''}`);
   }
   return out.join('\n\n');
 }
@@ -113,7 +157,35 @@ export function splitInline(text) {
   return out;
 }
 
-export const blockText = (b) => (b.items ? b.items.join(' ') : b.text || '');
+export const blockText = (b) => (b.items ? b.items.join(' ') : b.rows ? [...b.head, ...b.rows.flat()].join(' ') : b.t === 'figreq' ? '' : b.text || '');
+
+/** لغة النص الغالبة ('ar' أو 'en'). المصطلحات بين [[ ]] لا تُحسب. */
+export function langOf(text) {
+  const s = String(text || '').replace(/\[\[[^\]]*\]\]/g, '');
+  const ar = (s.match(/[؀-ۿ]/g) || []).length, la = (s.match(/[A-Za-z]/g) || []).length;
+  return ar + la && ar / (ar + la) < 0.3 ? 'en' : 'ar';
+}
+
+/** مفتاح مقارنة لمصطلح: أحرف صغيرة بلا رموز ولا جمع بسيط. */
+export const termKey = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().replace(/(?<=[a-z]{3})(es|s)$/, '');
+
+/** المصطلحات الواردة بين [[ ]] في نص (مفاتيح فريدة مع أول صيغة ظهرت). */
+export function termsIn(text) {
+  const out = new Map();
+  for (const m of String(text || '').matchAll(/\[\[([^\[\]]{2,60})\]\]/g)) {
+    const k = termKey(m[1]);
+    if (k.length > 1 && !out.has(k)) out.set(k, m[1].trim());
+  }
+  return out;
+}
+
+/** بصمة قصيرة لنص (لمعرفة إن تغيّر بين محاولة وأخرى). */
+export function textHash(str) {
+  let a = 2166136261;
+  const s = String(str || '');
+  for (let i = 0; i < s.length; i++) { a ^= s.charCodeAt(i); a = Math.imul(a, 16777619); }
+  return (a >>> 0).toString(36) + s.length.toString(36);
+}
 
 /** كل المصطلحات مع عدد مرات ورودها، مرتبة بالأكثر تكراراً. */
 export function collectTerms(blocks) {

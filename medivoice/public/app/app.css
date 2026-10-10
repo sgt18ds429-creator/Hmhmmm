@@ -225,3 +225,24 @@
 .progress-line { height: 6px; background: var(--ink-3); border-radius: 99px; overflow: hidden; }
 .progress-line i { display: block; height: 100%; width: 40%; background: var(--grad); border-radius: 99px; animation: slide 1.3s ease-in-out infinite; }
 @keyframes slide { from { transform: translateX(150%); } to { transform: translateX(-260%); } }
+
+/* ── الشرح المفصل: جداول، صندوق المراجعة، النص المفرّغ ── */
+.blk.box { padding: 12px 16px 6px; background: #f6f1ff; border-inline-start: 4px solid #7a19c4; border-radius: 0 10px 10px 0; }
+.blk.tbl-wrap { margin: 16px 0 20px; }
+.tbl-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.tbl { width: 100%; border-collapse: collapse; font-size: 0.92rem; line-height: 1.75; }
+.tbl th { text-align: start; font-weight: 700; color: #4d1ace; background: #f1eaff; padding: 8px 10px; border-bottom: 2px solid #4d1ace; vertical-align: bottom; }
+.tbl td { padding: 8px 10px; border-bottom: 1px solid #e7dff8; vertical-align: top; }
+.tbl tbody tr:nth-child(even) td { background: #faf7ff; }
+.tbl .txt { display: block; min-width: 4em; }
+.blk.note.convert { background: #f1eaff; border-inline-start-color: #7a19c4; }
+.blk.note.convert .tag { color: #4d1ace; background: #ddd0ff; }
+.blk.note.convert .mini { margin-top: 8px; }
+.live h4 { margin: 0 0 6px; font-family: var(--font-body); font-size: 0.94rem; font-weight: 600; color: var(--text-2); }
+.live p.n { padding-inline-start: 10px; border-inline-start: 3px solid var(--amber); }
+.transcript { max-height: 62vh; overflow: auto; padding-inline-end: 4px; line-height: 1.95; color: var(--text-2); font-size: 0.95rem; }
+.transcript h3 { font-family: var(--font-body); font-size: 1rem; font-weight: 700; color: var(--text); margin: 14px 0 6px; }
+.transcript p, .transcript ul, .transcript blockquote { margin: 0 0 10px; }
+.transcript ul { padding-inline-start: 18px; }
+.transcript blockquote { padding-inline-start: 10px; border-inline-start: 3px solid var(--amber); }
+.transcript .t { font-family: 'IBM Plex Sans', sans-serif; font-weight: 600; color: var(--lilac); direction: ltr; unicode-bidi: isolate; }

@@ -1,8 +1,8 @@
 // run.js — تفاصيل المحاضرة، شاشة التحويل الحية، والتسجيل المباشر.
 
-import { h, icon, clear, sheet, confirm, fmtHM, fmtSize } from './ui.js';
+import { h, icon, clear, sheet, confirm, fmtHM, fmtSize, countOf } from './ui.js';
 import { probeAudio } from './chunker.js';
-import { runLecture, PipelineError } from './pipeline.js';
+import { runLecture, rewriteLecture, PipelineError } from './pipeline.js';
 import { parseMarkup, splitInline, fmtTime } from './text.js';
 import { fmtDuration } from './pdf.js';
 import * as db from './db.js';
@@ -31,7 +31,8 @@ function toggle(label, hint, checked, onChange) {
 export function viewNew(ctx, el, { file }) {
   ctx.setBar('sub', { title: 'محاضرة جديدة' });
   ctx.ribbon.set({ alpha: 0 });
-  const form = { title: '', subject: '', lecturer: '', date: today(), keywords: '', speech: 'ar', style: 'verbatim', images: true, glossary: true };
+  // output: 'notes' شرح مفصل مرتب (الافتراضي) · 'formal' نص كامل بالفصحى · 'verbatim' نص حرفي كما قيل
+  const form = { title: '', subject: '', lecturer: '', date: today(), keywords: '', speech: 'ar', output: 'notes', images: true, glossary: true };
   let info = null;
 
   const fileMeta = h('small', null, `${fmtSize(file.size)} · أقرأ الملف…`);
@@ -48,14 +49,21 @@ export function viewNew(ctx, el, { file }) {
   const subjects = h('datalist', { id: 'mv-subjects' });
   const speechSeg = h('div');
   const styleSeg = h('div');
+  const styleHint = h('small');
   const toggles = h('div', { class: 'stack' });
 
   function paintOptions() {
     clear(speechSeg).append(segmented([['ar', 'عربي ومصطلحات إنجليزية'], ['en', 'إنجليزي'], ['auto', 'تلقائي']], form.speech, (v) => { form.speech = v; }));
-    clear(styleSeg).append(segmented([['verbatim', 'كما قال المحاضر'], ['formal', 'فصحى مرتبة']], form.style, (v) => { form.style = v; }));
+    clear(styleSeg).append(segmented([['notes', 'شرح مفصّل'], ['formal', 'نص بالفصحى'], ['verbatim', 'نص حرفي']], form.output, (v) => { form.output = v; paintHint(); }));
+    paintHint();
     clear(toggles).append(
-      toggle('صور توضيحية', 'من Wikimedia Commons و NIH مع ذكر المصدر', form.images, (v) => { form.images = v; }),
+      toggle('صور توضيحية', 'من Wikimedia Commons و NIH، ولا تُوضع صورة إلا بعد التأكد أنها تطابق الشرح', form.images, (v) => { form.images = v; }),
       toggle('قاموس المصطلحات', 'ترجمة وتعريف لكل مصطلح بآخر الملزمة', form.glossary, (v) => { form.glossary = v; }));
+  }
+  function paintHint() {
+    styleHint.textContent = form.output === 'notes'
+      ? 'يفهم المحاضرة ويكتبها ملزمة مرتبة بعناوين ونقاط وجداول، بدون اختصار أي معلومة، مع صور مطابقة للشرح.'
+      : form.output === 'formal' ? 'كلام المحاضر كاملاً جملةً بجملة بعربية فصحى.' : 'كلام المحاضر كاملاً كما قاله بلهجته.';
   }
   paintOptions();
 
@@ -64,14 +72,14 @@ export function viewNew(ctx, el, { file }) {
     warn,
     h('div', { class: 'stack' }, fTitle.el, h('div', { class: 'grid2' }, fSubject.el, fLecturer.el), subjects),
     h('div', { class: 'field' }, h('span', null, 'لغة الشرح'), speechSeg),
-    h('div', { class: 'field' }, h('span', null, 'أسلوب النص'), styleSeg, h('small', null, 'بالحالتين يُكتب الكلام كاملاً بدون اختصار.')),
+    h('div', { class: 'field' }, h('span', null, 'شكل الملزمة'), styleSeg, styleHint),
     toggles,
     fKeywords.el,
     startBtn));
 
   db.getPref('form').then((saved) => {
     if (!saved) return;
-    for (const k of ['subject', 'lecturer', 'speech', 'style', 'images', 'glossary']) if (saved[k] !== undefined) form[k] = saved[k];
+    for (const k of ['subject', 'lecturer', 'speech', 'output', 'images', 'glossary']) if (saved[k] !== undefined) form[k] = saved[k];
     fSubject.input.value = form.subject; fLecturer.input.value = form.lecturer;
     paintOptions();
   });
@@ -93,8 +101,10 @@ export function viewNew(ctx, el, { file }) {
 
   async function start() {
     if (!info) return;
-    const meta = { ...form, title: form.title.trim(), subject: form.subject.trim(), lecturer: form.lecturer.trim(), keywords: form.keywords.trim() };
-    db.setPref('form', { subject: meta.subject, lecturer: meta.lecturer, speech: meta.speech, style: meta.style, images: meta.images, glossary: meta.glossary });
+    const { output, ...rest } = form;
+    // الشرح المفصل يُكتب من تفريغ حرفي أمين، ثم يُرتّب ويُصحّح
+    const meta = { ...rest, mode: output === 'notes' ? 'notes' : 'transcript', style: output === 'formal' ? 'formal' : 'verbatim', title: form.title.trim(), subject: form.subject.trim(), lecturer: form.lecturer.trim(), keywords: form.keywords.trim() };
+    db.setPref('form', { subject: meta.subject, lecturer: meta.lecturer, speech: meta.speech, output, images: meta.images, glossary: meta.glossary });
     if (meta.subject) db.getPref('subjects', []).then((list) => db.setPref('subjects', [meta.subject, ...(list || []).filter((s) => s !== meta.subject)].slice(0, 12)));
     ctx.go('run', { file, meta, info }, { replace: true });
   }
@@ -110,13 +120,33 @@ const ERRORS = {
   locked: ['توقف الكود', 'الكود موقوف أو انتهت مدته. راجع المسؤول.', 'reload'],
   audio: ['مشكلة بالملف', 'ما قدرت أقرأ الصوت من هذا الملف. جرّب صيغة ثانية.', 'home'],
   empty: ['ماكو كلام بالتسجيل', 'ما لقيت كلام واضح. تأكد إنه تسجيل محاضرة وصوته مسموع.', 'home'],
+  not_lecture: ['هذا التسجيل مو محاضرة', 'ما لقيت بيه شرح علمي حتى أكتبه ملزمة مشروحة.', 'home'],
   network: ['انقطع الاتصال', 'المقاطع المكتملة محفوظة. تأكد من الإنترنت وكمّل.', 'retry'],
 };
 
-export function viewRun(ctx, el, { file, meta, info }) {
-  ctx.setBar('sub', { title: 'جارِ التحويل' });
-  const cfg = { chunkSec: ctx.session.config.chunkSec, overlapSec: ctx.session.config.overlapSec };
-  const job = hash([file.name, file.size, file.lastModified, meta.speech, meta.style, cfg.chunkSec].join('|'));
+/** عرض مختصر لكتل نص داخل لوحة المعاينة الحية. */
+function liveNodes(blocks) {
+  const out = [];
+  const fill = (target, text) => { for (const part of splitInline(text)) target.append(part.term ? h('span', { class: 't' }, part.text) : part.text); return target; };
+  for (const b of blocks) {
+    if (b.t === 'figreq' || b.t === 'fig') continue;
+    let node;
+    if (b.t === 'h') node = fill(h(b.level === 3 ? 'h4' : 'h3'), b.text);
+    else if (b.items) { node = h('ul'); b.items.forEach((it) => node.append(fill(h('li'), it))); }
+    else if (b.rows) { node = h('ul'); b.rows.forEach((r) => node.append(fill(h('li'), r.filter(Boolean).join(' · ')))); }
+    else node = fill(h('p', { class: b.t === 'note' ? 'n' : null }), b.text);
+    node.dir = 'auto';
+    out.push(node);
+  }
+  return out;
+}
+
+/**
+ * واجهة التقدم المشتركة (تحويل تسجيل، أو كتابة شرح لمحاضرة محفوظة).
+ * @param opts.stages [[المعرّف، الاسم]] · opts.weights { transcribe, write }
+ */
+function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
+  ctx.setBar('sub', { title });
   const controller = new AbortController();
   let running = true, wakeLock = null, waitTimer = null;
   const t0 = Date.now();
@@ -126,7 +156,6 @@ export function viewRun(ctx, el, { file, meta, info }) {
   const sub = h('p', { class: 'run-sub num' }, '');
   const strip = h('div', { class: 'strip', 'aria-hidden': 'true' });
   const live = h('div', { class: 'live', dir: 'auto' });
-  const stageNames = [['transcribe', 'التفريغ'], ['glossary', 'القاموس'], ['figures', 'الصور'], ['done', 'جاهز']];
   const stages = h('ul', { class: 'stages' }, stageNames.map(([k, label]) => h('li', { dataset: { k } }, label)));
   const cancelBtn = h('button', { class: 'btn ghost', onclick: () => history.back() }, 'إلغاء');
   const body = h('div', { class: 'run' },
@@ -137,7 +166,7 @@ export function viewRun(ctx, el, { file, meta, info }) {
   ctx.ribbon.set({ y: Math.min(0.24, 170 / innerHeight), energy: 1, alpha: 1 });
   ctx.guard = async () => {
     if (!running) return true;
-    const yes = await confirm({ title: 'إيقاف التحويل؟', message: 'المقاطع المكتملة تبقى محفوظة، وإذا رفعت نفس الملف يكمل من مكانه.', ok: 'إيقاف', cancel: 'أكمل', danger: true });
+    const yes = await confirm({ title: 'إيقاف التحويل؟', message: 'الأجزاء المكتملة تبقى محفوظة، وإذا رجعت لنفس الملف يكمل من مكانه.', ok: 'إيقاف', cancel: 'أكمل', danger: true });
     if (yes) controller.abort();
     return yes;
   };
@@ -150,35 +179,33 @@ export function viewRun(ctx, el, { file, meta, info }) {
   const tick = setInterval(() => { if (running && !waitTimer) sub.textContent = `${fmtTime((Date.now() - t0) / 1000)} · خلّي الصفحة مفتوحة`; }, 1000);
 
   // ── تقدم ──
-  const P = { total: 1, chunk: [], extra: 0 };
+  const P = { total: 1, chunk: [], write: 0, extra: 0 };
   const WEIGHT = { cut: 0.04, stt: 0.2, listen: 0.45, clean: 0.45, done: 1 };
   let shown = 0;
   function paintPct() {
-    const done = P.chunk.reduce((a, s) => a + (WEIGHT[s] || 0), 0) / P.total;
-    const value = Math.min(99, Math.round((done * 0.86 + P.extra) * 100));
+    const heard = weights.transcribe ? P.chunk.reduce((a, s) => a + (WEIGHT[s] || 0), 0) / P.total : 0;
+    const value = Math.min(99, Math.round((heard * weights.transcribe + P.write * weights.write + P.extra) * 100));
     if (value > shown) { shown = value; pct.textContent = String(value); }
   }
   function setStage(k) {
     const order = stageNames.map(([n]) => n);
     const at = order.indexOf(k);
+    if (at < 0) return;
     [...stages.children].forEach((li, i) => { li.classList.toggle('ok', i < at); li.classList.toggle('on', i === at); });
   }
+  function showLive(blocks, { reset = false, keep = 14 } = {}) {
+    if (reset) clear(live);
+    live.append(...liveNodes(blocks.slice(-keep)));
+    while (live.children.length > 60) live.firstChild.remove();
+    live.scrollTop = live.scrollHeight;
+  }
   const pending = new Map();
-  let nextLive = 0;
+  let nextLive = 0, writing = false;
   function showParts() {
     while (pending.has(nextLive)) {
       const blocks = parseMarkup(pending.get(nextLive).markup);
       pending.delete(nextLive); nextLive++;
-      for (const b of blocks.slice(-14)) {
-        const node = b.t === 'h' ? h('h3') : b.items ? h('ul') : h('p');
-        const fill = (target, text) => { for (const part of splitInline(text)) target.append(part.term ? h('span', { class: 't' }, part.text) : part.text); };
-        if (b.items) b.items.forEach((it) => { const li = h('li'); fill(li, it); node.append(li); });
-        else fill(node, b.text);
-        node.dir = 'auto';
-        live.append(node);
-      }
-      while (live.children.length > 60) live.firstChild.remove();
-      live.scrollTop = live.scrollHeight;
+      if (!writing) showLive(blocks);
     }
   }
 
@@ -208,14 +235,40 @@ export function viewRun(ctx, el, { file, meta, info }) {
       ctx.ribbon.kick(0.5);
       paintPct();
     } else if (e.type === 'stage') {
-      if (e.name === 'glossary') { setStage('glossary'); status.textContent = 'أجهّز قاموس المصطلحات'; P.extra = 0.03; }
-      else if (e.name === 'figures') { setStage('figures'); status.textContent = 'أحدد مواضع الصور التوضيحية'; P.extra = 0.07; }
-      else if (e.name === 'images') { status.textContent = 'أجلب الصور من المصادر المفتوحة'; P.extra = 0.09; }
-      else if (e.name === 'done') { setStage('done'); P.extra = 0.14; }
+      if (e.name === 'write') { setStage('write'); status.textContent = 'أقرأ المحاضرة كاملة حتى أفهمها'; }
+      else if (e.name === 'glossary') { setStage('glossary'); status.textContent = 'أجهّز قاموس المصطلحات'; P.write = 1; P.extra = 0.03; }
+      else if (e.name === 'figures') { setStage('figures'); status.textContent = 'أحدد الصور التوضيحية'; P.write = 1; P.extra = 0.07; }
+      else if (e.name === 'images') { status.textContent = 'أبحث عن صور مطابقة للشرح في المصادر المفتوحة'; P.extra = 0.09; }
+      else if (e.name === 'done') { setStage('done'); P.write = 1; P.extra = 0.14; }
       paintPct();
+    } else if (e.type === 'notes') {
+      if (e.stage === 'plan') status.textContent = 'أفهم المحاضرة وأقسّمها حسب المواضيع';
+      else if (e.stage === 'write') {
+        status.textContent = `أكتب الشرح المفصل: ${countOf(e.total, ['جزء واحد', 'جزآن', 'أجزاء', 'جزءاً'])}`;
+        clear(strip);
+        for (let i = 0; i < e.total; i++) strip.append(h('i'));
+        P.write = 0.03;
+      } else if (e.stage === 'review') status.textContent = 'أجهّز أهم النقاط للمراجعة';
+      paintPct();
+    } else if (e.type === 'section') {
+      const cell = strip.children[e.index];
+      if (e.stage === 'write') {
+        status.textContent = `أكتب شرح «${e.title}»${e.parts > 1 ? ` (جزء ${e.part} من ${e.parts})` : ''}`;
+        if (cell) cell.className = 'listen';
+      } else if (e.stage === 'done') {
+        if (cell) cell.className = e.fallback ? 'review' : 'done';
+        P.write = Math.max(P.write, e.done / e.total);
+        showLive(parseMarkup(e.markup), { reset: !writing, keep: 18 });
+        writing = true;
+        ctx.ribbon.kick(0.5);
+      }
+      paintPct();
+    } else if (e.type === 'note') {
+      if (e.code === 'not_lecture') ctx.toast('هذا التسجيل ما بيه شرح علمي، فخليته نصاً مفرّغاً.');
+      else if (e.code === 'notes_failed') ctx.toast('ما كدرت أكتب الشرح هسه، فبقت الملزمة نصاً مفرّغاً. تقدر تحوّلها لشرح بعدين من خيارات الملزمة.', 'err');
     } else if (e.type === 'images') {
-      if (e.picked) status.textContent = `أختار أنسب الصور (${e.picked})`;
-      P.extra = Math.min(0.13, P.extra + 0.01);
+      if (e.picked) status.textContent = `صور تأكدت أنها مطابقة للشرح: ${e.picked}`;
+      P.extra = Math.min(0.13, P.extra + 0.005);
       paintPct();
     } else if (e.type === 'wait') {
       let left = e.seconds;
@@ -241,17 +294,49 @@ export function viewRun(ctx, el, { file, meta, info }) {
   function fail(code, extra = {}) {
     cleanup();
     ctx.ribbon.set({ energy: 0.25, alpha: 0.5 });
-    const [title, message, action] = ERRORS[code] || ['توقف التحويل', 'صار خطأ غير متوقع. المقاطع المكتملة محفوظة، جرّب مرة ثانية.', 'retry'];
+    const [title, message, action] = ERRORS[code] || ['توقف التحويل', 'صار خطأ غير متوقع. الأجزاء المكتملة محفوظة، جرّب مرة ثانية.', 'retry'];
     let msg = message;
     if (code === 'daily_limit' && extra.retryAfter) msg += ` يتجدد الرصيد تدريجياً خلال ${fmtHM(extra.retryAfter)} ساعة.`;
     const actions = [];
     if (action === 'link') actions.push(h('button', { class: 'btn', onclick: () => ctx.go('link', {}, { replace: true }) }, 'ربط المفاتيح'));
-    if (action === 'retry') actions.push(h('button', { class: 'btn', onclick: () => ctx.go('run', { file, meta, info }, { replace: true }) }, 'أكمل التحويل'));
+    if (action === 'retry') actions.push(h('button', { class: 'btn', onclick: retry }, 'أكمل التحويل'));
     if (action === 'reload') actions.push(h('button', { class: 'btn', onclick: () => location.reload() }, 'تحديث'));
     actions.push(h('button', { class: 'btn ghost', onclick: () => history.back() }, 'رجوع'));
     clear(body).append(h('div', { class: 'result' }, icon('warn', 'icon big'), h('h2', { class: 'h-section' }, title), h('p', { class: 'muted' }, msg), h('div', { class: 'row', style: { justifyContent: 'center' } }, actions)));
     ctx.setBar('sub', { title: 'توقف التحويل' });
   }
+
+  async function finish(doc) {
+    shown = 100; pct.textContent = '100';
+    status.textContent = 'الملزمة جاهزة';
+    ctx.ribbon.kick(1);
+    cleanup();
+    setTimeout(() => ctx.go('doc', { id: doc.id, fresh: true }, { replace: true }), 650);
+  }
+
+  function failWith(e) {
+    if (e?.name === 'AbortError' || e?.code === 'aborted') { cleanup(); return; }
+    console.error(e);
+    if (e instanceof PipelineError) fail(e.code, e);
+    else fail(navigator.onLine === false ? 'network' : 'unknown');
+    ctx.refreshSession().catch(() => {});
+  }
+
+  return { emit, signal: controller.signal, finish, failWith };
+}
+
+export function viewRun(ctx, el, { file, meta, info }) {
+  const notes = meta.mode === 'notes';
+  const cfg = { chunkSec: ctx.session.config.chunkSec, overlapSec: ctx.session.config.overlapSec };
+  const job = hash([file.name, file.size, file.lastModified, meta.speech, meta.style, cfg.chunkSec].join('|'));
+  const screen = runScreen(ctx, el, {
+    title: 'جارِ التحويل',
+    stages: notes
+      ? [['transcribe', 'الاستماع'], ['write', 'الفهم والكتابة'], ['glossary', 'القاموس'], ['figures', 'الصور'], ['done', 'جاهز']]
+      : [['transcribe', 'التفريغ'], ['glossary', 'القاموس'], ['figures', 'الصور'], ['done', 'جاهز']],
+    weights: notes ? { transcribe: 0.6, write: 0.26 } : { transcribe: 0.86, write: 0 },
+    retry: () => ctx.go('run', { file, meta, info }, { replace: true }),
+  });
 
   (async () => {
     try {
@@ -259,26 +344,44 @@ export function viewRun(ctx, el, { file, meta, info }) {
       const resumed = await db.countParts(job).catch(() => 0);
       if (resumed) ctx.toast(`أكمل من حيث توقفنا: ${resumed} مقطع جاهز.`);
       const doc = await runLecture({
-        file, meta, cfg, caps, io: ctx.io, emit, signal: controller.signal,
+        file, meta, cfg, caps, io: ctx.io, emit: screen.emit, signal: screen.signal,
         checkpoint: { get: (i) => db.getPart(job, i).catch(() => null), set: (i, p) => db.setPart(job, i, p).catch(() => {}) },
       });
       doc.partial = false;
       await db.saveLecture(doc);
       await db.clearParts(job).catch(() => {});
       ctx.api('/api/done', { method: 'POST', body: {} }).then(() => ctx.refreshSession()).catch(() => {});
-      shown = 100; pct.textContent = '100';
-      status.textContent = 'الملزمة جاهزة';
-      ctx.ribbon.kick(1);
-      cleanup();
-      setTimeout(() => ctx.go('doc', { id: doc.id, fresh: true }, { replace: true }), 650);
+      screen.finish(doc);
     } catch (e) {
-      if (e?.name === 'AbortError' || e?.code === 'aborted') { cleanup(); return; }
-      console.error(e);
-      if (e instanceof PipelineError) fail(e.code, e);
-      else fail(navigator.onLine === false ? 'network' : 'unknown');
-      ctx.refreshSession().catch(() => {});
+      screen.failWith(e);
     }
   })();
+}
+
+/** كتابة شرح مفصل لمحاضرة محفوظة (بدون إعادة الاستماع للتسجيل). تُحفظ كملزمة جديدة ويبقى الأصل. */
+export async function viewRewrite(ctx, el, { id }) {
+  const src = await db.getLecture(id).catch(() => null);
+  if (!src) { ctx.toast('ما لقيت هذي المحاضرة على الجهاز.', 'err'); ctx.go('home'); return; }
+  const screen = runScreen(ctx, el, {
+    title: 'كتابة الشرح المفصل',
+    stages: [['write', 'الفهم والكتابة'], ['glossary', 'القاموس'], ['figures', 'الصور'], ['done', 'جاهز']],
+    weights: { transcribe: 0, write: 0.86 },
+    retry: () => ctx.go('rewrite', { id }, { replace: true }),
+  });
+  try {
+    const caps = ctx.caps || await ctx.loadCaps();
+    const job = `rw${id}`; // الأقسام المكتوبة تُحفظ: إذا انقطعت الكتابة تكمل من مكانها
+    const doc = await rewriteLecture({
+      doc: src, caps, io: ctx.io, emit: screen.emit, signal: screen.signal,
+      checkpoint: { get: (k) => db.getPart(job, k).catch(() => null), set: (k, p) => db.setPart(job, k, p).catch(() => {}) },
+    });
+    doc.partial = false;
+    await db.saveLecture(doc);
+    await db.clearParts(job).catch(() => {});
+    screen.finish(doc);
+  } catch (e) {
+    screen.failWith(e);
+  }
 }
 
 // ───────────── تسجيل مباشر ─────────────

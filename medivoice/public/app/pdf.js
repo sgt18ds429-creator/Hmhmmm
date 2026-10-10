@@ -102,6 +102,12 @@ figcaption { margin-top: 2.4mm; font-size: 9.6pt; line-height: 1.7; color: #2f25
 figcaption b { color: #4d1ace; font-weight: 700; margin-inline-end: 1.4mm; }
 figcaption small { display: block; font-size: 7.4pt; color: #8778aa; margin-top: .6mm; }
 
+ul.box { margin: 2mm 0 5mm; padding: 3.4mm 5mm 1.6mm; background: #f6f1ff; border-inline-start: 1.1mm solid #7a19c4; }
+.tbl { width: 100%; border-collapse: collapse; font-size: 10pt; line-height: 1.7; margin: 2mm 0 5mm; }
+.tbl th { text-align: start; font-weight: 700; color: #4d1ace; background: #f1eaff; padding: 1.8mm 2.6mm; border-bottom: .5mm solid #4d1ace; vertical-align: bottom; }
+.tbl td { padding: 1.8mm 2.6mm; vertical-align: top; border-bottom: .25mm solid #e7dff8; overflow-wrap: anywhere; }
+.tbl tr { break-inside: avoid; page-break-inside: avoid; }
+.tbl tbody tr:nth-child(even) td { background: #faf7ff; }
 .gloss { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 9.7pt; line-height: 1.7; margin-top: 2mm; }
 .gloss th.en { width: 30%; }
 .gloss th.ar { width: 24%; }
@@ -157,6 +163,7 @@ export function buildPdfHtml(doc, opts = {}) {
   const meta = doc.meta || {};
   const title = String(meta.title || 'محاضرة');
   const body = doc.blocks.filter((b) => b.t !== 'fig').map(blockText).join(' ');
+  const notes = meta.mode === 'notes';
   const dir = dirOf(body);
   const plainTitle = stripMarkup(title);
   const titleSize = plainTitle.length <= 28 ? 38 : plainTitle.length <= 56 ? 31 : plainTitle.length <= 90 ? 25 : 21;
@@ -171,7 +178,11 @@ export function buildPdfHtml(doc, opts = {}) {
     } else if (b.t === 'p') {
       parts.push(`<p dir="${dirOf(b.text)}">${inlineHtml(b.text)}</p>`);
     } else if (b.t === 'ul' || b.t === 'ol') {
-      parts.push(`<${b.t} dir="${dirOf(b.items.join(' '))}">${b.items.map((i) => `<li>${inlineHtml(i)}</li>`).join('')}</${b.t}>`);
+      parts.push(`<${b.t}${b.box ? ' class="box"' : ''} dir="${dirOf(b.items.join(' '))}">${b.items.map((i) => `<li>${inlineHtml(i)}</li>`).join('')}</${b.t}>`);
+    } else if (b.t === 'table' && b.rows?.length) {
+      const cols = b.head.length;
+      const row = (cells, tag) => `<tr>${Array.from({ length: cols }, (_, c) => `<${tag} dir="${dirOf(cells[c] || '')}">${inlineHtml(cells[c] || '')}</${tag}>`).join('')}</tr>`;
+      parts.push(`<table class="tbl" dir="${dirOf(blockText(b))}"><thead>${row(b.head, 'th')}</thead><tbody>${b.rows.map((r) => row(r, 'td')).join('')}</tbody></table>`);
     } else if (b.t === 'note') {
       const d = dirOf(b.text);
       parts.push(`<div class="note" dir="${d}"><b class="tag">${d === 'rtl' ? 'مهم' : 'Important'}</b>${inlineHtml(b.text)}</div>`);
@@ -234,7 +245,7 @@ ${opts.screen ? '@media screen { body { background: #2a1a4d; } .cover, main { ma
   <div class="grid"></div>
   <svg class="ghost" viewBox="0 0 300 300" aria-hidden="true"><path d="${LOGO_PATH}"/></svg>
   <div class="brand">${brandMark}<div><b>ميدي فويز</b><span dir="ltr">MediVoice</span></div></div>
-  <div class="kind">ملزمة محاضرة</div>
+  <div class="kind">${notes ? 'ملزمة مشروحة' : 'ملزمة محاضرة'}</div>
   <div class="head" dir="${dirOf(title)}">
     ${meta.subject ? `<div class="subject">${esc(meta.subject)}</div>` : ''}
     <h1 style="font-size:${titleSize}pt">${inlineHtml(title)}</h1>
@@ -244,13 +255,13 @@ ${opts.screen ? '@media screen { body { background: #2a1a4d; } .cover, main { ma
     <path d="${wave}" fill="none" stroke="#fff" stroke-width="6.5" stroke-linejoin="miter"/>
   </svg>
   <div class="meta">${metaItems.map(([k, v]) => `<div><small>${esc(k)}</small><b>${esc(v)}</b></div>`).join('')}</div>
-  <div class="foot">نص مفرّغ آلياً من تسجيل صوتي. راجعه مع المحاضرة الأصلية قبل الاعتماد عليه.</div>
+  <div class="foot">${notes ? 'شرح مكتوب آلياً من تسجيل المحاضرة. راجعه مع المحاضرة الأصلية قبل الاعتماد عليه.' : 'نص مفرّغ آلياً من تسجيل صوتي. راجعه مع المحاضرة الأصلية قبل الاعتماد عليه.'}</div>
 </section>
 <main id="flow">
 ${parts.join('\n')}
 ${gloss}
 ${src}
-<div class="endnote" dir="rtl">أُعدّت هذه الملزمة بواسطة ميدي فويز من تسجيل صوتي للمحاضرة. التفريغ والقاموس واختيار الصور تمت آلياً وقد تحتوي أخطاء؛ المرجع النهائي هو المحاضر والمصادر المعتمدة.</div>
+<div class="endnote" dir="rtl">أُعدّت هذه الملزمة بواسطة ميدي فويز من تسجيل صوتي للمحاضرة. ${notes ? 'كتابة الشرح' : 'التفريغ'} والقاموس واختيار الصور تمت آلياً وقد تحتوي أخطاء؛ المرجع النهائي هو المحاضر والمصادر المعتمدة.</div>
 </main>
 ${paged}
 </body>

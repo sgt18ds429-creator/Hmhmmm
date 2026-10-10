@@ -1,6 +1,6 @@
-// doc.js — عرض الملزمة وتعديلها: نص، مصطلحات، صور، قاموس، وتصدير PDF.
+// doc.js — عرض الملزمة وتعديلها: نص، جداول، مصطلحات، صور، قاموس، النص المفرّغ الأصلي، وتصدير PDF.
 
-import { h, icon, clear, sheet, confirm, fmtSize } from './ui.js';
+import { h, icon, clear, sheet, confirm, fmtSize, countOf } from './ui.js';
 import { splitInline, blockText, stripMarkup, countWords, uid, fmtTime } from './text.js';
 import { buildPdfHtml, fmtDate, fmtDuration, dirOf } from './pdf.js';
 import { findCandidates, creditLine } from './images.js';
@@ -57,7 +57,7 @@ export async function viewDoc(ctx, el, { id, fresh }) {
   const metaLine = h('div', { class: 'doc-meta' });
   const paintMeta = () => {
     clear(metaLine);
-    for (const v of [doc.meta.lecturer, fmtDate(doc.meta.date), doc.duration ? fmtDuration(doc.duration) : '', `${(doc.stats.words || 0).toLocaleString('en-US')} كلمة`, doc.terms?.length ? `${doc.terms.length} مصطلح` : '']) if (v) metaLine.append(h('span', null, v));
+    for (const v of [doc.meta.lecturer, fmtDate(doc.meta.date), doc.duration ? fmtDuration(doc.duration) : '', `${(doc.stats.words || 0).toLocaleString('en-US')} كلمة`, doc.stats.sections ? countOf(doc.stats.sections, ['قسم واحد', 'قسمان', 'أقسام', 'قسماً']) : '', doc.terms?.length ? `${doc.terms.length} مصطلح` : '']) if (v) metaLine.append(h('span', null, v));
   };
   paintMeta();
   paper.append(doc.meta.subject ? h('div', { class: 'doc-kicker' }, doc.meta.subject) : null, titleEl, metaLine);
@@ -65,6 +65,16 @@ export async function viewDoc(ctx, el, { id, fresh }) {
   if (doc.stats.review?.length) {
     paper.append(h('div', { class: 'blk note' }, h('span', { class: 'tag' }, 'للمراجعة'),
       `مقاطع قد ينقصها كلام بسبب ضعف الصوت: ${doc.stats.review.map((r) => `${fmtTime(r.start)} إلى ${fmtTime(r.end)}`).join('، ')}`));
+  }
+  const notes = doc.meta.mode === 'notes';
+  if (notes && doc.stats.fallback) {
+    paper.append(h('div', { class: 'blk note' }, h('span', { class: 'tag' }, 'للمراجعة'),
+      `${countOf(doc.stats.fallback, ['جزء واحد', 'جزآن', 'أجزاء', 'جزءاً'])} من الملزمة ${doc.stats.fallback === 1 ? 'بقي' : 'بقيت'} نصاً مفرّغاً لأن كتابة شرحه ما اكتملت (غالباً خلصت حصة المحرك اليومية). تقدر تعيد كتابة الشرح بعدين من خيارات الملزمة.`));
+  }
+  if (!notes && doc.blocks.length) {
+    paper.append(h('div', { class: 'blk note convert' }, h('span', { class: 'tag' }, 'جديد'),
+      'هذي الملزمة نص مفرّغ كما قيل. تكدر تحوّلها لشرح مفصّل ومرتب بعناوين ونقاط وجداول وصور مطابقة، بدون ما تعيد رفع التسجيل.',
+      h('div', null, h('button', { class: 'mini', onclick: () => rewrite() }, icon('book'), 'حوّلها لشرح مفصّل'))));
   }
   if (doc.stats.engines && !doc.stats.engines.gemini && (doc.stats.engines.groq || doc.stats.engines.raw)) {
     paper.append(h('div', { class: 'blk note' }, h('span', { class: 'tag' }, 'دقة أقل'), ctx.session?.keys?.gemini?.linked
@@ -104,14 +114,36 @@ export async function viewDoc(ctx, el, { id, fresh }) {
     return node;
   }
 
+  // خلية جدول قابلة للتعديل (r = -1 لصف العناوين)
+  function cellNode(b, r, c) {
+    const get = () => (r < 0 ? b.head[c] : b.rows[r][c]) || '';
+    const node = editable(h('span', { class: 'txt', dir: dirOf(get()) }));
+    fill(node, get());
+    node.addEventListener('focus', () => { node.textContent = get(); });
+    node.addEventListener('blur', () => {
+      const v = node.textContent.replace(/\s+/g, ' ').trim();
+      if (r < 0) b.head[c] = v; else b.rows[r][c] = v;
+      node.dir = dirOf(v);
+      fill(node, v);
+      save();
+    });
+    node.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); node.blur(); } });
+    return node;
+  }
+
   function blockEl(b) {
     const grip = h('button', { class: 'grip', 'aria-label': 'خيارات الفقرة', onclick: () => blockMenu(b) }, icon('dots'));
     let node;
     if (b.t === 'h') node = h('div', { class: `blk ${b.level === 3 ? 'h3' : 'h2'}` }, grip, textNode(b, null));
     else if (b.t === 'p') node = h('div', { class: 'blk p' }, grip, textNode(b, null));
     else if (b.t === 'note') node = h('div', { class: 'blk note' }, grip, h('span', { class: 'tag' }, 'مهم'), textNode(b, null));
-    else if (b.t === 'ul' || b.t === 'ol') node = h('div', { class: 'blk' }, grip, h(b.t, { dir: dirOf(b.items.join(' ')) }, b.items.map((_, i) => h('li', null, textNode(b, i)))));
-    else if (b.t === 'fig') node = figEl(b, grip);
+    else if (b.t === 'ul' || b.t === 'ol') node = h('div', { class: b.box ? 'blk box' : 'blk' }, grip, h(b.t, { dir: dirOf(b.items.join(' ')) }, b.items.map((_, i) => h('li', null, textNode(b, i)))));
+    else if (b.t === 'table') {
+      node = h('div', { class: 'blk tbl-wrap' }, grip, h('div', { class: 'tbl-scroll' }, h('table', { class: 'tbl', dir: dirOf(blockText(b)) },
+        h('thead', null, h('tr', null, b.head.map((_, c) => h('th', null, cellNode(b, -1, c))))),
+        h('tbody', null, b.rows.map((row, r) => h('tr', null, row.map((_, c) => h('td', null, cellNode(b, r, c)))))))));
+    } else if (b.t === 'fig') node = figEl(b, grip);
+    else node = h('div', { class: 'blk' }); // نوع غير معروف: لا يُعرض
     node.dataset.id = b.id;
     return node;
   }
@@ -333,15 +365,39 @@ export async function viewDoc(ctx, el, { id, fresh }) {
     document.body.append(frame);
   }
 
-  function plainText() {
-    const out = [doc.meta.title, ''];
-    for (const b of doc.blocks) {
-      if (b.t === 'fig') continue;
+  function plainText(blocks = doc.blocks, title = doc.meta.title) {
+    const out = [title, ''];
+    for (const b of blocks) {
+      if (b.t === 'fig' || b.t === 'figreq') continue;
       if (b.items) out.push(b.items.map((i) => `• ${stripMarkup(i)}`).join('\n'));
+      else if (b.rows) out.push([b.head, ...b.rows].map((r) => r.map(stripMarkup).join(' | ')).join('\n'));
       else out.push(stripMarkup(b.text));
       out.push('');
     }
     return out.join('\n');
+  }
+
+  // ── النص المفرّغ الأصلي (للمراجعة مقابل الشرح) ──
+  function openTranscript() {
+    const list = h('div', { class: 'transcript' });
+    for (const b of doc.transcript) {
+      if (b.t === 'fig') continue;
+      if (b.t === 'h') list.append(fill(h('h3', { dir: dirOf(b.text) }), b.text));
+      else if (b.items) { const ul = h('ul', { dir: dirOf(b.items.join(' ')) }); for (const it of b.items) ul.append(fill(h('li'), it)); list.append(ul); }
+      else list.append(fill(h(b.t === 'note' ? 'blockquote' : 'p', { dir: dirOf(blockText(b)) }), blockText(b)));
+    }
+    sheet({ title: 'النص المفرّغ من التسجيل', wide: true, body: h('div', { class: 'stack' },
+      h('p', { class: 'dim' }, 'هذا كلام المحاضر كما سُمع من التسجيل، ومنه كُتب الشرح.'),
+      h('div', { class: 'row' }, h('button', { class: 'btn small ghost', onclick: async () => { try { await navigator.clipboard.writeText(plainText(doc.transcript)); ctx.toast('انتسخ النص المفرّغ.', 'ok'); } catch { ctx.toast('تعذّر النسخ.', 'err'); } } }, icon('copy'), 'نسخ النص المفرّغ')),
+      list) });
+  }
+
+  async function rewrite() {
+    document.activeElement?.blur?.();
+    clearTimeout(saveTimer);
+    await db.saveLecture(doc).catch(() => {});
+    if (!ctx.session?.keys?.gemini?.linked && !ctx.session?.keys?.groq?.linked) { ctx.go('link'); return; }
+    ctx.go('rewrite', { id: doc.id });
   }
 
   function openMenu() {
@@ -349,6 +405,8 @@ export async function viewDoc(ctx, el, { id, fresh }) {
       h('button', { onclick: () => { s.close(); exportPdf(); } }, icon('download'), 'تحميل PDF'),
       h('button', { onclick: () => { s.close(); printDoc(); } }, icon('print'), 'طباعة'),
       h('button', { onclick: async () => { s.close(); try { await navigator.clipboard.writeText(plainText()); ctx.toast('انتسخ النص.', 'ok'); } catch { ctx.toast('تعذّر النسخ.', 'err'); } } }, icon('copy'), 'نسخ النص'),
+      doc.transcript?.length ? h('button', { onclick: () => { s.close(); openTranscript(); } }, icon('text'), 'النص المفرّغ من التسجيل') : null,
+      h('button', { onclick: () => { s.close(); rewrite(); } }, icon('book'), notes ? 'أعد كتابة الشرح المفصل' : 'حوّلها لشرح مفصّل'),
       h('button', { class: 'red', onclick: async () => {
         s.close();
         if (!(await confirm({ title: 'حذف المحاضرة؟', message: 'تنحذف من هذا الجهاز نهائياً.', ok: 'حذف', danger: true }))) return;
