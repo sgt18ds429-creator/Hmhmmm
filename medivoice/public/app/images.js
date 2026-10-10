@@ -85,9 +85,9 @@ export async function searchOpenverse(query, net, limit = 3) {
  */
 export async function findCandidates(figure, net, max = 6) {
   const jobs = [
-    searchCommons(figure.query, net, 4).catch(() => []),
+    searchCommons(figure.query, net, 5).catch(() => []),
     figure.alt && figure.alt !== figure.query ? searchCommons(figure.alt, net, 3).catch(() => []) : Promise.resolve([]),
-    figure.kind === 'radiograph' || figure.kind === 'micrograph' ? searchOpenI(figure.query, net, { kind: figure.kind, limit: 3 }).catch(() => []) : Promise.resolve([]),
+    figure.kind === 'radiograph' || figure.kind === 'micrograph' ? searchOpenI(figure.query, net, { kind: figure.kind, limit: 4 }).catch(() => []) : Promise.resolve([]),
     searchOpenverse(figure.query, net, 2).catch(() => []),
   ];
   const [main, alt, openi, ov] = await Promise.all(jobs);

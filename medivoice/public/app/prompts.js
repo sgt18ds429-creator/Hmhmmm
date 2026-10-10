@@ -237,7 +237,8 @@ const FIG_RULES = {
 - النوع واحد من: radiograph (أشعة أو CT أو MRI أو سونار) أو diagram (رسم تشريحي أو مخطط) أو photo (جهاز أو حالة سريرية) أو micrograph (مجهرية).
 - مثال:
   @fig: radiograph | pneumothorax chest x-ray | pneumothorax | frontal chest radiograph with a visible visceral pleural line and no lung markings beyond it | صورة أشعة للصدر تُظهر استرواح الصدر [[pneumothorax]]
-- صورتان كحد أقصى لهذا الجزء، فقط لما شرحه المحاضر فعلاً، ولا صورة لمفهوم مجرد لا يُصوَّر.
+- ضع صورة لكل مفهوم مهم يُفهم بالصورة، حتى 4 صور لهذا الجزء، كل صورة بعد فقرتها مباشرة. فقط لما شرحه المحاضر فعلاً، ولا صورة لمفهوم مجرد لا يُصوَّر.
+- اكتب عبارة البحث كما تُكتب عادةً في عناوين الصور الطبية: اسم الحالة أو التركيب ثم نوع التصوير، مثل «pleural effusion chest x-ray» أو «heart anatomy diagram» أو «lung adenocarcinoma histology». والعبارة الأعم: اسم الحالة أو التركيب وحده.
 
 أخرج نص الشرح فقط، بدون مقدمة أو خاتمة أو أي تعليق منك.`,
   en: `4) Illustrations:
@@ -246,7 +247,8 @@ const FIG_RULES = {
 - kind is one of: radiograph (X-ray, CT, MRI or ultrasound), diagram (anatomical drawing or schematic), photo (device or clinical case), micrograph (histology).
 - Example:
   @fig: radiograph | pneumothorax chest x-ray | pneumothorax | frontal chest radiograph with a visible visceral pleural line and no lung markings beyond it | Chest X-ray showing a [[pneumothorax]] with the visceral pleural line
-- At most two images for this part, only for what the lecturer actually explained, and none for abstract ideas.
+- Add an image for every important idea that is understood better with a picture, up to 4 images for this part, each right after its paragraph. Only for what the lecturer actually explained, and none for abstract ideas.
+- Write the search phrase the way medical image titles are usually written: the condition or structure name, then the imaging type, like "pleural effusion chest x-ray", "heart anatomy diagram" or "lung adenocarcinoma histology". The broader phrase: the condition or structure name alone.
 
 Output only the notes text, with no introduction, conclusion or comment of your own.`,
 };
@@ -319,7 +321,7 @@ export function figureVerifyPrompt(fig, letters, { lang = 'ar' } = {}) {
 نوع الصورة المطلوب: ${KIND_LABEL[fig.kind] || KIND_LABEL.diagram}
 
 مرفق ${letters.length} صور مرشحة، قبل كل صورة حرفها (${letters.join('، ')}) وعنوانها في مصدرها.
-اختر الصورة التي تُظهر المطلوب نفسه بوضوح وبدقة علمية. أجب "none" إذا:
+اختر الصورة التي تُظهر المطلوب نفسه بوضوح وبدقة علمية. تُقبل الصورة إذا أظهرت التركيب أو العلامة أو الحالة المطلوبة نفسها، حتى لو اختلفت تفاصيل ثانوية (الجهة، زاوية التصوير، الألوان، أو وجود أسهم وتسميات توضيحية). أجب "none" إذا:
 - لم تُظهر أي صورة المطلوب بالتحديد (عضو آخر، أو حالة أخرى، أو منطقة أخرى من الجسم، أو نوع تصوير آخر)،
 - أو كانت الصورة المناسبة جدولاً أو لوحة من صور صغيرة كثيرة أو مزدحمة بنصوص بلغة غير الإنجليزية أو رديئة الوضوح،
 - أو لم تكن متأكداً.

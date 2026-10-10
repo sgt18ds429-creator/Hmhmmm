@@ -229,7 +229,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
     live.scrollTop = live.scrollHeight;
   }
   const pending = new Map();
-  let nextLive = 0, showingNotes = false;
+  let nextLive = 0, showingNotes = false, stageNow = '', imagesPicked = 0;
   function showParts() {
     while (pending.has(nextLive)) {
       const blocks = parseMarkup(pending.get(nextLive).markup);
@@ -264,6 +264,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
       ctx.ribbon.kick(0.5);
       paintPct();
     } else if (e.type === 'stage') {
+      stageNow = e.name;
       if (e.name === 'write') { setStage('write'); status.textContent = 'أقرأ المحاضرة كاملة حتى أفهمها'; }
       else if (e.name === 'glossary') { setStage('glossary'); status.textContent = 'أجهّز قاموس المصطلحات'; P.write = 1; P.extra = 0.03; }
       else if (e.name === 'figures') { setStage('figures'); status.textContent = 'أجهّز القاموس وأختار صوراً مطابقة للشرح'; P.write = 1; P.extra = 0.07; }
@@ -289,7 +290,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
         writing.start.delete(e.index);
         writing.done = e.done;
         if (cell) cell.className = e.fallback ? 'review' : 'done';
-        status.textContent = e.done < e.total ? `أكتب الشرح المفصل: جاهز ${e.done} من ${e.total}` : 'أراجع الشرح وأجهّز الخطوة الأخيرة';
+        status.textContent = e.done < e.total ? `أكتب الشرح المفصل: جاهز ${e.done} من ${e.total}${imagesPicked ? ` · صور مطابقة: ${imagesPicked}` : ''}` : 'أراجع الشرح وأجهّز الخطوة الأخيرة';
         P.write = Math.max(P.write, e.done / e.total);
         showLive(parseMarkup(e.markup), { reset: !showingNotes, keep: 18 });
         showingNotes = true;
@@ -300,9 +301,13 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
       if (e.code === 'not_lecture') ctx.toast('هذا التسجيل ما بيه شرح علمي، فخليته نصاً مفرّغاً.');
       else if (e.code === 'notes_failed') ctx.toast('ما كدرت أكتب الشرح هسه، فبقت الملزمة نصاً مفرّغاً. تقدر تحوّلها لشرح بعدين من خيارات الملزمة.', 'err');
     } else if (e.type === 'images') {
-      if (e.picked) status.textContent = `صور تأكدت أنها مطابقة للشرح: ${e.picked}`;
-      P.extra = Math.min(0.13, P.extra + 0.005);
-      paintPct();
+      // الصور تُفحص أثناء الكتابة أيضاً: لا نغطي حالة الكتابة، ونعرض العدد فقط
+      if (e.picked) imagesPicked = Math.max(imagesPicked, e.picked);
+      if (stageNow === 'figures' || stageNow === 'images') {
+        if (imagesPicked) status.textContent = `صور تأكدت أنها مطابقة للشرح: ${imagesPicked}`;
+        P.extra = Math.min(0.13, P.extra + 0.005);
+        paintPct();
+      }
     } else if (e.type === 'wait') {
       let left = e.seconds;
       clearInterval(waitTimer);

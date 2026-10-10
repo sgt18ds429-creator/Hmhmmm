@@ -56,12 +56,18 @@ export class Engine {
    */
   constructor(io, caps, emit = () => {}, signal) {
     this.io = io; this.caps = caps; this.emit = emit; this.signal = signal;
+    // الوقت المسموح للمهمة كلها: محاضرة ساعة أو أقل تجهز خلال 15 دقيقة. عند التأخر تُترك الأعمال الإضافية
+    this.t0 = Date.now();
+    this.budgetMs = 15 * 60_000;
     this.stt = new Lanes(caps.groq ? caps.sttModels : []);
     this.llm = new Lanes(caps.groq ? caps.groqModels : []);
     this.gem = new Lanes(caps.gemini ? caps.geminiModels : []);
   }
 
   check() { if (this.signal?.aborted) throw new PipelineError('aborted', 'aborted'); }
+
+  /** هل استُهلك هذا الجزء من الوقت المسموح؟ */
+  late(fraction) { return Date.now() - this.t0 > this.budgetMs * fraction; }
 
   async pause(ms, what) {
     if (ms > 4000) this.emit({ type: 'wait', seconds: Math.ceil(ms / 1000), what });
@@ -231,7 +237,8 @@ export class Engine {
   async write({ system, user, maxTokens = 16000, groqTokens = 4000, temperature = 0.2, groq = true }) {
     let blocked = null;
     if (this.hasGemini) {
-      const r = await this.gemini({ system, parts: [{ text: user }], maxTokens, temperature, strongWaitMs: 40_000 });
+      // عند التأخر لا ننتظر النماذج الدقيقة إذا كانت في تهدئة: الخفيفة أسرع ولها حدود أعلى
+      const r = await this.gemini({ system, parts: [{ text: user }], maxTokens, temperature, strongWaitMs: this.late(0.6) ? 0 : 40_000 });
       if (r && !r.blocked) return r;
       if (r?.blocked) blocked = r;
     }
@@ -381,6 +388,7 @@ export async function runLecture({ file, meta, cfg, caps, io, emit = () => {}, s
   const dual = caps.groq; // Whisper متاح: نستخدم التداخل والقطع عند السكتات
   const overlap = dual ? cfg.overlapSec : 0.5;
   const total = Math.max(1, Math.ceil((info.duration - 20) / cfg.chunkSec));
+  engine.budgetMs = Math.max(15 * 60_000, info.duration * 250); // ربع مدة التسجيل، و 15 دقيقة على الأقل
   emit({ type: 'plan', duration: info.duration, chunks: total, info });
   emit({ type: 'stage', name: 'transcribe' });
 
@@ -481,6 +489,7 @@ export async function runLecture({ file, meta, cfg, caps, io, emit = () => {}, s
 export async function rewriteLecture({ doc, caps, io, emit = () => {}, signal, checkpoint = null }) {
   if (!caps.groq && !caps.gemini) throw new PipelineError('no_engine', 'link a key first');
   const engine = new Engine(io, caps, emit, signal);
+  engine.budgetMs = 10 * 60_000; // بدون استماع: الكتابة والصور فقط
   const transcript = (doc.transcript || doc.blocks).filter((b) => b.t !== 'fig' && b.t !== 'figreq').map((b) => ({ ...b, items: b.items ? [...b.items] : undefined }));
   const copy = {
     ...doc,
@@ -665,7 +674,7 @@ async function writeSection(engine, meta, plan, s, paras, opts, depth = 0) {
     // نعيد الكتابة (وهي طلب طويل ثانٍ) فقط إذا خرج أقصر بكثير من ذلك أو أسقط أغلب المصطلحات
     const short = words >= 200 && outWords < words * 0.3;
     const lost = srcTerms.size >= 8 && missing.length > srcTerms.size * 0.4;
-    if (!short && !lost) break;
+    if ((!short && !lost) || engine.late(0.7)) break; // عند التأخر نقبل الناتج ولا نعيد
     retry = { prevWords: short ? outWords : 0, missing: missing.slice(0, 30) };
   }
   if (!best || (words >= 120 && best.words < words * 0.25)) return { markup: fallbackMarkup(s, source), fallback: true, review: true, words };
@@ -761,24 +770,38 @@ export async function writeNotes(doc, engine, { emit = () => {}, checkpoint = nu
   emit({ type: 'notes', stage: 'write', total, titles: plan.titles });
   const results = new Array(total);
   const seen = new Map(); // مصطلحات الأقسام المكتوبة: تُعطى للأقسام اللاحقة حتى يتوحّد إملاؤها
+  // صور كل قسم تُبحث وتُفحص بمجرد كتابته، بالتوازي مع كتابة الأقسام الباقية
+  const figures = meta.images !== false && engine.io?.net ? figureQueue(engine, { lang, emit }) : null;
   let next = 0, done = 0, failure = null;
+  const finishing = [];
+
+  // بعد كتابة القسم: التدقيق الإملائي والحفظ وطلب صوره. العامل لا ينتظرها وينتقل للقسم التالي
+  const finish = async (i, s, r, fresh) => {
+    try {
+      if (fresh && !r.fallback && !engine.late(0.9)) {
+        try { r.markup = await proofread(engine, r.markup, lang); } catch (e) { if (isFatal(e)) throw e; }
+      }
+      if (fresh && checkpoint && !r.fallback) await checkpoint.set(`n:s${i}`, r);
+      results[i] = { ...r, blocks: parseMarkup(r.markup).map((b) => ({ id: uid(), ...b })) };
+      for (const [k, v] of termsIn(r.markup)) if (!seen.has(k)) seen.set(k, v);
+      emit({ type: 'section', index: i, total, stage: 'done', done: ++done, title: s.title, markup: r.markup, fallback: !!r.fallback });
+      figures?.add(results[i].blocks, s.title);
+    } catch (e) {
+      failure = failure || e;
+    }
+  };
   const worker = async () => {
     while (next < total && !failure) {
       const i = next++;
       const s = plan.sections[i];
       try {
         let r = checkpoint ? await checkpoint.get(`n:s${i}`) : null;
-        if (!r || r.sig !== sig) {
+        const fresh = !r || r.sig !== sig;
+        if (fresh) {
           emit({ type: 'section', index: i, total, stage: 'write', title: s.title, part: s.part, parts: s.parts });
           r = { ...(await writeSection(engine, meta, plan, s, paras, { lang, known: [...seen.values()].slice(-60), images: meta.images !== false })), sig };
-          if (!r.fallback) {
-            try { r.markup = await proofread(engine, r.markup, lang); } catch (e) { if (isFatal(e)) throw e; }
-          }
-          if (checkpoint && !r.fallback) await checkpoint.set(`n:s${i}`, r);
         }
-        results[i] = r;
-        for (const [k, v] of termsIn(r.markup)) if (!seen.has(k)) seen.set(k, v);
-        emit({ type: 'section', index: i, total, stage: 'done', done: ++done, title: s.title, markup: r.markup, fallback: !!r.fallback });
+        finishing.push(finish(i, s, r, fresh));
       } catch (e) {
         failure = failure || e;
       }
@@ -786,16 +809,19 @@ export async function writeNotes(doc, engine, { emit = () => {}, checkpoint = nu
   };
   // كل قسم طلب طويل (دقيقة تقريباً)، فنكتب عدة أقسام معاً، دون تجاوز حد الطلبات بالدقيقة. حدود Groq أضيق
   await Promise.all(Array.from({ length: engine.hasGemini ? 3 : 2 }, worker));
-  if (failure) throw failure;
+  await Promise.all(finishing);
+  figures?.writingDone();
+  if (failure) { figures?.cancel(); throw failure; }
 
   if (results.every((r) => r.fallback)) {
+    figures?.cancel();
     if (!engine.hasGemini && !engine.hasGroqLlm) throw new PipelineError('no_engine', 'no engine left to write the notes');
     emit({ type: 'note', code: 'notes_failed' });
     return false;
   }
 
-  const blocks = [];
-  for (const r of results) for (const b of parseMarkup(r.markup)) blocks.push({ id: uid(), ...b });
+  const blocks = results.flatMap((r) => r.blocks);
+  if (figures) pendingFigures.set(doc, figures);
 
   const countText = (list) => list.reduce((n, b) => n + countWords(blockText(b)), 0);
   doc.transcript = transcript;
@@ -897,7 +923,16 @@ export async function enrich(doc, engine, { io, emit = () => {} }) {
   // ── العنوان والصور ──
   const figures = async () => {
     emit({ type: 'stage', name: 'figures' });
+    const queue = pendingFigures.get(doc);
+    pendingFigures.delete(doc);
     try {
+      if (queue) {
+        // الشرح المفصل: صوره بُحثت وفُحصت أثناء الكتابة؛ ننتظر ما بقي منها ونضعها مكان طلباتها
+        emit({ type: 'stage', name: 'images' });
+        const found = await queue.results();
+        doc.blocks = doc.blocks.map((b) => (b.t === 'figreq' && found.has(b.id) ? figBlock(found.get(b.id)) : b));
+        return;
+      }
       const textWords = doc.stats?.words || doc.blocks.reduce((n, b) => n + countWords(blockText(b)), 0);
       const maxFigures = meta.images === false ? 0 : Math.min(14, Math.max(2, Math.round(textWords / 300)));
       let wanted = [];
@@ -935,7 +970,7 @@ export async function enrich(doc, engine, { io, emit = () => {} }) {
         for (const f of figs) {
           const at = doc.blocks.findIndex((b) => b.id === f.anchor);
           if (at < 0) continue;
-          const block = { id: uid(), t: 'fig', caption: f.caption, query: f.query, kind: f.kind, pick: f.pick, candidates: f.candidates, img: f.img };
+          const block = figBlock(f);
           if (f.replace) { doc.blocks.splice(at, 1, block); continue; }
           let pos = at + 1;
           if (doc.blocks[at].t === 'h' && doc.blocks[pos] && doc.blocks[pos].t !== 'h') pos++; // لا نضع الصورة بين العنوان وفقرته
@@ -959,40 +994,112 @@ export async function enrich(doc, engine, { io, emit = () => {} }) {
   return doc;
 }
 
-/**
- * لكل صورة مطلوبة: يبحث عن مرشحات، ثم يتحقق بالنظر (Gemini) أن إحداها تُظهر المطلوب فعلاً.
- * إذا لم تطابق أي صورة لا تُوضع صورة: الصورة الخاطئة أسوأ من عدمها.
- */
-export async function pickFigures(wanted, engine, io, emit = () => {}, { lang = 'ar' } = {}) {
-  const used = new Set();
-  const results = new Array(wanted.length);
-  let next = 0, searched = 0, picked = 0;
+const pendingFigures = new WeakMap(); // مستند ← صور تُبحث له أثناء كتابة الشرح
 
-  const one = async (f) => {
-    let cands = await findCandidates(f, io.net, 6).catch(() => []);
-    emit({ type: 'images', searched: ++searched, total: wanted.length });
-    cands = cands.filter((c) => !used.has(c.original || c.id));
-    if (!cands.length) return null;
+const figBlock = (f) => ({ id: uid(), t: 'fig', caption: f.caption, query: f.query, kind: f.kind, pick: f.pick, candidates: f.candidates, img: f.img });
+
+const KIND_WORDS = { radiograph: ['radiograph', 'x-ray'], diagram: ['diagram', 'anatomy'], micrograph: ['histology', 'micrograph'], photo: ['photo'] };
+/**
+ * عبارتا بحث للجولة الثانية لم تُستعملا في الأولى: الاسم العام مع نوع الصورة، مثل «pleura diagram».
+ * @returns {{query:string, alt:string}|null}
+ */
+function secondRound(f) {
+  const base = (f.alt || f.query).trim();
+  const seen = new Set([f.query, f.alt].filter(Boolean).map((q) => q.toLowerCase()));
+  const variants = (KIND_WORDS[f.kind] || KIND_WORDS.diagram)
+    .map((w) => (base.toLowerCase().includes(w) ? '' : `${base} ${w}`))
+    .filter((q) => q && !seen.has(q.toLowerCase()));
+  return variants.length ? { query: variants[0], alt: variants[1] || '' } : null;
+}
+
+/**
+ * صورة واحدة: يبحث عن مرشحات، ثم يتحقق بالنظر (Gemini) أن إحداها تُظهر المطلوب فعلاً.
+ * إذا لم يطابق شيء يبحث مرة ثانية بعبارة أعم. إذا لم يطابق شيء أيضاً لا تُوضع صورة: الصورة الخاطئة أسوأ من عدمها.
+ */
+async function pickOne(f, engine, io, used, lang) {
+  const tried = new Set();
+  const second = secondRound(f);
+  const rounds = second ? [f, { ...f, ...second }] : [f];
+  for (let round = 0; round < rounds.length; round++) {
+    const q = rounds[round];
+    if (round > 0 && engine.late(0.8)) break;
+    const cands = (await findCandidates(q, io.net, 8).catch(() => [])).filter((c) => {
+      const k = c.original || c.id;
+      if (used.has(k) || tried.has(k)) return false;
+      tried.add(k);
+      return true;
+    });
+    if (!cands.length) continue;
     const thumbs = await Promise.all(cands.map((c) => io.loadImage(c, 'small').catch(() => null)));
     cands.forEach((c, i) => { if (thumbs[i]) c.tiny = thumbs[i].dataUrl; }); // تبقى للمعاينة عند تبديل الصورة
     const ok = cands.map((c, i) => ({ c, t: thumbs[i] })).filter((x) => x.t);
-    if (!ok.length) return null;
+    if (!ok.length) continue;
     const verdict = await chooseFigure(engine, f, ok, lang);
-    if (!verdict) return null;
+    if (!verdict) continue;
     const pick = ok[verdict.idx].c;
     const key = pick.original || pick.id;
-    if (used.has(key)) return null;
+    if (used.has(key)) continue; // اختارتها صورة أخرى في نفس اللحظة
     used.add(key);
     const img = await io.loadImage(pick, 'large').catch(() => null) || ok[verdict.idx].t;
-    if (!img?.dataUrl) return null;
+    if (!img?.dataUrl) { used.delete(key); continue; }
     return { ...f, caption: verdict.caption || f.caption, pick, candidates: ok.map((x) => x.c), img: { dataUrl: img.dataUrl, w: img.w, h: img.h } };
-  };
+  }
+  return null;
+}
 
-  // ثلاث صور في نفس الوقت: أسرع، وفي حدود المصادر المفتوحة وحد Gemini بالدقيقة
+/**
+ * صور الشرح المفصل: تُبحث وتُفحص لكل قسم بمجرد كتابته. صورتان في نفس الوقت أثناء الكتابة (حتى لا تزاحمها
+ * على حد الطلبات)، وثلاث بعدها. حتى أربع صور للقسم، بنحو صورة لكل 250 كلمة من شرحه.
+ */
+function figureQueue(engine, { lang, emit }) {
+  const used = new Set();
+  const found = new Map();
+  const jobs = [];
+  const waiting = [];
+  let active = 0, limit = 2, total = 0, picked = 0, cancelled = false;
+  const take = async () => { while (active >= limit) await new Promise((r) => waiting.push(r)); active++; };
+  const release = () => { active--; waiting.shift()?.(); };
+  return {
+    add(blocks, section) {
+      const words = blocks.reduce((n, b) => n + countWords(blockText(b)), 0);
+      const cap = Math.min(4, Math.max(1, Math.round(words / 250)));
+      const reqs = blocks.map((b, i) => [b, i]).filter(([b]) => b.t === 'figreq').slice(0, cap);
+      for (const [b, i] of reqs) {
+        const f = { anchor: b.id, replace: true, query: b.query, alt: b.alt, kind: b.kind, show: b.show, caption: b.caption, ...contextBefore(blocks, i) };
+        if (!f.section) f.section = section;
+        total++;
+        const job = (async () => {
+          await take();
+          try {
+            if (cancelled || engine.late(0.95)) return;
+            const r = await pickOne(f, engine, engine.io, used, lang);
+            if (r) { found.set(f.anchor, r); emit({ type: 'images', picked: ++picked, total }); }
+          } catch (e) {
+            if (isFatal(e)) throw e;
+          } finally {
+            release();
+          }
+        })();
+        job.catch(() => {}); // تُقرأ النتيجة لاحقاً في results()
+        jobs.push(job);
+      }
+    },
+    writingDone() { limit = 3; for (let k = 0; k < 3; k++) waiting.shift()?.(); },
+    cancel() { cancelled = true; },
+    async results() { await Promise.all(jobs); return found; },
+  };
+}
+
+/** صور النص المفرّغ (أو أي قائمة طلبات): ثلاث في نفس الوقت، وكل صورة تمر بالتحقق. */
+export async function pickFigures(wanted, engine, io, emit = () => {}, { lang = 'ar' } = {}) {
+  const used = new Set();
+  const results = new Array(wanted.length);
+  let next = 0, picked = 0;
   const run = async () => {
     while (next < wanted.length) {
       const i = next++;
-      try { results[i] = await one(wanted[i]); } catch (e) { if (isFatal(e)) throw e; results[i] = null; }
+      if (engine.late(0.95)) { results[i] = null; continue; }
+      try { results[i] = await pickOne(wanted[i], engine, io, used, lang); } catch (e) { if (isFatal(e)) throw e; results[i] = null; }
       if (results[i]) emit({ type: 'images', picked: ++picked, total: wanted.length });
     }
   };

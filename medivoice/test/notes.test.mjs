@@ -1,7 +1,7 @@
 // اختبارات الشرح المفصل والصور: النماذج والمصادر كلها وهمية، فلا يحتاج الاختبار مفاتيح ولا إنترنت.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Engine, writeNotes, enrich, complete, normalizePlan, rewriteLecture, sameContent, PipelineError } from '../public/app/pipeline.js';
+import { Engine, writeNotes, enrich, complete, normalizePlan, rewriteLecture, sameContent, pickFigures, PipelineError } from '../public/app/pipeline.js';
 import { parseMarkup, blockText, countWords, uid } from '../public/app/text.js';
 import { buildPdfHtml } from '../public/app/pdf.js';
 
@@ -194,7 +194,10 @@ test('الصور: تُوضع فقط بعد التحقق بالنظر، والت�
   const engine = new Engine(io, CAPS);
   await writeNotes(doc, engine);
   await enrich(doc, engine, { io });
-  assert.equal(calls.verify.length, 3, 'كل صورة تُفحص');
+  const wants = calls.verify.map((v) => v.user.match(/المطلوب أن تُظهره الصورة: (.*)/)[1]);
+  assert.equal(wants.length, 5, 'كل صورة تُفحص، والمرفوضة تُبحث مرة ثانية بعبارة أخرى');
+  assert.equal(wants.filter((w) => w.includes('meniscus')).length, 1, 'المقبولة من أول جولة');
+  assert.equal(wants.filter((w) => w.includes('parietal and visceral pleura')).length, 2);
   assert.ok(calls.verify.every((v) => v.images >= 1), 'الفحص يرى الصور نفسها');
   const figs = doc.blocks.filter((b) => b.t === 'fig');
   assert.equal(figs.length, 1, 'فقط الصورة المؤكدة (الثقة المنخفضة و none مرفوضتان)');
@@ -209,14 +212,13 @@ test('الصور: تُوضع فقط بعد التحقق بالنظر، والت�
   assert.equal(doc.terms.length, 1);
 });
 
-test('بدون Gemini لا تُوضع صورة إلا بثقة عالية من العناوين، وفشل الصور لا يُفشل الملزمة', async () => {
+test('بدون Gemini لا تُوضع صورة إلا بثقة عالية من العناوين', async () => {
   const { io } = makeIO();
-  const doc = transcriptDoc();
-  await writeNotes(doc, new Engine(io, CAPS));
-  const groqOnly = new Engine({ ...io, async groq() { return { ok: true, status: 200, data: { choices: [{ message: { content: JSON.stringify({ choice: 'A', confidence: 0.6 }) }, finish_reason: 'stop' }] } }; } }, { ...CAPS, gemini: false, groq: true, groqModels: ['openai/gpt-oss-120b'] });
-  await enrich(doc, groqOnly, { io });
-  assert.equal(doc.blocks.filter((b) => b.t === 'fig').length, 0);
-  assert.equal(doc.blocks.filter((b) => b.t === 'figreq').length, 0);
+  const wanted = [{ anchor: 'a', query: 'pneumothorax chest x-ray', alt: 'pneumothorax', kind: 'radiograph', show: 'pneumothorax', caption: 'أشعة', context: 'شرح' }];
+  const judge = (confidence) => new Engine({ ...io, async groq() { return { ok: true, status: 200, data: { choices: [{ message: { content: JSON.stringify({ choice: 'A', confidence, caption: 'صورة' }) }, finish_reason: 'stop' }] } }; } },
+    { ...CAPS, gemini: false, groq: true, groqModels: ['openai/gpt-oss-120b'] });
+  assert.equal((await pickFigures(wanted, judge(0.6), io)).length, 0, 'ثقة متوسطة من العنوان فقط: لا صورة');
+  assert.equal((await pickFigures(wanted, judge(0.9), io)).length, 1);
 });
 
 test('تحويل ملزمة محفوظة إلى شرح ينشئ ملزمة جديدة ويبقي الأصل', async () => {
@@ -284,7 +286,7 @@ test('النص المفرّغ أيضاً: صوره تمر بالتحقق، وا�
   const engine = new Engine(io, CAPS);
   await enrich(doc, engine, { io });
   assert.equal(calls.planner, 1);
-  assert.equal(calls.verify.length, 2);
+  assert.equal(calls.verify.length, 3, 'المقبولة مرة، والمرفوضة جولتان');
   const figs = doc.blocks.filter((b) => b.t === 'fig');
   assert.equal(figs.length, 1);
   assert.equal(doc.blocks[doc.blocks.indexOf(figs[0]) - 1].text.includes('visceral pleural line'), true, 'بعد الفقرة التي تشرحها');
@@ -421,5 +423,55 @@ test('sameContent يقبل تصحيح الإملاء ويرفض الحذف وا�
   assert.equal(sameContent(md, md.replace(/^\| \[\[blunting.*$/m, '')), false, 'حذف صف من الجدول');
   assert.equal(sameContent(md, `${md}\n\n- نقطة جديدة لم يقلها المحاضر`), false, 'إضافة');
   assert.equal(sameContent(md, md.replace(/وهنا شرح مفصل للكمية والأنواع وما قاله المحاضر\. /g, '')), false, 'اختصار الشرح');
+});
+
+test('الصور والتدقيق يجريان أثناء كتابة الأقسام الباقية ولا ينتظران نهايتها', async () => {
+  const sections = Array.from({ length: 6 }, (_, i) => ({ from: i * 2, title: `موضوع ${i + 1}` }));
+  const doc = transcriptDoc();
+  doc.blocks = parseMarkup(Array.from({ length: 12 }, (_, i) => `فقرة ${i} عن [[topic ${Math.floor(i / 2)}]] ${'وشرح طويل لها. '.repeat(30)}`).join('\n\n')).map((b) => ({ id: uid(), ...b }));
+  const log = [];
+  const { io } = makeIO({
+    plan: { kind: 'lecture', title: 'T', sections },
+    section: (user) => {
+      const n = Number(user.match(/«موضوع (\d+)»/)[1]);
+      return gemResponse(`## موضوع ${n}\n${'شرح مفصل عن [[topic ' + (n - 1) + ']] وكل ما قيل فيه. '.repeat(26)}\n\n@fig: diagram | topic ${n} diagram | topic ${n} | a diagram of topic ${n} | رسم`);
+    },
+    proof: (md) => md,
+  });
+  const base = io.gemini;
+  io.gemini = async (model, body) => {
+    const system = body.systemInstruction?.parts?.[0]?.text || '';
+    const kind = system.includes('شرحاً مكتوباً مفصلاً') ? 'write' : system.includes('مدقق لغوي') ? 'proof' : system.includes('تختار صورة') ? 'verify' : 'other';
+    log.push(`${kind}:start`);
+    await new Promise((r) => setTimeout(r, kind === 'write' ? 80 : kind === 'proof' ? 20 : 10)); // كما في الواقع: الكتابة أطول بكثير
+    const res = await base(model, body);
+    log.push(`${kind}:end`);
+    return res;
+  };
+  const engine = new Engine(io, CAPS);
+  await writeNotes(doc, engine);
+  const lastWrite = log.lastIndexOf('write:end');
+  assert.ok(log.indexOf('verify:start') < lastWrite, 'فحص الصور بدأ قبل انتهاء الكتابة');
+  assert.ok(log.indexOf('proof:end') > log.indexOf('write:start', log.indexOf('proof:start')), 'العامل لم ينتظر التدقيق');
+  await complete(doc, engine, { io });
+  assert.equal(doc.blocks.filter((b) => b.t === 'fig').length, 6, 'صورة مطابقة لكل قسم');
+});
+
+test('عند تجاوز الوقت المسموح تُترك الأعمال الإضافية ولا تتعطل الملزمة', async () => {
+  const { io, calls } = makeIO({
+    section: () => gemResponse('## قسم\nشرح قصير جداً عن [[pneumothorax]].\n\n@fig: radiograph | pneumothorax chest x-ray | pneumothorax | chest radiograph | صورة'),
+    proof: (md) => md,
+  });
+  const doc = transcriptDoc();
+  const engine = new Engine(io, CAPS);
+  engine.budgetMs = 1; // انتهى الوقت
+  await new Promise((r) => setTimeout(r, 5));
+  await writeNotes(doc, engine);
+  await complete(doc, engine, { io });
+  assert.equal(calls.section.length, 2, 'لا إعادة كتابة للأقسام القصيرة');
+  assert.equal(calls.proof, 0, 'لا تدقيق');
+  assert.equal(calls.verify.length, 0, 'لا بحث عن صور');
+  assert.equal(doc.blocks.filter((b) => b.t === 'figreq').length, 0);
+  assert.ok(doc.blocks.some((b) => b.t === 'h'), 'الملزمة نفسها مكتوبة');
 });
 
