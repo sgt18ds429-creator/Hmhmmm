@@ -41,7 +41,10 @@ npm run build     # dist/worker.js
 CLOUDFLARE_API_TOKEN=... npm run deploy
 ```
 
-التوكن يحتاج صلاحية **Workers Scripts: Edit**. النشر يستبدل الكود فقط، وتبقى هذه كما هي على Cloudflare:
+التوكن يحتاج صلاحية **Workers Scripts: Edit** (قالب «Edit Cloudflare Workers» يكفي). في جلسات Claude السحابية يجب أن يكون
+`api.cloudflare.com` مسموحاً في إعدادات الشبكة للبيئة؛ `NODE_USE_ENV_PROXY=1` في أمر النشر يمرّر الطلبات عبر بروكسي الجلسة.
+
+النشر يستبدل الكود فقط، وتبقى هذه كما هي على Cloudflare:
 - رابط `STORE` (Durable Object: `MediVoiceStore`)
 - رابط `BROWSER`
 - السران `KEYS_SECRET` و `ADMIN_PASSWORD`

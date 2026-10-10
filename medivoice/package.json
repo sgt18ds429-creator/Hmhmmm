@@ -6,6 +6,6 @@
   "scripts": {
     "build": "node tools/build.mjs",
     "test": "node --test test/*.test.mjs",
-    "deploy": "node tools/build.mjs && node tools/deploy.mjs"
+    "deploy": "node tools/build.mjs && NODE_USE_ENV_PROXY=1 node tools/deploy.mjs"
   }
 }
