@@ -1,0 +1,247 @@
+/* ميدي فويز — الأساس البصري المشترك (القفل، التطبيق، لوحة التحكم)
+   الهوية مشتقة من اللوكو: خطوط بسماكة واحدة وزوايا 30° (شبكة آيزومترية)،
+   تدرج بنفسجي → أرجواني، وكهرماني للتنبيه فقط. */
+
+:root {
+  --ink-0: #0c0618;
+  --ink-1: #140a26;
+  --ink-2: #1d1036;
+  --ink-3: #2a1a4d;
+  --line: rgba(196, 170, 255, 0.14);
+  --line-2: rgba(196, 170, 255, 0.28);
+  --text: #f3eeff;
+  --text-2: #bbaedb;
+  --text-3: #8f80b5;
+  --v1: #4d1ace;
+  --v2: #7a19c4;
+  --v3: #9a18b8;
+  --lilac: #b79cff;
+  --amber: #ffb547;
+  --rose: #ff7a8a;
+  --mint: #6fe3b4;
+  --grad: linear-gradient(135deg, var(--v1), var(--v2) 55%, var(--v3));
+  --r-s: 10px;
+  --r-m: 16px;
+  --r-l: 24px;
+  /* قصّة آيزومترية: زاويتان متقابلتان مقطوعتان بميل 30° مثل نهايات اللوكو */
+  --notch: polygon(14px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 14px) 100%, 0 100%, 0 8px);
+  --notch-s: polygon(9px 0, 100% 0, 100% calc(100% - 5px), calc(100% - 9px) 100%, 0 100%, 0 5px);
+  --font-display: 'Reem Kufi', 'IBM Plex Sans Arabic', system-ui, sans-serif;
+  --font-body: 'IBM Plex Sans Arabic', 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-t: env(safe-area-inset-top, 0px);
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+html, body { margin: 0; min-height: 100%; }
+html { overflow-x: hidden; }
+body {
+  background: var(--ink-0);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  overflow-x: clip;
+}
+/* شبكة آيزومترية خافتة جداً خلف كل شيء */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 70% at 85% -10%, rgba(122, 25, 196, 0.34), transparent 60%),
+    radial-gradient(90% 60% at 0% 110%, rgba(77, 26, 206, 0.26), transparent 62%),
+    repeating-linear-gradient(30deg, rgba(196, 170, 255, 0.035) 0 1px, transparent 1px 46px),
+    repeating-linear-gradient(-30deg, rgba(196, 170, 255, 0.035) 0 1px, transparent 1px 46px);
+}
+h1, h2, h3 { font-family: var(--font-display); font-weight: 600; line-height: 1.35; margin: 0; }
+p { margin: 0; }
+button, input, textarea, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+a { color: var(--lilac); text-underline-offset: 3px; }
+[hidden] { display: none !important; }
+:focus-visible { outline: 2px solid var(--lilac); outline-offset: 3px; border-radius: 6px; }
+.ltr { direction: ltr; unicode-bidi: isolate; }
+.num { font-variant-numeric: tabular-nums; }
+
+#ribbon {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* ───────── أزرار ───────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 0 26px;
+  border: 0;
+  background: var(--grad);
+  color: #fff;
+  font-weight: 600;
+  font-size: 1rem;
+  clip-path: var(--notch);
+  position: relative;
+  transition: transform 0.18s var(--ease), filter 0.18s;
+  user-select: none;
+}
+.btn::after {
+  /* لمعة تمر على الزر عند الضغط */
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(120deg, transparent 30%, rgba(255, 255, 255, 0.28) 50%, transparent 70%);
+  transform: translateX(120%);
+  pointer-events: none;
+}
+a.btn { text-decoration: none; }
+.btn:hover { filter: brightness(1.1); }
+.btn:active { transform: scale(0.975); }
+.btn:active::after { transform: translateX(-120%); transition: transform 0.45s var(--ease); }
+.btn[disabled] { opacity: 0.45; pointer-events: none; }
+.btn.wide { width: 100%; }
+.btn.ghost {
+  background: rgba(183, 156, 255, 0.1);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--line-2);
+  clip-path: none;
+  border-radius: var(--r-s);
+}
+.btn.ghost::after { display: none; }
+.btn.ghost:hover { background: rgba(183, 156, 255, 0.17); filter: none; }
+.btn.small { min-height: 40px; padding: 0 16px; font-size: 0.9rem; clip-path: var(--notch-s); }
+.btn.ghost.small { clip-path: none; }
+.btn.danger { background: rgba(255, 122, 138, 0.14); color: var(--rose); box-shadow: inset 0 0 0 1px rgba(255, 122, 138, 0.4); clip-path: none; border-radius: var(--r-s); }
+.btn.amber { background: var(--amber); color: #2a1600; }
+.btn .spin, .spin {
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35); border-top-color: #fff;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.icon-btn {
+  width: 44px; height: 44px; display: grid; place-items: center;
+  border: 0; border-radius: 12px; background: transparent; color: var(--text-2);
+  transition: background 0.15s, color 0.15s;
+}
+.icon-btn:hover { background: rgba(183, 156, 255, 0.12); color: var(--text); }
+.icon { width: 22px; height: 22px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ───────── حقول ───────── */
+.field { display: grid; gap: 6px; }
+.field > span { font-size: 0.86rem; color: var(--text-2); }
+.field > small { font-size: 0.78rem; color: var(--text-3); }
+.input, .field input[type='text'], .field input[type='password'], .field input[type='number'], .field textarea, .field select {
+  width: 100%;
+  min-height: 50px;
+  padding: 12px 14px;
+  background: rgba(12, 6, 24, 0.6);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-s);
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.field textarea { min-height: 84px; resize: vertical; line-height: 1.6; }
+.input:focus, .field input:focus, .field textarea:focus, .field select:focus { border-color: var(--lilac); box-shadow: 0 0 0 3px rgba(183, 156, 255, 0.18); }
+::placeholder { color: var(--text-3); opacity: 1; }
+
+/* ───────── الافتتاحية ───────── */
+#intro {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  background: var(--ink-0);
+  transition: opacity 0.5s var(--ease), visibility 0.5s;
+}
+#intro.out { opacity: 0; visibility: hidden; }
+#intro .mark { width: min(38vw, 168px); height: auto; overflow: visible; }
+#intro .tile { fill: url(#mvg); transform-origin: 50% 50%; transform: scale(0.2) rotate(-18deg); opacity: 0; animation: tile-in 0.75s var(--ease) 0.75s forwards; }
+#intro .stroke { fill: #fff; fill-opacity: 0; stroke: #fff; stroke-width: 5; stroke-linejoin: miter; stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw 1.05s cubic-bezier(0.65, 0, 0.35, 1) 0.1s forwards, fill-in 0.4s ease 1s forwards; }
+@keyframes draw { to { stroke-dashoffset: 0; } }
+@keyframes fill-in { to { fill-opacity: 1; stroke-width: 0; } }
+@keyframes tile-in { to { transform: none; opacity: 1; } }
+
+/* ───────── شاشة القفل ───────── */
+#lock {
+  position: relative;
+  z-index: 2;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: calc(28px + var(--safe-t)) 20px calc(28px + var(--safe-b));
+}
+.lock-card { width: min(100%, 420px); display: grid; gap: 22px; justify-items: center; text-align: center; }
+.brand-tile { width: 92px; height: 92px; border-radius: 26px; background: var(--grad); display: grid; place-items: center; box-shadow: 0 18px 50px -12px rgba(122, 25, 196, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.25); }
+.brand-tile svg { width: 56%; height: auto; fill: #fff; }
+.wordmark { font-family: var(--font-display); font-size: 2.45rem; font-weight: 700; line-height: 1.1; letter-spacing: 0; }
+.wordmark small { display: block; font-family: 'IBM Plex Sans', var(--font-body); font-size: 0.8rem; font-weight: 500; color: var(--text-3); letter-spacing: 0.34em; margin-top: 8px; padding-inline-start: 0.34em; }
+.tagline { color: var(--text-2); font-size: 1.02rem; max-width: 30ch; }
+.lock-form { width: 100%; display: grid; gap: 14px; margin-top: 6px; }
+.lock-form label { font-size: 0.9rem; color: var(--text-2); }
+
+.code-box { position: relative; direction: ltr; display: flex; align-items: center; justify-content: center; gap: clamp(4px, 1.5vw, 7px); width: 100%; min-width: 0; }
+.code-box input {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  opacity: 0; border: 0; background: none; font-size: 16px; caret-color: transparent;
+}
+.code-box .pre { font-family: var(--font-mono); font-weight: 500; color: var(--text-3); font-size: 1.05rem; flex: none; }
+.code-box .dash { width: 8px; height: 2px; background: var(--line-2); flex: none; }
+.cell {
+  flex: 1 1 0; min-width: 0; max-width: 42px; height: 52px;
+  display: grid; place-items: center;
+  font-family: var(--font-mono); font-size: 1.3rem; font-weight: 500;
+  background: rgba(20, 10, 38, 0.72);
+  box-shadow: inset 0 0 0 1px var(--line-2);
+  clip-path: var(--notch-s);
+  transition: background 0.15s, box-shadow 0.15s, transform 0.2s var(--ease), color 0.2s;
+}
+.cell.on { box-shadow: inset 0 0 0 2px var(--lilac); background: rgba(183, 156, 255, 0.14); }
+.cell.filled { color: #fff; }
+.code-box.ok .cell { background: rgba(111, 227, 180, 0.2); box-shadow: inset 0 0 0 2px var(--mint); color: var(--mint); }
+.code-box.bad { animation: shake 0.42s; }
+.code-box.bad .cell { box-shadow: inset 0 0 0 2px var(--rose); }
+@keyframes shake { 20% { transform: translateX(-8px); } 40% { transform: translateX(7px); } 60% { transform: translateX(-5px); } 80% { transform: translateX(3px); } }
+.lock-msg { min-height: 1.6em; font-size: 0.92rem; color: var(--rose); }
+.lock-help { font-size: 0.9rem; color: var(--text-3); }
+.lock-help a { font-weight: 600; }
+
+/* دخول عناصر القفل بعد الافتتاحية (لحظة واحدة منسّقة) */
+.lock-card > * { opacity: 0; transform: translateY(14px); }
+#lock.in .lock-card > * { opacity: 1; transform: none; transition: opacity 0.6s var(--ease), transform 0.6s var(--ease); }
+#lock.in .lock-card > :nth-child(2) { transition-delay: 0.07s; }
+#lock.in .lock-card > :nth-child(3) { transition-delay: 0.14s; }
+#lock.in .lock-card > :nth-child(4) { transition-delay: 0.21s; }
+#lock.in .lock-card > :nth-child(5) { transition-delay: 0.28s; }
+
+/* ───────── إشعارات ───────── */
+#toasts { position: fixed; z-index: 60; inset-inline: 0; bottom: calc(18px + var(--safe-b)); display: grid; justify-items: center; gap: 8px; pointer-events: none; padding: 0 16px; }
+.toast {
+  max-width: 440px; padding: 12px 18px; border-radius: 14px;
+  background: #251544; color: var(--text); font-size: 0.93rem;
+  box-shadow: 0 14px 40px -10px rgba(0, 0, 0, 0.7), inset 0 0 0 1px var(--line-2);
+  animation: toast-in 0.35s var(--ease);
+}
+.toast.err { box-shadow: 0 14px 40px -10px rgba(0, 0, 0, 0.7), inset 0 0 0 1px rgba(255, 122, 138, 0.6); }
+.toast.ok { box-shadow: 0 14px 40px -10px rgba(0, 0, 0, 0.7), inset 0 0 0 1px rgba(111, 227, 180, 0.55); }
+.toast.bye { opacity: 0; transform: translateY(8px); transition: 0.3s; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(14px) scale(0.96); } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-delay: 0s !important; transition-duration: 0.01ms !important; }
+}

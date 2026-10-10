@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640" role="img" aria-label="MediVoice">
+  <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4D1ACE"/><stop offset=".5" stop-color="#7A19C4"/><stop offset="1" stop-color="#9A18B8"/></linearGradient></defs>
+  <rect width="640" height="640" rx="140" fill="url(#g)"/>
+  <polygon transform="translate(170 178)" fill="#fff" points="283.5,35.7 243.5,12.6 150,66.6 56.5,12.6 16.5,35.7 16.5,270 46.5,287.3 56.5,281.5 56.5,231.8 150,285.8 204.5,254.3 204.5,214.3 150,245.8 56.5,191.8 56.5,58.8 150,112.8 243.5,58.8 243.5,103.5 150,157.5 95.5,126 95.5,166 150,197.5 243.5,143.5 243.5,281.5 253.5,287.3 283.5,270"/>
+</svg>

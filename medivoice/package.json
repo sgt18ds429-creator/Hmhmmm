@@ -1,0 +1,11 @@
+{
+  "name": "medivoice",
+  "private": true,
+  "type": "module",
+  "description": "ميدي فويز: تسجيل المحاضرة يصير ملزمة مشروحة بصور مطابقة",
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "test": "node --test test/*.test.mjs",
+    "deploy": "node tools/build.mjs && node tools/deploy.mjs"
+  }
+}

@@ -1,0 +1,536 @@
+// admin.js — لوحة تحكم ميدي فويز: الأكواد، النشاط، الإعدادات.
+// كل نص يأتي من الخادم يُدرج كنص (text node) عبر h()، ولا يُستعمل innerHTML.
+
+import { h, icon, clear, sheet, confirm, fmtHM, svgEl } from '/app/ui.js';
+
+const LOGO = 'M283.5 35.7 L243.5 12.6 L150 66.6 L56.5 12.6 L16.5 35.7 L16.5 270 L46.5 287.3 L56.5 281.5 L56.5 231.8 L150 285.8 L204.5 254.3 L204.5 214.3 L150 245.8 L56.5 191.8 L56.5 58.8 L150 112.8 L243.5 58.8 L243.5 103.5 L150 157.5 L95.5 126 L95.5 166 L150 197.5 L243.5 143.5 L243.5 281.5 L253.5 287.3 L283.5 270 Z';
+const DAY = 86400000;
+const TABS = [['codes', 'الأكواد', 'key'], ['activity', 'النشاط', 'pulse'], ['settings', 'الإعدادات', 'gear']];
+
+const root = document.getElementById('adm');
+const state = { data: null, tab: 'codes', filter: 'all', query: '', loadedAt: 0 };
+
+// ───────── أدوات ─────────
+const logo = () => svgEl('svg', { viewBox: '0 0 300 300', 'aria-hidden': 'true' }, svgEl('path', { d: LOGO }));
+
+function toast(message, kind = '') {
+  const el = h('div', { class: `toast ${kind}` }, message);
+  document.getElementById('toasts').append(el);
+  setTimeout(() => { el.classList.add('bye'); setTimeout(() => el.remove(), 320); }, kind === 'err' ? 5200 : 2800);
+}
+
+async function api(path, { method = 'GET', body } = {}) {
+  const init = { method, headers: {}, credentials: 'same-origin' };
+  if (method !== 'GET') init.headers['x-mv'] = '1';
+  if (body !== undefined) { init.body = JSON.stringify(body); init.headers['content-type'] = 'application/json'; }
+  try {
+    const res = await fetch(path, init);
+    const data = await res.json().catch(() => null);
+    if (res.status === 401 && state.data && path !== '/api/admin/login') { state.data = null; viewLogin('انتهت الجلسة. ادخل من جديد.'); }
+    return { ok: res.ok, status: res.status, data };
+  } catch {
+    return { ok: false, status: 0, data: null };
+  }
+}
+
+const dateStr = (ts) => new Date(ts).toLocaleDateString('ar-IQ-u-nu-latn', { year: 'numeric', month: 'short', day: 'numeric' });
+const dateTime = (ts) => new Date(ts).toLocaleString('ar-IQ-u-nu-latn', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+function ago(ts) {
+  if (!ts) return '';
+  const s = Math.max(0, (Date.now() - ts) / 1000);
+  if (s < 90) return 'الآن';
+  if (s < 3600) return `قبل ${Math.floor(s / 60)} د`;
+  if (s < 86400) return `قبل ${Math.floor(s / 3600)} س`;
+  if (s < 30 * 86400) return `قبل ${Math.floor(s / 86400)} يوم`;
+  return dateStr(ts);
+}
+let regions = null;
+try { regions = new Intl.DisplayNames(['ar'], { type: 'region' }); } catch { /* متصفح قديم */ }
+function country(code) {
+  if (!code) return '';
+  try { return regions?.of(code) || code; } catch { return code; }
+}
+const place = (d) => [d.city, country(d.country)].filter(Boolean).join('، ');
+
+async function copy(text, done = 'انتسخ') {
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; } catch {
+    const ta = h('textarea', { value: text, readOnly: true, style: { position: 'fixed', top: '0', opacity: '0' } });
+    document.body.append(ta);
+    ta.select();
+    try { ok = document.execCommand('copy'); } catch { /* ممنوع */ }
+    ta.remove();
+  }
+  toast(ok ? done : 'تعذّر النسخ. انسخ يدوياً.', ok ? 'ok' : 'err');
+  return ok;
+}
+async function share(text) {
+  if (navigator.share) { try { await navigator.share({ text }); } catch { /* أُلغيت */ } } else await copy(text, 'انتسخت الرسالة');
+}
+
+function statusOf(c) {
+  if (c.status !== 'active') return { key: 'stop', label: 'موقوف', chip: 'red' };
+  if (c.expired) return { key: 'end', label: 'منتهي', chip: 'warn' };
+  if (c.devices.length) return { key: 'on', label: 'مفعّل', chip: 'ok' };
+  if (c.activated_at) return { key: 'wait', label: 'بانتظار جهاز جديد', chip: '' };
+  return { key: 'wait', label: 'لم يُفعَّل بعد', chip: 'off' };
+}
+function validity(c) {
+  if (!c.activated_at) return c.duration_days ? `${c.duration_days} يوم من أول تفعيل` : 'دائم';
+  if (!c.expires_at) return 'دائم';
+  const left = Math.ceil((c.expires_at - Date.now()) / DAY);
+  return left <= 0 ? `انتهى ${dateStr(c.expires_at)}` : left === 1 ? 'ينتهي خلال يوم' : `باقي ${left} يوم`;
+}
+function inviteText(c) {
+  return [
+    c.label ? `مرحباً ${c.label}،` : 'مرحباً،',
+    'هذا كود تفعيلك في ميدي فويز:',
+    '',
+    c.display,
+    '',
+    `1) افتح الرابط من متصفح موبايلك (Chrome أو Safari): ${location.origin}`,
+    '2) اكتب الكود واضغط «تفعيل».',
+    '3) اربط مفاتيحك المجانية من داخل الموقع، دقيقتين ومرة وحدة.',
+    '',
+    'الكود يشتغل على جهاز واحد فقط، ففعّله من الموبايل اللي تستخدمه دائماً.',
+  ].join('\n');
+}
+
+function codeCells(display) {
+  const raw = display.replace(/^MV-/, '').replace(/-/g, '');
+  const cell = (ch, i) => h('span', { class: 'cell filled', style: { animationDelay: `${i * 45}ms` } }, ch);
+  return h('div', { class: 'code-box', role: 'img', 'aria-label': display },
+    h('span', { class: 'pre' }, 'MV'), h('span', { class: 'dash' }),
+    [...raw.slice(0, 4)].map((ch, i) => cell(ch, i)), h('span', { class: 'dash' }), [...raw.slice(4)].map((ch, i) => cell(ch, i + 4)));
+}
+
+function stepper(start, min, max) {
+  let value = start;
+  const out = h('output', null, String(value));
+  const minus = h('button', { type: 'button', 'aria-label': 'أقل', onclick: () => set(value - 1) }, '−');
+  const plus = h('button', { type: 'button', 'aria-label': 'أكثر', onclick: () => set(value + 1) }, '+');
+  function set(v) {
+    value = Math.min(max, Math.max(min, v));
+    out.textContent = String(value);
+    minus.disabled = value <= min;
+    plus.disabled = value >= max;
+  }
+  set(value);
+  return { el: h('div', { class: 'stepper' }, minus, out, plus), get value() { return value; } };
+}
+const field = (label, control, hint) => h('label', { class: 'field' }, h('span', null, label), control, hint ? h('small', null, hint) : null);
+
+// ───────── الدخول ─────────
+function viewLogin(message = '') {
+  root.classList.remove('in');
+  clear(root);
+  const input = h('input', { type: 'password', autocomplete: 'current-password', placeholder: 'كلمة المرور', 'aria-label': 'كلمة مرور لوحة التحكم' });
+  const msg = h('p', { class: 'gate-msg', role: 'alert' }, message);
+  const btn = h('button', { class: 'btn wide', type: 'submit' }, 'دخول');
+  const form = h('form', { onsubmit: async (e) => {
+    e.preventDefault();
+    if (!input.value || btn.disabled) return;
+    btn.disabled = true;
+    const r = await api('/api/admin/login', { method: 'POST', body: { password: input.value } });
+    btn.disabled = false;
+    if (r.ok) { msg.textContent = ''; await load(); return; }
+    msg.textContent = r.status === 429 ? 'محاولات كثيرة. جرّب بعد ربع ساعة.' : r.status === 401 ? 'كلمة المرور غير صحيحة.' : 'تعذّر الاتصال. حاول مرة ثانية.';
+    input.select();
+  } }, h('label', { class: 'field' }, input), msg, btn);
+  root.append(h('main', { class: 'gate' }, h('div', { class: 'gate-card' },
+    h('div', { class: 'brand-tile' }, logo()),
+    h('h1', { class: 'wordmark' }, 'ميدي فويز', h('small', { class: 'ltr' }, 'MediVoice')),
+    h('p', { class: 'gate-kicker' }, icon('shield'), 'لوحة التحكم'),
+    form)));
+  input.focus();
+}
+
+// ───────── الهيكل ─────────
+async function load(keepScroll = false) {
+  const r = await api('/api/admin/overview');
+  if (r.ok && r.data?.ok) {
+    const y = scrollY;
+    state.data = r.data;
+    state.loadedAt = Date.now();
+    renderApp();
+    if (keepScroll) scrollTo(0, y);
+    return true;
+  }
+  if (r.status === 401 || !state.data) viewLogin(r.status === 401 ? '' : 'تعذّر الاتصال. تأكد من الإنترنت.');
+  else toast('تعذّر تحديث البيانات.', 'err');
+  return false;
+}
+
+function renderApp() {
+  root.classList.add('in');
+  clear(root);
+  const view = h('main', { class: 'view' });
+  root.append(
+    h('header', { class: 'bar' },
+      h('span', { class: 'tile' }, logo()), h('span', { class: 'name' }, 'لوحة التحكم'), h('span', { class: 'grow' }),
+      h('button', { class: 'icon-btn', 'aria-label': 'تحديث البيانات', onclick: async (e) => { e.currentTarget.disabled = true; if (await load(true)) toast('تحدّثت البيانات'); } }, icon('refresh'))),
+    view,
+    h('nav', { class: 'nav', 'aria-label': 'أقسام اللوحة' }, TABS.map(([id, label, ic]) =>
+      h('button', { 'aria-current': state.tab === id ? 'page' : null, onclick: () => { if (state.tab === id) return; state.tab = id; renderApp(); scrollTo(0, 0); } }, icon(ic), label))));
+  ({ codes: tabCodes, activity: tabActivity, settings: tabSettings })[state.tab](view);
+}
+
+const stat = (value, sub, label) => h('div', { class: 'stat' }, h('b', null, value, sub ? h('small', null, sub) : null), h('span', null, label));
+
+// ───────── الأكواد ─────────
+function tabCodes(view) {
+  const d = state.data, t = d.totals;
+  const counts = { all: d.codes.length, on: 0, wait: 0, off: 0 };
+  for (const c of d.codes) { const k = statusOf(c).key; counts[k === 'on' ? 'on' : k === 'wait' ? 'wait' : 'off']++; }
+  const FILTERS = [['all', 'الكل'], ['on', 'مفعّل'], ['wait', 'بانتظار التفعيل'], ['off', 'موقوف أو منتهي']];
+  const listEl = h('div', { class: 'stack' });
+  const filtersEl = h('div', { class: 'filters', role: 'group', 'aria-label': 'تصفية الأكواد' });
+
+  function paintFilters() {
+    clear(filtersEl).append(...FILTERS.map(([id, label]) =>
+      h('button', { 'aria-pressed': String(state.filter === id), onclick: () => { state.filter = id; paintFilters(); paintList(); } }, label, h('b', null, String(counts[id])))));
+  }
+  function paintList() {
+    const q = state.query.trim().toLowerCase();
+    const qc = state.query.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const items = d.codes.filter((c) => {
+      const k = statusOf(c).key;
+      if (state.filter === 'on' && k !== 'on') return false;
+      if (state.filter === 'wait' && k !== 'wait') return false;
+      if (state.filter === 'off' && k !== 'stop' && k !== 'end') return false;
+      if (!q) return true;
+      return (c.label || '').toLowerCase().includes(q) || (c.note || '').toLowerCase().includes(q) || (qc.length >= 2 && `MV${c.code}`.includes(qc));
+    });
+    clear(listEl);
+    if (!d.codes.length) listEl.append(h('div', { class: 'empty' }, 'ما عندك أكواد بعد. أنشئ أول كود وأرسله للمستخدم.'));
+    else if (!items.length) listEl.append(h('div', { class: 'empty' }, 'ماكو كود يطابق البحث.'));
+    for (const c of items) listEl.append(codeCard(c));
+  }
+
+  const search = h('input', { class: 'input', type: 'search', placeholder: 'ابحث بالاسم أو الكود', value: state.query, 'aria-label': 'بحث في الأكواد', oninput: () => { state.query = search.value; paintList(); } });
+  view.append(h('div', { class: 'stack lg' },
+    h('div', { class: 'stats' },
+      stat(String(t.activated || 0), ` / ${t.codes}`, 'كود مفعّل'),
+      stat(fmtHM(t.today_sec), '', 'ساعة في آخر 24 ساعة'),
+      stat(String(t.today_users || 0), '', 'مستخدم نشط اليوم'),
+      stat(String(t.lectures || 0), '', 'محاضرة محوّلة')),
+    h('button', { class: 'btn wide', onclick: openCreate }, icon('plus'), 'كود جديد'),
+    h('div', { class: 'tools' },
+      h('div', { class: 'sec-title' }, h('h2', { class: 'h-section' }, 'الأكواد'), h('small', null, `${d.codes.length} كود`)),
+      d.codes.length > 4 ? h('div', { class: 'search' }, icon('search'), search) : null,
+      d.codes.length ? filtersEl : null),
+    listEl));
+  paintFilters();
+  paintList();
+}
+
+function codeCard(c) {
+  const st = statusOf(c);
+  const dev = c.devices[0];
+  const pct = c.daily_limit_sec ? Math.min(100, (c.used_sec / c.daily_limit_sec) * 100) : 0;
+  return h('button', { class: `cc ${st.key}`, onclick: () => openCode(c) },
+    h('div', { class: 'cc-top' }, h('b', { class: c.label ? '' : 'anon', dir: 'auto' }, c.label || 'بدون اسم'), h('span', { class: `chip ${st.chip}` }, st.label)),
+    h('div', { class: 'cc-line' }, h('span', { class: 'cc-code ltr' }, c.display), h('time', null, validity(c))),
+    dev ? h('div', { class: 'cc-line' }, icon('phone'), h('span', null, [dev.os, dev.browser, place(dev)].filter(Boolean).join('، ')), h('time', null, ago(dev.last_seen))) : null,
+    c.activated_at ? h('div', { class: 'use' },
+      h('div', { class: `track${pct > 85 ? ' hot' : ''}` }, h('i', { style: { width: `${pct}%` } })),
+      h('span', null, h('b', null, fmtHM(c.used_sec)), ` من ${fmtHM(c.daily_limit_sec)} اليوم`)) : null);
+}
+
+async function mutate(request, done, sheets = []) {
+  const r = await request;
+  if (!r.ok) { toast('ما تم. تأكد من الإنترنت وحاول مرة ثانية.', 'err'); return false; }
+  for (const s of sheets) s?.close();
+  await load(true);
+  if (done) toast(done, 'ok');
+  return true;
+}
+
+function openCode(c) {
+  const st = statusOf(c);
+  const path = `/api/admin/codes/${c.code}`;
+  const rows = [];
+  const row = (k, v, cls) => { if (v !== '' && v !== null && v !== undefined) rows.push(h('dt', null, k), h('dd', { class: cls || '', dir: 'auto' }, v)); };
+  row('الصلاحية', validity(c));
+  row('الحد اليومي', `${fmtHM(c.daily_limit_sec)} ساعة`);
+  if (c.activated_at) {
+    row('استخدام اليوم', `${fmtHM(c.used_sec)} ساعة`);
+    row('المجموع', `${fmtHM(c.total_sec)} ساعة، ${c.lectures} محاضرة، ${c.pdfs} PDF`);
+    row('المفاتيح', [c.gemini ? 'Gemini' : '', c.groq ? 'Groq' : ''].filter(Boolean).join(' و ') || 'لم يربط مفاتيحه بعد');
+  }
+  for (const dev of c.devices) {
+    row('الجهاز', [dev.os, dev.browser].filter(Boolean).join('، '));
+    row('المكان', place(dev));
+    row('فُعّل', dateTime(dev.first_seen));
+    row('آخر ظهور', ago(dev.last_seen));
+  }
+  if (c.max_devices > 1) row('الأجهزة المسموحة', `${c.devices.length} من ${c.max_devices}`);
+  row('أُنشئ', dateStr(c.created_at));
+  row('ملاحظة', c.note);
+
+  const item = (label, ic, fn, cls) => h('button', { class: cls || '', onclick: fn }, icon(ic), label);
+  const s = sheet({ title: c.label || 'كود بدون اسم', body: h('div', { class: 'stack lg' },
+    h('div', { class: 'code-show' }, codeCells(c.display), h('span', { class: `chip ${st.chip}` }, st.label)),
+    h('div', { class: 'btn-row' },
+      h('button', { class: 'btn small', onclick: () => copy(inviteText(c), 'انتسخت رسالة التفعيل') }, icon('copy'), 'نسخ الرسالة'),
+      h('button', { class: 'btn ghost small', onclick: () => share(inviteText(c)) }, icon('share'), 'مشاركة')),
+    h('dl', { class: 'kv' }, rows),
+    h('div', { class: 'menu' },
+      item('نسخ الكود فقط', 'copy', () => copy(c.display, 'انتسخ الكود')),
+      c.devices.length ? item('تصفير الجهاز', 'refresh', async () => {
+        if (!(await confirm({ title: 'تصفير الجهاز؟', message: 'يُلغى التفعيل من جهازه الحالي، ويقدر يفعّل نفس الكود على جهاز جديد.', ok: 'تصفير' }))) return;
+        mutate(api(`${path}/reset`, { method: 'POST' }), 'تصفّر الجهاز. الكود جاهز لتفعيل جديد.', [s]);
+      }) : null,
+      c.status === 'active'
+        ? item('إيقاف مؤقت', 'pause', () => mutate(api(path, { method: 'PATCH', body: { status: 'suspended' } }), 'توقّف الكود.', [s]))
+        : item('إعادة التشغيل', 'play', () => mutate(api(path, { method: 'PATCH', body: { status: 'active' } }), 'رجع الكود يشتغل.', [s])),
+      item(c.expires_at || c.duration_days ? 'تمديد الصلاحية' : 'تحديد مدة للكود', 'calendar', () => openExtend(c, s)),
+      item('تعديل البيانات', 'edit', () => openEdit(c, s)),
+      item('حذف الكود', 'trash', async () => {
+        if (!(await confirm({ title: 'حذف الكود؟', message: 'ينحذف الكود وسجل استخدامه نهائياً، وينقفل الموقع على صاحبه.', ok: 'حذف', danger: true }))) return;
+        mutate(api(path, { method: 'DELETE' }), 'انحذف الكود.', [s]);
+      }, 'red'))) });
+}
+
+function openExtend(c, parent) {
+  const path = `/api/admin/codes/${c.code}`;
+  const limited = !!(c.expires_at || c.duration_days);
+  const add = (label, days) => h('button', { onclick: () => mutate(api(path, { method: 'PATCH', body: { extend_days: days } }), 'تحدّثت الصلاحية.', [s, parent]) }, icon('calendar'), label);
+  const s = sheet({ title: limited ? 'تمديد الصلاحية' : 'تحديد مدة للكود', body: h('div', { class: 'stack' },
+    h('p', { class: 'muted' }, limited ? `الحالي: ${validity(c)}. اختر المدة اللي تنضاف.` : c.activated_at ? 'الكود دائم الآن. اختر مدة تبدأ من اليوم.' : 'الكود دائم الآن. اختر مدة تبدأ من أول تفعيل.'),
+    h('div', { class: 'menu' },
+      add('شهر', 30), add('3 أشهر', 90), add('6 أشهر', 180), add('سنة', 365),
+      limited ? h('button', { onclick: () => mutate(api(path, { method: 'PATCH', body: { expires_at: null } }), 'صار الكود دائم.', [s, parent]) }, icon('check'), 'خلّيه دائم') : null)) });
+}
+
+function openEdit(c, parent) {
+  const name = h('input', { type: 'text', value: c.label || '', maxLength: 80 });
+  const note = h('input', { type: 'text', value: c.note || '', maxLength: 200, placeholder: 'اختياري' });
+  const hours = h('input', { type: 'number', min: 0.5, max: 24, step: 0.5, value: Math.round((c.daily_limit_sec / 3600) * 100) / 100, inputMode: 'decimal' });
+  const devices = stepper(c.max_devices, 1, 5);
+  const btn = h('button', { class: 'btn wide', type: 'submit' }, 'حفظ');
+  const s = sheet({ title: 'تعديل البيانات', body: h('form', { class: 'stack', onsubmit: async (e) => {
+    e.preventDefault();
+    btn.disabled = true;
+    const ok = await mutate(api(`/api/admin/codes/${c.code}`, { method: 'PATCH', body: { label: name.value.trim(), note: note.value.trim(), daily_hours: Number(hours.value) || 8, max_devices: devices.value } }), 'انحفظ التعديل.', [s, parent]);
+    if (!ok) btn.disabled = false;
+  } },
+    field('اسم المستخدم', name),
+    field('ملاحظة', note),
+    field('الساعات المسموحة باليوم', hours),
+    h('div', { class: 'field' }, h('span', null, 'عدد الأجهزة المسموحة'), devices.el, h('small', null, 'الأصل جهاز واحد. زيده فقط لمن تريد تسمحله بأكثر.')),
+    btn) });
+}
+
+function openCreate() {
+  const cfg = state.data.settings;
+  const name = h('input', { type: 'text', placeholder: 'مثلاً: أحمد علي، مرحلة ثالثة', maxLength: 80 });
+  const note = h('input', { type: 'text', placeholder: 'اختياري', maxLength: 200 });
+  const custom = h('input', { type: 'number', min: 1, max: 3650, inputMode: 'numeric', placeholder: 'عدد الأيام' });
+  const customWrap = h('label', { class: 'field', hidden: true }, h('span', null, 'عدد الأيام'), custom);
+  const DUR = [[null, 'دائم'], [30, 'شهر'], [90, '3 أشهر'], [365, 'سنة'], ['x', 'غيرها']];
+  let dur = null;
+  const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'مدة الكود' });
+  const paintSeg = () => clear(seg).append(...DUR.map(([v, label]) => h('button', { type: 'button', 'aria-pressed': String(dur === v), onclick: () => { dur = v; customWrap.hidden = v !== 'x'; paintSeg(); if (v === 'x') custom.focus(); } }, label)));
+  paintSeg();
+  const hours = h('input', { type: 'number', min: 0.5, max: 24, step: 0.5, value: cfg.defaultDailyHours, inputMode: 'decimal' });
+  const devices = stepper(1, 1, 5);
+  const count = stepper(1, 1, 50);
+  const btn = h('button', { class: 'btn wide', type: 'submit' }, icon('plus'), 'إنشاء الكود');
+  const s = sheet({ title: 'كود جديد', body: h('form', { class: 'stack', onsubmit: async (e) => {
+    e.preventDefault();
+    const days = dur === 'x' ? parseInt(custom.value, 10) : dur;
+    if (dur === 'x' && !(days >= 1)) { toast('اكتب عدد الأيام.', 'err'); custom.focus(); return; }
+    btn.disabled = true;
+    const r = await api('/api/admin/codes', { method: 'POST', body: { count: count.value, label: name.value.trim(), note: note.value.trim(), days, max_devices: devices.value, daily_hours: Number(hours.value) || cfg.defaultDailyHours } });
+    if (!r.ok || !r.data?.created?.length) { btn.disabled = false; toast('تعذّر إنشاء الكود. حاول مرة ثانية.', 'err'); return; }
+    s.close();
+    await load(true);
+    openCreated(r.data.created);
+  } },
+    field('اسم المستخدم', name, 'يظهرلك في القائمة حتى تعرف الكود لمنو.'),
+    h('div', { class: 'field' }, h('span', null, 'مدة الكود'), seg, h('small', null, 'المدة تبدأ من أول تفعيل، مو من الآن.')),
+    customWrap,
+    field('الساعات المسموحة باليوم', hours),
+    h('details', { class: 'more' }, h('summary', null, 'خيارات إضافية'),
+      h('div', { class: 'stack' },
+        h('div', { class: 'field' }, h('span', null, 'عدد الأكواد'), count.el, h('small', null, 'لإنشاء دفعة أكواد بنفس الإعدادات. الأسماء تترقّم تلقائياً.')),
+        h('div', { class: 'field' }, h('span', null, 'عدد الأجهزة لكل كود'), devices.el, h('small', null, 'الأصل جهاز واحد فقط.')),
+        field('ملاحظة', note))),
+    btn) });
+  name.focus();
+}
+
+function openCreated(list) {
+  const codes = list.map((disp) => state.data.codes.find((c) => c.display === disp)).filter(Boolean);
+  if (!codes.length) return;
+  if (codes.length === 1) {
+    const c = codes[0];
+    sheet({ title: 'الكود جاهز', body: h('div', { class: 'stack lg' },
+      h('div', { class: 'code-show' }, codeCells(c.display)),
+      h('div', { class: 'msg-preview', dir: 'auto' }, inviteText(c)),
+      h('div', { class: 'btn-row' },
+        h('button', { class: 'btn small', onclick: () => copy(inviteText(c), 'انتسخت رسالة التفعيل') }, icon('copy'), 'نسخ الرسالة'),
+        h('button', { class: 'btn ghost small', onclick: () => share(inviteText(c)) }, icon('share'), 'مشاركة')),
+      h('p', { class: 'dim' }, 'أرسل الرسالة للمستخدم. أول جهاز يفعّل الكود ينقفل عليه.')) });
+    return;
+  }
+  const all = codes.map((c) => `${c.label ? `${c.label}: ` : ''}${c.display}`).join('\n');
+  sheet({ title: `${codes.length} كود جاهز`, body: h('div', { class: 'stack lg' },
+    h('div', { class: 'code-list' }, codes.map((c) => h('div', null, h('span', { dir: 'auto' }, c.label || ''), h('code', { class: 'ltr' }, c.display)))),
+    h('button', { class: 'btn wide', onclick: () => copy(all, 'انتسخت كل الأكواد') }, icon('copy'), 'نسخ الكل'),
+    h('p', { class: 'dim' }, 'افتح أي كود من القائمة حتى تنسخ رسالة التفعيل الخاصة به.')) });
+}
+
+// ───────── النشاط ─────────
+function eventView(e, byCode) {
+  const c = e.code ? byCode.get(e.code) : null;
+  const who = h('b', { dir: 'auto' }, c?.label || e.code || 'مستخدم');
+  const detail = e.detail ? String(e.detail).replace(/ · /g, '، ') : '';
+  switch (e.type) {
+    case 'activated': return ['check', 'good', [who, ' فعّل الكود', detail ? ` من ${detail}` : '']];
+    case 'device_moved': return ['swap', '', [who, ' نقل التفعيل لمتصفح آخر على نفس الجهاز', detail ? ` (${detail})` : '']];
+    case 'activate_blocked': return ['lock', 'bad', ['محاولة تفعيل كود ', who, ' على جهاز ثانٍ ورُفضت', detail ? ` (${detail})` : '']];
+    case 'activate_failed': return ['warn', 'bad', ['محاولة تفعيل بكود غير صحيح']];
+    case 'device_mismatch': return ['warn', 'bad', ['جلسة ', who, ' فُتحت من نظام مختلف ورُفضت', detail ? ` (${detail})` : '']];
+    case 'screen_changed': return ['phone', '', [who, ': تغيّر قياس شاشة الجهاز']];
+    case 'key_linked': return ['key', '', [who, ` ربط مفتاح ${e.detail === 'groq' ? 'Groq' : 'Gemini'}`]];
+    case 'codes_created': return ['plus', '', [e.detail === '1' ? 'أنشأت كوداً جديداً' : `أنشأت ${e.detail} كود`]];
+    case 'devices_reset': return ['refresh', '', ['صفّرت جهاز ', who]];
+    case 'code_deleted': return ['trash', '', [`حذفت الكود ${e.code || ''}`]];
+    case 'code_suspended': return ['pause', '', ['أوقفت كود ', who]];
+    case 'code_resumed': return ['play', '', ['شغّلت كود ', who, ' من جديد']];
+    case 'admin_login': return ['shield', '', ['دخول إلى لوحة التحكم']];
+    case 'admin_login_failed': return ['shield', 'bad', ['محاولة دخول فاشلة للوحة التحكم']];
+    case 'admin_password_changed': return ['shield', 'good', ['تغيّرت كلمة مرور اللوحة']];
+    default: return ['info', '', [e.type]];
+  }
+}
+
+function tabActivity(view) {
+  const d = state.data, t = d.totals;
+  const byDay = new Map(d.days.map((x) => [x.day, x]));
+  const today = Math.floor((d.now + 3 * 3600000) / DAY); // اليوم بتوقيت بغداد، مثل تجميع الخادم
+  const cols = [];
+  for (let i = 13; i >= 0; i--) cols.push({ sec: 0, lectures: 0, pdfs: 0, users: 0, ...(byDay.get(today - i) || {}), day: today - i });
+  const max = Math.max(1800, ...cols.map((c) => c.sec));
+  const dayLabel = (c) => new Date(c.day * DAY).toLocaleDateString('ar-IQ-u-nu-latn', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' });
+  const note = h('p', { class: 'chart-note' });
+  const chart = h('div', { class: 'chart' });
+  let sel = cols.length - 1;
+  const paint = () => {
+    clear(chart).append(...cols.map((c, i) => h('button', { class: `col${c.sec > 0 ? ' has' : ''}${i === cols.length - 1 ? ' today' : ''}`, 'aria-pressed': String(i === sel), 'aria-label': dayLabel(c), onclick: () => { sel = i; paint(); } },
+      h('i', { class: 'bar', style: { height: `${Math.max(2, (c.sec / max) * 100)}%` } }), String(new Date(c.day * DAY).getUTCDate()))));
+    const c = cols[sel];
+    note.textContent = c.sec || c.lectures || c.pdfs
+      ? `${dayLabel(c)}: ${fmtHM(c.sec)} ساعة، ${c.lectures} محاضرة، ${c.pdfs} ملف PDF، ${c.users} مستخدم.`
+      : `${dayLabel(c)}: ماكو نشاط.`;
+  };
+  paint();
+
+  const byCode = new Map(d.codes.map((c) => [c.display, c]));
+  const events = h('div');
+  if (!d.events.length) events.append(h('div', { class: 'empty' }, 'السجل فارغ.'));
+  for (const e of d.events) {
+    const [ic, tone, parts] = eventView(e, byCode);
+    const where = [ago(e.ts), country(e.country), tone === 'bad' && e.ip ? e.ip : ''].filter(Boolean).join('، ');
+    events.append(h('div', { class: `ev ${tone}` }, h('span', { class: 'dot' }, icon(ic)), h('p', null, parts), h('small', null, where)));
+  }
+
+  view.append(h('div', { class: 'stack lg' },
+    h('div', { class: 'stats' },
+      stat(fmtHM(t.total_sec), '', 'ساعة محوّلة بالمجموع'),
+      stat(String(t.lectures || 0), '', 'محاضرة'),
+      stat(String(t.pdfs || 0), '', 'ملف PDF'),
+      stat(String(t.suspended || 0), '', 'كود موقوف')),
+    h('section', { class: 'card stack' },
+      h('div', { class: 'sec-title' }, h('h2', { class: 'h-section' }, 'ساعات التحويل'), h('small', null, 'آخر 14 يوم')),
+      chart, note),
+    h('section', { class: 'stack' },
+      h('div', { class: 'sec-title' }, h('h2', { class: 'h-section' }, 'السجل'), h('small', null, 'آخر 80 حدث')),
+      h('div', { class: 'card' }, events))));
+}
+
+// ───────── الإعدادات ─────────
+function fixUrl(v) {
+  let s = String(v || '').trim();
+  if (!s) return '';
+  if (s.startsWith('@')) return `https://t.me/${s.slice(1)}`;
+  if (/^\+?\d[\d\s-]{6,}$/.test(s)) return `https://wa.me/${s.replace(/\D/g, '')}`;
+  if (!/^(https?:\/\/|tel:|mailto:)/i.test(s)) s = `https://${s}`;
+  return s.replace(/^http:\/\//i, 'https://');
+}
+const lines = (v) => String(v || '').split(/[\n,]+/).map((x) => x.trim()).filter(Boolean);
+
+function tabSettings(view) {
+  const d = state.data, cfg = d.settings;
+  const supLabel = h('input', { type: 'text', value: cfg.support?.label || '', maxLength: 60, placeholder: 'تواصل ويانه على تيليكرام' });
+  const supUrl = h('input', { type: 'text', value: cfg.support?.url || '', maxLength: 200, dir: 'ltr', placeholder: 'https://t.me/username', inputMode: 'url', autocapitalize: 'off' });
+  const notice = h('textarea', { value: cfg.notice || '', maxLength: 300, placeholder: 'مثلاً: صيانة اليوم الساعة 10 بالليل' });
+  const hours = h('input', { type: 'number', min: 0.5, max: 24, step: 0.5, value: cfg.defaultDailyHours, inputMode: 'decimal' });
+  const pdfs = h('input', { type: 'number', min: 1, max: 500, value: cfg.pdfPerDay, inputMode: 'numeric' });
+  const moves = stepper(cfg.moveLimit ?? 2, 0, 5);
+  const chunk = h('input', { type: 'number', min: 60, max: 900, step: 30, value: cfg.chunkSec, inputMode: 'numeric' });
+  const gem = h('textarea', { class: 'mono', value: cfg.geminiModels.join('\n'), rows: 6, spellcheck: false });
+  const grq = h('textarea', { class: 'mono', value: cfg.groqModels.join('\n'), rows: 3, spellcheck: false });
+  const stt = h('textarea', { class: 'mono', value: cfg.sttModels.join('\n'), rows: 2, spellcheck: false });
+  const save = h('button', { class: 'btn wide', onclick: async () => {
+    save.disabled = true;
+    const r = await api('/api/admin/settings', { method: 'PUT', body: {
+      support: { label: supLabel.value.trim(), url: fixUrl(supUrl.value) }, notice: notice.value.trim(),
+      defaultDailyHours: Number(hours.value), pdfPerDay: Number(pdfs.value), moveLimit: moves.value, chunkSec: Number(chunk.value),
+      geminiModels: lines(gem.value), groqModels: lines(grq.value), sttModels: lines(stt.value),
+    } });
+    save.disabled = false;
+    if (!r.ok) { toast('ما انحفظت الإعدادات. حاول مرة ثانية.', 'err'); return; }
+    state.data.settings = r.data.settings;
+    supUrl.value = r.data.settings.support?.url || '';
+    toast('انحفظت الإعدادات', 'ok');
+  } }, 'حفظ الإعدادات');
+
+  const cur = h('input', { type: 'password', autocomplete: 'current-password' });
+  const next = h('input', { type: 'password', autocomplete: 'new-password', minLength: 8 });
+  const pwBtn = h('button', { class: 'btn ghost wide', type: 'submit' }, 'تغيير كلمة المرور');
+  const pwForm = h('form', { class: 'stack', onsubmit: async (e) => {
+    e.preventDefault();
+    if (next.value.length < 8) { toast('كلمة المرور الجديدة 8 أحرف على الأقل.', 'err'); next.focus(); return; }
+    pwBtn.disabled = true;
+    const r = await api('/api/admin/password', { method: 'POST', body: { current: cur.value, next: next.value } });
+    pwBtn.disabled = false;
+    if (r.ok) { cur.value = ''; next.value = ''; state.data.password_changed = true; toast('تغيّرت كلمة المرور', 'ok'); return; }
+    toast(r.data?.error === 'wrong_password' ? 'كلمة المرور الحالية غير صحيحة.' : 'تعذّر التغيير. حاول مرة ثانية.', 'err');
+  } }, field('كلمة المرور الحالية', cur), field('كلمة المرور الجديدة', next, '8 أحرف على الأقل.'), pwBtn);
+
+  view.append(h('div', { class: 'stack lg' },
+    !d.password_changed ? h('div', { class: 'banner' }, icon('shield'), h('span', null, 'ما زلت على كلمة المرور الأولى. غيّرها لكلمة تحفظها أنت فقط.')) : null,
+    h('section', { class: 'card stack' },
+      h('h3', null, 'التواصل وياك'),
+      h('p', { class: 'dim' }, 'يظهر للمستخدم بشاشة القفل وبصفحة حسابه، حتى يطلب كود أو يبلغك بمشكلة.'),
+      field('نص الرابط', supLabel),
+      field('الرابط', supUrl, 'رابط تيليكرام أو واتساب. تقدر تكتب @username أو رقم الهاتف وأنا أرتّبه.')),
+    h('section', { class: 'card stack' },
+      h('h3', null, 'إعلان لكل المستخدمين'),
+      field('نص الإعلان', notice, 'يظهر كشريط بالصفحة الرئيسية. اتركه فارغ إذا ماكو شي.')),
+    h('section', { class: 'card stack' },
+      h('h3', null, 'الحدود'),
+      field('الساعات اليومية للكود الجديد', hours),
+      field('ملفات PDF باليوم لكل مستخدم', pdfs, 'توليد PDF على الخادم المجاني محدود بـ 10 دقائق باليوم لكل الموقع، يعني تقريباً 250 ملف.'),
+      h('div', { class: 'field' }, h('span', null, 'نقل التفعيل لمتصفح آخر على نفس الجهاز'), moves.el,
+        h('small', null, 'عدد المرات المسموحة بالشهر. يفيد لمن يفتح الرابط من داخل تيليكرام وبعدين من Chrome. الصفر يمنعه نهائياً.'))),
+    h('details', { class: 'more' }, h('summary', null, 'إعدادات متقدمة للمحركات'),
+      h('div', { class: 'stack' },
+        field('طول المقطع الصوتي بالثواني', chunk, 'الأقصر أدق وأبطأ، والأطول يوفر عدد الطلبات. من 60 إلى 900.'),
+        field('نماذج Gemini بالترتيب', gem, 'نموذج بكل سطر. يُجرَّب الأول، وإذا خلصت حصته ينتقل للي بعده.'),
+        field('نماذج Groq للنص', grq),
+        field('نماذج Groq للصوت', stt))),
+    save,
+    h('section', { class: 'card stack' }, h('h3', null, 'كلمة مرور اللوحة'), pwForm),
+    h('button', { class: 'btn danger wide', onclick: async () => { await api('/api/admin/logout', { method: 'POST' }); state.data = null; viewLogin(); } }, icon('logout'), 'تسجيل الخروج'),
+    h('p', { class: 'dim', style: { textAlign: 'center' } }, `الإصدار ${d.build}`)));
+}
+
+// ───────── الإقلاع ─────────
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && state.data && Date.now() - state.loadedAt > 45000 && !document.querySelector('.sheet')) load(true);
+});
+load();
