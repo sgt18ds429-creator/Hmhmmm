@@ -72,6 +72,7 @@ export function viewNew(ctx, el, { file }) {
   const subjects = h('datalist', { id: 'mv-subjects' });
   const types = h('div', { class: 'types', role: 'radiogroup', 'aria-label': 'نوع الملزمة' });
   const plainLink = h('button', { class: 'linkish', type: 'button', onclick: () => { form.output = form.output === 'transcript' ? 'notes' : 'transcript'; paintTypes(); } });
+  const bilingual = h('p', { class: 'hint bilingual' }, 'كل ملزمة تطلع بنسختين كاملتين، عربية وإنجليزية، والمصطلحات الطبية بالإنجليزية في النسختين.');
   const toggles = h('div', { class: 'stack' });
 
   function paintTypes() {
@@ -84,6 +85,7 @@ export function viewNew(ctx, el, { file }) {
         h('span', { class: 'type-check' }, icon('check'))));
     }
     plainLink.textContent = form.output === 'transcript' ? 'اخترت النص المفرّغ فقط بدون شرح. رجّعني لأنواع الملزمة' : 'أريد النص المفرّغ فقط كما قيل، بدون شرح';
+    bilingual.hidden = form.output === 'transcript';
     types.classList.toggle('dim-all', form.output === 'transcript');
     pdfBox.hidden = form.output !== 'integrated';
     if (form.output === 'integrated') paintPdf();
@@ -100,7 +102,7 @@ export function viewNew(ctx, el, { file }) {
   el.append(h('div', { class: 'stack lg' },
     h('div', { class: 'filecard' }, icon('file'), h('div', null, h('b', { dir: 'auto' }, file.name || 'تسجيل'), fileMeta)),
     warn,
-    h('div', { class: 'field' }, h('span', null, 'شكل الملزمة'), types, pdfBox, pdfInput, plainLink),
+    h('div', { class: 'field' }, h('span', null, 'شكل الملزمة'), types, bilingual, pdfBox, pdfInput, plainLink),
     h('div', { class: 'stack' }, fTitle.el, h('div', { class: 'grid2' }, fSubject.el, fLecturer.el), subjects),
     toggles,
     fKeywords.el,

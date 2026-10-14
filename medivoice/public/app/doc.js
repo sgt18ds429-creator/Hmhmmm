@@ -100,7 +100,8 @@ export async function viewDoc(ctx, el, { id, fresh }) {
       h('span', { class: 'badge mode ltr' }, MODE_LABEL[doc.meta.mode] || 'Notes'),
       a ? h('span', { class: 'badge ok', title: a.verdict || '' }, icon('check'), a.fixes || a.added ? `روجعت: ${[a.fixes ? countOf(a.fixes, ['تصحيح', 'تصحيحان', 'تصحيحات', 'تصحيحاً']) : '', a.added ? countOf(a.added, ['إضافة', 'إضافتان', 'إضافات', 'إضافة']) : ''].filter(Boolean).join('، ')}` : 'روجعت مقابل التسجيل') : null,
       doc.slides?.pages?.length ? h('span', { class: 'badge' }, icon('book'), `${doc.slides.pages.length} سلايد`) : null,
-      hasAlt ? h('span', { class: 'badge' }, icon('text'), 'عربي + English') : null));
+      hasAlt ? h('span', { class: 'badge' }, icon('text'), 'عربي + English') : null,
+      doc.stats.gate && !doc.stats.gate.onOpen ? h('span', { class: 'badge ok', title: 'فحص آلي لكل الصفحات قبل التسليم: تكرار، فقرات مكررة، كتل فارغة' }, icon('check'), 'فُحصت كل الصفحات') : null));
     if (hasAlt) {
       const seg = h('div', { class: 'seg lang-seg', role: 'group' });
       const paintSeg = () => [...seg.children].forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === view)));

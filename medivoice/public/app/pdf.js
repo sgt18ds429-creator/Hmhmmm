@@ -360,7 +360,7 @@ ${opts.screen ? '@media screen { body { background: #2a1a4d; } .cover, main { ma
   </div>
   <div class="bars" aria-hidden="true">${soundBars()}</div>
   <div class="meta">${metaItems.map(([k, v]) => `<div><small>${esc(k)}</small><b dir="auto">${esc(v)}</b></div>`).join('')}</div>
-  ${doc.stats?.audit ? '<div class="audit"><i></i>روجعت كاملة مقابل التسجيل قبل التسليم</div>' : ''}
+  ${doc.stats?.audit || (doc.stats?.gate && !doc.stats.gate.onOpen) ? `<div class="audit"><i></i>${doc.stats?.audit ? 'روجعت كاملة مقابل التسجيل' : ''}${doc.stats?.audit && doc.stats?.gate ? ' وفُحصت كل صفحاتها' : doc.stats?.gate ? 'فُحصت كل صفحاتها' : ''} قبل التسليم</div>` : ''}
   <div class="foot">${notes ? 'شرح مكتوب آلياً من تسجيل المحاضرة. راجعه مع المحاضرة الأصلية قبل الاعتماد عليه.' : 'نص مفرّغ آلياً من تسجيل صوتي. راجعه مع المحاضرة الأصلية قبل الاعتماد عليه.'}</div>
 </section>
 <main id="flow">
