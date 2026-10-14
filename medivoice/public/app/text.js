@@ -34,9 +34,17 @@ export const uid = () => Math.random().toString(36).slice(2, 10);
 //  > ملاحظة مهمة
 //  | عمود | عمود |   (جدول: أول صف للعناوين)
 //  @fig: النوع | بحث | بحث أعم | ما تُظهره الصورة | تعليق   (طلب صورة توضيحية في هذا الموضع)
+//  @slide: رقم الصفحة | تعليق   (صورة من سلايدات المحاضرة المرفوعة)
+//  ?? سؤال اختيار من متعدد    ثم خياراته a) b) c) d)    ثم  = حرف الجواب | التعليل
 //  [[medical term]]
 
+// أنواع الملزمة المشروحة (ما عدا 'transcript': نص مفرّغ فقط)
+export const NOTE_MODES = ['highyield', 'notes', 'integrated'];
+export const isNotes = (mode) => NOTE_MODES.includes(mode);
+export const MODE_LABEL = { highyield: 'High-Yield', notes: 'Comprehensive', integrated: 'Integrated', transcript: 'نص مفرّغ' };
+
 const FIG_KINDS = ['radiograph', 'diagram', 'photo', 'micrograph'];
+const MCQ_LETTERS = 'abcd';
 
 /** سطر طلب صورة: «النوع | بحث | بحث أعم | ما يجب أن تُظهره | تعليق». يرجع null إذا كان ناقصاً. */
 function parseFigLine(rest) {
@@ -77,18 +85,36 @@ export function parseMarkup(raw) {
   const flush = () => {
     if (para.length) { blocks.push({ t: 'p', text: fixInline(para.join(' ')) }); para = []; }
   };
+  const openMcq = () => { const last = blocks[blocks.length - 1]; return last?.t === 'mcq' && last._open ? last : null; };
   for (const lineRaw of text.split('\n')) {
     const line = lineRaw.trim();
     if (!line || /^[-=_*]{3,}$/.test(line)) {
       flush();
-      for (const b of blocks) if (b.t === 'note' || b.t === 'table') delete b._open; // سطر فارغ ينهي الملاحظة والجدول
+      for (const b of blocks) if (b.t === 'note' || b.t === 'table' || b.t === 'mcq') delete b._open; // سطر فارغ ينهي الملاحظة والجدول والسؤال
       continue;
     }
     let m;
+    const mcq = openMcq();
     if ((m = line.replace(/^[`*_\s]+/, '').match(/^(?:[-•]\s*)?@fig\b[`*_]*\s*:?\s*(.*)$/i))) {
       flush();
       const fig = parseFigLine(m[1]);
       if (fig) blocks.push(fig);
+    } else if ((m = line.replace(/^[`*_\s]+/, '').match(/^(?:[-•]\s*)?@slide\b[`*_]*\s*:?\s*(\d{1,3})\s*(?:\|\s*(.*))?$/i))) {
+      flush();
+      blocks.push({ t: 'slidereq', page: parseInt(m[1], 10), caption: fixInline(m[2] || '').slice(0, 240) });
+    } else if ((m = line.match(/^\?\?\s*(.+)$/))) {
+      flush();
+      blocks.push({ t: 'mcq', q: fixInline(m[1]), opts: [], ans: -1, why: '', _open: true });
+      continue;
+    } else if (mcq && (m = line.match(/^(?:[-*•]\s*)?\(?([a-dA-D])[).]\s*(.+)$/))) {
+      const i = MCQ_LETTERS.indexOf(m[1].toLowerCase());
+      if (i === mcq.opts.length) mcq.opts.push(fixInline(m[2]));
+      continue;
+    } else if (mcq && (m = line.match(/^=\s*\(?([a-dA-D])\)?\s*(?:\|\s*(.*))?$/))) {
+      mcq.ans = MCQ_LETTERS.indexOf(m[1].toLowerCase());
+      mcq.why = fixInline(m[2] || '');
+      delete mcq._open;
+      continue;
     } else if (/^\|.+\|/.test(line)) {
       flush();
       const cells = splitRow(line);
@@ -124,7 +150,7 @@ export function parseMarkup(raw) {
   for (const b of blocks) delete b._open;
   return blocks
     .map((b) => (b.t === 'table' ? closeTable(b) : b))
-    .filter((b) => (b.items ? b.items.length : b.rows ? b.rows.length : b.t === 'figreq' || b.text));
+    .filter((b) => (b.items ? b.items.length : b.rows ? b.rows.length : b.t === 'mcq' ? b.opts.length >= 2 : b.t === 'figreq' || b.t === 'slidereq' || b.text));
 }
 
 export function blocksToMarkup(blocks) {
@@ -138,6 +164,8 @@ export function blocksToMarkup(blocks) {
     else if (b.t === 'ol') out.push(b.items.map((i, n) => `${n + 1}. ${i}`).join('\n'));
     else if (b.t === 'table') out.push([row(b.head), row(b.head.map(() => '---')), ...b.rows.map(row)].join('\n'));
     else if (b.t === 'figreq') out.push(`@fig: ${b.kind} | ${b.query} | ${b.alt || ''} | ${b.show || ''} | ${b.caption || ''}`);
+    else if (b.t === 'slidereq') out.push(`@slide: ${b.page} | ${b.caption || ''}`);
+    else if (b.t === 'mcq') out.push([`?? ${b.q}`, ...b.opts.map((o, i) => `${MCQ_LETTERS[i]}) ${o}`), b.ans >= 0 ? `= ${MCQ_LETTERS[b.ans]}${b.why ? ` | ${b.why}` : ''}` : ''].filter(Boolean).join('\n'));
   }
   return out.join('\n\n');
 }
@@ -157,7 +185,7 @@ export function splitInline(text) {
   return out;
 }
 
-export const blockText = (b) => (b.items ? b.items.join(' ') : b.rows ? [...b.head, ...b.rows.flat()].join(' ') : b.t === 'figreq' ? '' : b.text || '');
+export const blockText = (b) => (b.items ? b.items.join(' ') : b.rows ? [...b.head, ...b.rows.flat()].join(' ') : b.t === 'mcq' ? [b.q, ...b.opts, b.why].join(' ') : b.t === 'figreq' || b.t === 'slidereq' ? '' : b.text || '');
 
 /** لغة النص الغالبة ('ar' أو 'en'). المصطلحات بين [[ ]] لا تُحسب. */
 export function langOf(text) {

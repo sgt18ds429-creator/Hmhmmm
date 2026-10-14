@@ -116,6 +116,24 @@ export function makeIO() {
         return res.json();
       },
     },
+    /** يقصّ جزءاً من صورة (data URL) حسب مربع [ymin, xmin, ymax, xmax] على مقياس 0..1000، ويرجع JPEG */
+    async cropImage(dataUrl, box = [0, 0, 1000, 1000], maxSide = 1400) {
+      const im = await new Promise((resolve, reject) => { const i = new Image(); i.onload = () => resolve(i); i.onerror = reject; i.src = dataUrl; });
+      const W = im.naturalWidth, H = im.naturalHeight;
+      const pad = 0.012; // هامش صغير حول الشكل
+      const y1 = Math.max(0, (box[0] / 1000 - pad) * H), x1 = Math.max(0, (box[1] / 1000 - pad) * W);
+      const y2 = Math.min(H, (box[2] / 1000 + pad) * H), x2 = Math.min(W, (box[3] / 1000 + pad) * W);
+      const cw = Math.max(16, x2 - x1), ch = Math.max(16, y2 - y1);
+      const k = Math.min(1, maxSide / Math.max(cw, ch));
+      const c = document.createElement('canvas');
+      c.width = Math.round(cw * k); c.height = Math.round(ch * k);
+      const g = c.getContext('2d');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+      g.imageSmoothingQuality = 'high';
+      g.drawImage(im, x1, y1, cw, ch, 0, 0, c.width, c.height);
+      const out = c.toDataURL('image/jpeg', 0.86);
+      return { mime: 'image/jpeg', dataUrl: out, base64: out.slice(out.indexOf(',') + 1), w: c.width, h: c.height };
+    },
     /** size: 'small' للمعاينة والاختيار، 'large' للملزمة */
     async loadImage(candidate, size) {
       const url = size === 'large' ? candidate.large || candidate.small : candidate.small;

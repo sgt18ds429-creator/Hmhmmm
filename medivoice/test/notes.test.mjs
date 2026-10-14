@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Engine, writeNotes, enrich, complete, normalizePlan, rewriteLecture, sameContent, pickFigures, PipelineError } from '../public/app/pipeline.js';
-import { parseMarkup, blockText, countWords, uid } from '../public/app/text.js';
+import { parseMarkup, blockText, countWords, uid, blocksToMarkup } from '../public/app/text.js';
 import { buildPdfHtml } from '../public/app/pdf.js';
 
 // ── تفريغ محاضرة قصيرة بموضوعين ──
@@ -53,8 +53,8 @@ function gemResponse(text, finishReason = 'STOP') {
 }
 
 /** io وهمي: يرد على كل نوع طلب حسب نص التعليمات، ويسجّل الطلبات. */
-function makeIO({ section = (user, n) => null, verify = () => ({ choice: 'A', confidence: 0.9, caption: 'تعليق مطابق للصورة' }), plan = null, figPlan = null, proof = null } = {}) {
-  const calls = { plan: 0, section: [], review: 0, glossary: 0, verify: [], proof: 0 };
+function makeIO({ section = (user, n) => null, verify = () => ({ choice: 'A', confidence: 0.9, caption: 'تعليق مطابق للصورة' }), plan = null, figPlan = null, proof = null, review = null, mcq = null } = {}) {
+  const calls = { plan: 0, section: [], review: 0, glossary: 0, verify: [], proof: 0, audit: [], mcq: 0 };
   const io = {
     sleep: async () => {},
     blobToBase64: async () => '',
@@ -66,7 +66,7 @@ function makeIO({ section = (user, n) => null, verify = () => ({ choice: 'A', co
         calls.plan++;
         return gemResponse(JSON.stringify(plan || { kind: 'lecture', title: 'استرواح الصدر والانصباب الجنبي', sections: [{ from: 0, title: 'استرواح الصدر', points: 'التعريف والعلامات' }, { from: 4, title: 'الانصباب الجنبي', points: 'العلامات' }] }));
       }
-      if (system.includes('شرحاً مكتوباً مفصلاً')) {
+      if (system.includes('شرحاً مكتوباً مفصلاً') || system.includes('ملخصات امتحانية')) {
         calls.section.push(user);
         const custom = section(user, calls.section.length);
         if (custom) return custom;
@@ -88,9 +88,25 @@ function makeIO({ section = (user, n) => null, verify = () => ({ choice: 'A', co
         calls.planner = (calls.planner || 0) + 1;
         return gemResponse(JSON.stringify(figPlan || { title: 'عنوان', figures: [] }));
       }
-      if (system.includes('تختار صورة توضيحية')) {
-        calls.verify.push({ user, images: parts.filter((p) => p.inline_data).length });
-        return gemResponse(JSON.stringify(verify(user, calls.verify.length)));
+      if (system.includes('تختار الصور التوضيحية')) {
+        // دفعة أشكال في طلب واحد: نفكّكها ونسأل verify عن كل شكل بصيغة الطلب المفرد
+        const figs = [...user.matchAll(/الشكل (\d+)(?: \(قسم «([^»]*)»\))?:\n- الشرح الذي ستوضّحه: «([^»]*)»\n- المطلوب أن تُظهره: (.*)\n- نوعها المطلوب: .*\n- مرشحاتها: (.*)/g)];
+        const picks = figs.map(([, n, sec, ctx, show, labels]) => {
+          const single = `الشرح الذي ستوضّحه الصورة${sec ? ` (من قسم «${sec}»)` : ''}:\n«${ctx}»\n\nالمطلوب أن تُظهره الصورة: ${show}`;
+          calls.verify.push({ user: single, images: labels.split('، ').length });
+          const v = verify(single, calls.verify.length);
+          const choice = String(v.choice || 'none');
+          return { fig: Number(n), choice: /^[A-Z]$/i.test(choice) ? `${n}${choice.toUpperCase()}` : choice, confidence: v.confidence, caption: v.caption };
+        });
+        return gemResponse(JSON.stringify({ picks }));
+      }
+      if (system.includes('تراجع ملزمة')) {
+        calls.audit.push(user);
+        return gemResponse(JSON.stringify(review ? review(user) : { fixes: [], missing: [], verdict: 'جيدة' }));
+      }
+      if (system.includes('ممتحن')) {
+        calls.mcq++;
+        return gemResponse(JSON.stringify(mcq ? mcq(user) : { questions: Array.from({ length: 8 }, (_, i) => ({ q: `سؤال ${i + 1} عن [[pneumothorax]]؟`, options: ['أ', 'ب', 'ج', 'د'], answer: i % 4, why: 'لأن' })) }));
       }
       return { ok: false, status: 400, data: { error: { message: 'unexpected prompt' } } };
     },
@@ -261,7 +277,8 @@ test('ملف PDF يعرض الجداول وصندوق المراجعة ونوع 
   const html = buildPdfHtml(doc, { paged: true });
   assert.match(html, /<table class="tbl" dir="rtl"><thead><tr><th dir="rtl">العلامة<\/th>/);
   assert.match(html, /<ul class="box" dir="rtl">/);
-  assert.match(html, /ملزمة مشروحة/);
+  assert.match(html, /Comprehensive/);
+  assert.match(html, /روجعت كاملة|ملزمة/);
   assert.ok(!html.includes('@fig'));
 });
 
@@ -338,7 +355,7 @@ test('إذا خلصت حصة Gemini أثناء الكتابة يكمل Groq بأ
   io.gemini = origGemini;
 });
 
-test('الأقسام تُكتب معاً (3 مع Gemini) والصور والقاموس والمراجعة تعمل في نفس الوقت', async () => {
+test('الأقسام تُكتب معاً (4 مع Gemini) والصور والقاموس والمراجعة تعمل في نفس الوقت', async () => {
   const sections = Array.from({ length: 8 }, (_, i) => ({ from: i * 2, title: `موضوع ${i + 1}` }));
   const paras = Array.from({ length: 16 }, (_, i) => `فقرة ${i} عن [[topic ${Math.floor(i / 2)}]] ${'وشرح طويل لها. '.repeat(30)}`);
   const doc = transcriptDoc();
@@ -361,13 +378,13 @@ test('الأقسام تُكتب معاً (3 مع Gemini) والصور والقا
   };
   const engine = new Engine(io, CAPS);
   await writeNotes(doc, engine);
-  assert.equal(maxWriting, 3, 'ثلاثة أقسام في نفس الوقت');
+  assert.equal(maxWriting, 4, 'أربعة أقسام في نفس الوقت');
   // القاموس يبدأ مع الصور، لا بعدها
   const order = [];
   const base2 = io.gemini;
   io.gemini = async (model, body) => {
     const system = body.systemInstruction?.parts?.[0]?.text || '';
-    order.push(system.includes('قاموس') ? 'glossary' : system.includes('تختار صورة') ? 'figure' : system.includes('قائمة مراجعة') ? 'review' : 'other');
+    order.push(system.includes('قاموس') ? 'glossary' : system.includes('تختار الصور') ? 'figure' : system.includes('قائمة مراجعة') ? 'review' : 'other');
     return base2(model, body);
   };
   await complete(doc, engine, { io });
@@ -441,7 +458,7 @@ test('الصور والتدقيق يجريان أثناء كتابة الأقس�
   const base = io.gemini;
   io.gemini = async (model, body) => {
     const system = body.systemInstruction?.parts?.[0]?.text || '';
-    const kind = system.includes('شرحاً مكتوباً مفصلاً') ? 'write' : system.includes('مدقق لغوي') ? 'proof' : system.includes('تختار صورة') ? 'verify' : 'other';
+    const kind = system.includes('شرحاً مكتوباً مفصلاً') ? 'write' : system.includes('مدقق لغوي') ? 'proof' : system.includes('تختار الصور') ? 'verify' : 'other';
     log.push(`${kind}:start`);
     await new Promise((r) => setTimeout(r, kind === 'write' ? 80 : kind === 'proof' ? 20 : 10)); // كما في الواقع: الكتابة أطول بكثير
     const res = await base(model, body);
@@ -475,3 +492,117 @@ test('عند تجاوز الوقت المسموح تُترك الأعمال ال
   assert.ok(doc.blocks.some((b) => b.t === 'h'), 'الملزمة نفسها مكتوبة');
 });
 
+
+// ───────────── المراجعة النهائية، الأسئلة، السلايدات ─────────────
+import { applyReview, reviewNotes, detectSlideFigures } from '../public/app/pipeline.js';
+
+test('المراجعة النهائية تطبّق التصحيحات المطابقة فقط وتضيف الناقص تحت عنوانه', async () => {
+  const blocks = parseMarkup(`## استرواح الصدر
+### التعريف
+استرواح الصدر هو دخول الهواء إلى [[plural space]].
+- علامة [[visceral pleural line]]
+## الانصباب الجنبي
+الانصباب تجمع سائل، ونسبته 15%.`).map((b) => ({ id: uid(), ...b }));
+  const { fixes, added } = applyReview(blocks, {
+    fixes: [
+      { find: '[[plural space]]', replace: '[[pleural space]]' },          // مصطلح: يُوحَّد في كل المواضع
+      { find: 'ونسبته 15%', replace: 'ونسبته 50%' },                        // رقم يخالف المحاضر
+      { find: 'جملة غير موجودة في الملزمة أصلاً', replace: 'x' },          // لا تطابق: تُتجاهل
+      { find: 'الانصباب تجمع سائل', replace: 'إعادة كتابة طويلة جداً '.repeat(40) }, // إعادة كتابة: تُرفض
+    ],
+    missing: [
+      { after: '## الانصباب الجنبي', add: '- أول علامة هي [[blunting]] للزاوية\n> [[meniscus sign]] تأتي بالامتحان' },
+      { after: 'عنوان غير موجود', add: '- شيء' },
+    ],
+  });
+  assert.equal(fixes, 2);
+  assert.equal(added, 1);
+  const md = blocksToMarkup(blocks);
+  assert.ok(md.includes('[[pleural space]]') && !md.includes('plural space'));
+  assert.ok(md.includes('ونسبته 50%'));
+  assert.ok(md.includes('الانصباب تجمع سائل'), 'إعادة الكتابة رُفضت');
+  assert.ok(md.endsWith('> [[meniscus sign]] تأتي بالامتحان'), 'الإضافة في آخر قسمها');
+});
+
+test('runLecture-like flow: المراجعة تُسجَّل في الإحصاءات وتظهر في الـ PDF', async () => {
+  const { io, calls } = makeIO({ review: () => ({ fixes: [{ find: 'المسافة الجنبية [[pleural space]]', replace: 'المسافة الجنبية [[pleural space]] (بين الجنبتين)' }], missing: [], verdict: 'جيدة' }) });
+  const doc = transcriptDoc();
+  const engine = new Engine(io, CAPS);
+  await writeNotes(doc, engine);
+  await reviewNotes(doc, engine);
+  assert.equal(calls.audit.length, 1);
+  assert.match(calls.audit[0], /تفريغ المحاضرة/);
+  assert.deepEqual([doc.stats.audit.fixes, doc.stats.audit.added], [1, 0]);
+  assert.ok(doc.blocks.some((b) => blockText(b).includes('(بين الجنبتين)')));
+  await complete(doc, engine, { io });
+  assert.match(buildPdfHtml(doc, { paged: true }), /روجعت كاملة مقابل التسجيل/);
+});
+
+test('High-Yield: أسئلة MCQ في آخر الملزمة بدل قائمة المراجعة، وتظهر في الـ PDF مع مفتاح الإجابات', async () => {
+  const { io, calls } = makeIO({ section: (user) => gemResponse(`## ${user.includes('«استرواح الصدر»') ? 'استرواح الصدر' : 'الانصباب الجنبي'}\n- نقطة عن [[pneumothorax]] و [[pleural effusion]] و [[meniscus sign]] و [[blunting]] و [[costophrenic angle]] و [[visceral pleural line]] و [[lung markings]] و [[pleural space]] و [[tension pneumothorax]].`) });
+  const doc = transcriptDoc({ mode: 'highyield' });
+  const engine = new Engine(io, CAPS);
+  assert.equal(await writeNotes(doc, engine), true);
+  assert.equal(doc.meta.mode, 'highyield');
+  assert.ok(calls.section[0].includes('النقاط الامتحانية'), 'تعليمات High-Yield');
+  await complete(doc, engine, { io });
+  assert.equal(calls.mcq, 1);
+  assert.equal(calls.review, 0, 'لا قائمة مراجعة');
+  const qs = doc.blocks.filter((b) => b.t === 'mcq');
+  assert.equal(qs.length, 8);
+  assert.equal(qs[0].opts.length, 4);
+  const html = buildPdfHtml(doc, { paged: true });
+  assert.match(html, /High-Yield/);
+  assert.match(html, /class="mcq"/);
+  assert.match(html, /مفتاح الإجابات/);
+  assert.ok(!html.includes('?? '), 'الأسئلة لا تظهر بترميزها الخام');
+});
+
+test('Integrated: الخطة تأخذ السلايدات، والكاتب يطلب صور السلايدات، وتُقصّ من صفحاتها', async () => {
+  const pages = [1, 2, 3, 4].map((n) => ({ page: n, text: `سلايد ${n} عن ${n <= 2 ? 'pneumothorax' : 'pleural effusion'}`, big: `data:image/jpeg;base64,BIG${n}`, w: 1400, h: 1000, small: { mime: 'image/jpeg', base64: `S${n}` } }));
+  const seen = { plan: '', sections: [], slidesVision: 0, crops: [] };
+  const { io } = makeIO({
+    plan: { kind: 'lecture', title: 'T', sections: [{ from: 0, title: 'استرواح الصدر', points: '', pages: [1, 2] }, { from: 4, title: 'الانصباب الجنبي', points: '', pages: [3, 4] }] },
+    section: (user) => {
+      seen.sections.push(user);
+      const first = user.includes('«استرواح الصدر»');
+      return gemResponse(`## ${first ? 'استرواح الصدر' : 'الانصباب الجنبي'}\n${'شرح يدمج السلايد مع الكلام عن [[pneumothorax]] و [[pleural effusion]]. '.repeat(30)}\n\n@slide: ${first ? 2 : 3} | ${first ? 'رسم من السلايد' : 'أشعة من السلايد'}`);
+    },
+  });
+  const base = io.gemini;
+  io.gemini = async (model, body) => {
+    const system = body.systemInstruction?.parts?.[0]?.text || '';
+    if (system.includes('تقسمها إلى أقسام')) seen.plan = body.contents[0].parts.map((p) => p.text || '').join('\n');
+    if (system.includes('تفحص سلايدات')) { seen.slidesVision++; return gemResponse(JSON.stringify({ figures: [{ page: 2, box: [100, 100, 900, 900], what: 'رسم للجنبة', kind: 'diagram' }, { page: 3, box: [0, 0, 1000, 1000], what: 'أشعة انصباب', kind: 'radiograph' }] })); }
+    return base(model, body);
+  };
+  io.cropImage = async (dataUrl, box) => { seen.crops.push({ dataUrl, box }); return { mime: 'image/jpeg', dataUrl: `${dataUrl}#crop`, base64: 'C', w: 800, h: 600 }; };
+  const doc = transcriptDoc({ mode: 'integrated' });
+  doc.slides = { pages };
+  const engine = new Engine(io, CAPS);
+  assert.equal(await writeNotes(doc, engine), true);
+  assert.equal(seen.slidesVision, 1, 'فحص السلايدات بالنظر مرة واحدة');
+  assert.match(seen.plan, /سلايدات المحاضرة/);
+  assert.match(seen.sections[0], /سلايدات هذا الجزء/);
+  assert.match(seen.sections[0], /\[ص1\] سلايد 1/);
+  assert.ok(!seen.sections[0].includes('[ص3]'), 'كل قسم يأخذ صفحاته فقط');
+  assert.match(seen.sections[0], /ص2: رسم للجنبة/);
+  await complete(doc, engine, { io });
+  const figs = doc.blocks.filter((b) => b.t === 'fig');
+  const fromSlides = figs.filter((f) => f.pick?.source === 'slides');
+  assert.equal(fromSlides.length, 2);
+  assert.deepEqual(seen.crops.map((c) => c.dataUrl), ['data:image/jpeg;base64,BIG2', 'data:image/jpeg;base64,BIG3']);
+  assert.deepEqual(seen.crops[0].box, [100, 100, 900, 900]);
+  assert.equal(fromSlides[0].caption, 'رسم من السلايد');
+  assert.equal(doc.blocks.filter((b) => b.t === 'slidereq').length, 0);
+  const html = buildPdfHtml(doc, { paged: true });
+  assert.match(html, /Integrated/);
+  assert.match(html, /من ملف المحاضرة/);
+});
+
+test('detectSlideFigures يتجاهل الصفحات غير الموجودة والمربعات الصغيرة', async () => {
+  const io = { sleep: async () => {}, async gemini() { return gemResponse(JSON.stringify({ figures: [{ page: 1, box: [10, 10, 30, 30], what: 'صغير' }, { page: 9, box: [0, 0, 1000, 1000], what: 'غير موجودة' }, { page: 2, box: [50, 50, 950, 950], what: 'شكل', kind: 'photo' }] })); } };
+  const figs = await detectSlideFigures(new Engine(io, CAPS), [{ page: 1, small: { base64: 'a' } }, { page: 2, small: { base64: 'b' } }]);
+  assert.deepEqual(figs.map((f) => [f.page, f.kind]), [[1, 'diagram'], [2, 'photo']]);
+  assert.deepEqual(figs[0].box, [0, 0, 1000, 1000], 'المربع الصغير يصير الصفحة كلها');
+});

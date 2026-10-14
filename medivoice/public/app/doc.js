@@ -1,7 +1,8 @@
 // doc.js — عرض الملزمة وتعديلها: نص، جداول، مصطلحات، صور، قاموس، النص المفرّغ الأصلي، وتصدير PDF.
 
 import { h, icon, clear, sheet, confirm, fmtSize, countOf } from './ui.js';
-import { splitInline, blockText, stripMarkup, countWords, uid, fmtTime } from './text.js';
+import { splitInline, blockText, stripMarkup, countWords, uid, fmtTime, isNotes, MODE_LABEL } from './text.js';
+import { NOTE_TYPES } from './run.js';
 import { buildPdfHtml, fmtDate, fmtDuration, dirOf } from './pdf.js';
 import { findCandidates, creditLine } from './images.js';
 import * as db from './db.js';
@@ -66,7 +67,14 @@ export async function viewDoc(ctx, el, { id, fresh }) {
     paper.append(h('div', { class: 'blk note' }, h('span', { class: 'tag' }, 'للمراجعة'),
       `مقاطع قد ينقصها كلام بسبب ضعف الصوت: ${doc.stats.review.map((r) => `${fmtTime(r.start)} إلى ${fmtTime(r.end)}`).join('، ')}`));
   }
-  const notes = doc.meta.mode === 'notes';
+  const notes = isNotes(doc.meta.mode);
+  if (notes) {
+    const a = doc.stats.audit;
+    paper.append(h('div', { class: 'doc-badges' },
+      h('span', { class: 'badge mode ltr' }, MODE_LABEL[doc.meta.mode] || 'Notes'),
+      a ? h('span', { class: 'badge ok', title: a.verdict || '' }, icon('check'), a.fixes || a.added ? `روجعت: ${countOf(a.fixes, ['تصحيح', 'تصحيحان', 'تصحيحات', 'تصحيحاً'])}${a.added ? `، ${countOf(a.added, ['إضافة', 'إضافتان', 'إضافات', 'إضافة'])}` : ''}` : 'روجعت مقابل التسجيل') : null,
+      doc.slides?.pages?.length ? h('span', { class: 'badge' }, icon('book'), `${doc.slides.pages.length} سلايد`) : null));
+  }
   if (notes && doc.stats.fallback) {
     paper.append(h('div', { class: 'blk note' }, h('span', { class: 'tag' }, 'للمراجعة'),
       `${countOf(doc.stats.fallback, ['جزء واحد', 'جزآن', 'أجزاء', 'جزءاً'])} من الملزمة ${doc.stats.fallback === 1 ? 'بقي' : 'بقيت'} نصاً مفرّغاً لأن كتابة شرحه ما اكتملت (غالباً خلصت حصة المحرك اليومية). تقدر تعيد كتابة الشرح بعدين من خيارات الملزمة.`));
@@ -143,9 +151,24 @@ export async function viewDoc(ctx, el, { id, fresh }) {
         h('thead', null, h('tr', null, b.head.map((_, c) => h('th', null, cellNode(b, -1, c))))),
         h('tbody', null, b.rows.map((row, r) => h('tr', null, row.map((_, c) => h('td', null, cellNode(b, r, c)))))))));
     } else if (b.t === 'fig') node = figEl(b, grip);
+    else if (b.t === 'mcq') node = mcqEl(b, grip);
     else node = h('div', { class: 'blk' }); // نوع غير معروف: لا يُعرض
     node.dataset.id = b.id;
     return node;
+  }
+
+  // سؤال اختيار من متعدد: اضغط خياراً يظهر الصحيح والتعليل
+  function mcqEl(b, grip) {
+    const letters = ['a', 'b', 'c', 'd'];
+    const why = h('p', { class: 'mcq-why', hidden: true });
+    const opts = b.opts.map((o, i) => h('button', { type: 'button', class: 'mcq-opt', onclick: () => reveal(i) }, h('b', null, letters[i]), fill(h('span', { dir: dirOf(o) }), o)));
+    function reveal(i) {
+      opts.forEach((el, k) => { el.classList.toggle('right', k === b.ans); el.classList.toggle('wrong', k === i && i !== b.ans); el.disabled = true; });
+      clear(why).append(h('b', null, i === b.ans ? 'صح. ' : 'الجواب الصحيح: ' + letters[b.ans] + '. '), ...splitInline(b.why || '').map((p) => (p.term ? h('span', { class: 't' }, p.text) : p.text)));
+      why.hidden = false;
+    }
+    const n = doc.blocks.filter((x) => x.t === 'mcq').indexOf(b) + 1;
+    return h('div', { class: 'blk mcq' }, grip, h('div', { class: 'mcq-q', dir: dirOf(b.q) }, h('span', { class: 'mcq-n' }, `${n}`), fill(h('span'), b.q)), h('div', { class: 'mcq-opts' }, opts), why);
   }
 
   function figEl(b, grip) {
@@ -371,6 +394,8 @@ export async function viewDoc(ctx, el, { id, fresh }) {
       if (b.t === 'fig' || b.t === 'figreq') continue;
       if (b.items) out.push(b.items.map((i) => `• ${stripMarkup(i)}`).join('\n'));
       else if (b.rows) out.push([b.head, ...b.rows].map((r) => r.map(stripMarkup).join(' | ')).join('\n'));
+      else if (b.t === 'mcq') out.push([stripMarkup(b.q), ...b.opts.map((o, i) => `${'abcd'[i]}) ${stripMarkup(o)}`), `الجواب: ${'abcd'[b.ans] || '?'}${b.why ? ` — ${stripMarkup(b.why)}` : ''}`].join('\n'));
+      else if (b.t === 'slidereq') continue;
       else out.push(stripMarkup(b.text));
       out.push('');
     }
@@ -397,7 +422,12 @@ export async function viewDoc(ctx, el, { id, fresh }) {
     clearTimeout(saveTimer);
     await db.saveLecture(doc).catch(() => {});
     if (!ctx.session?.keys?.gemini?.linked && !ctx.session?.keys?.groq?.linked) { ctx.go('link'); return; }
-    ctx.go('rewrite', { id: doc.id });
+    // اختيار نوع الملزمة الجديدة (النوع المتكامل فقط إذا كانت السلايدات محفوظة مع المحاضرة)
+    const types = NOTE_TYPES.filter((t) => t.id !== 'integrated' || doc.slides?.pages?.length);
+    const s = sheet({ title: 'اكتبها من جديد كـ…', body: h('div', { class: 'stack' },
+      h('p', { class: 'dim' }, 'تُكتب ملزمة جديدة من نفس التسجيل بدون إعادة رفعه، وتبقى هذي كما هي.'),
+      h('div', { class: 'types' }, types.map((t) => h('button', { type: 'button', class: 'type', onclick: () => { s.close(); ctx.go('rewrite', { id: doc.id, mode: t.id }); } },
+        h('span', { class: 'type-letter' }, t.letter), h('span', { class: 'type-body' }, h('b', { class: 'ltr' }, t.name), h('span', null, t.title)), h('span', { class: 'type-check' }, icon('check')))))) });
   }
 
   function openMenu() {
@@ -406,7 +436,7 @@ export async function viewDoc(ctx, el, { id, fresh }) {
       h('button', { onclick: () => { s.close(); printDoc(); } }, icon('print'), 'طباعة'),
       h('button', { onclick: async () => { s.close(); try { await navigator.clipboard.writeText(plainText()); ctx.toast('انتسخ النص.', 'ok'); } catch { ctx.toast('تعذّر النسخ.', 'err'); } } }, icon('copy'), 'نسخ النص'),
       doc.transcript?.length ? h('button', { onclick: () => { s.close(); openTranscript(); } }, icon('text'), 'النص المفرّغ من التسجيل') : null,
-      h('button', { onclick: () => { s.close(); rewrite(); } }, icon('book'), notes ? 'أعد كتابة الشرح المفصل' : 'حوّلها لشرح مفصّل'),
+      h('button', { onclick: () => { s.close(); rewrite(); } }, icon('book'), notes ? 'اكتبها من جديد بنوع آخر' : 'حوّلها لملزمة مشروحة'),
       h('button', { class: 'red', onclick: async () => {
         s.close();
         if (!(await confirm({ title: 'حذف المحاضرة؟', message: 'تنحذف من هذا الجهاز نهائياً.', ok: 'حذف', danger: true }))) return;

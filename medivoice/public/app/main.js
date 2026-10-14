@@ -53,13 +53,16 @@ export async function start(MV, root) {
   }
   async function loadCaps() {
     const s = ctx.session, cfg = s.config;
-    const caps = { groq: s.keys.groq.linked, gemini: s.keys.gemini.linked, sttModels: cfg.sttModels, groqModels: cfg.groqModels, geminiModels: cfg.geminiModels };
+    const caps = { groq: s.keys.groq.linked, gemini: s.keys.gemini.linked, sttModels: cfg.sttModels, groqModels: cfg.groqModels, geminiModels: cfg.geminiModels, transcribeModels: cfg.transcribeModels || [] };
     if (caps.groq || caps.gemini) {
       const r = await MV.api('/api/models');
       if (r.ok && r.data) {
         const keep = (want, have) => { const f = want.filter((m) => have.includes(m)); return f.length ? f : want; };
         if (r.data.groq?.length) { caps.sttModels = keep(cfg.sttModels, r.data.groq); caps.groqModels = keep(cfg.groqModels, r.data.groq); }
-        if (r.data.gemini?.length) caps.geminiModels = keep(cfg.geminiModels, r.data.gemini);
+        if (r.data.gemini?.length) {
+          caps.geminiModels = keep(cfg.geminiModels, r.data.gemini);
+          caps.transcribeModels = (cfg.transcribeModels || []).filter((m) => r.data.gemini.includes(m));
+        }
       }
     }
     ctx.caps = caps;

@@ -1,0 +1,8 @@
+{
+  // تشغيل محلي فقط: npm run build ثم npx wrangler dev -c wrangler.dev.jsonc
+  "name": "medivoice-dev",
+  "main": "dist/worker.js",
+  "compatibility_date": "2026-09-15",
+  "durable_objects": { "bindings": [{ "name": "STORE", "class_name": "MediVoiceStore" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MediVoiceStore"] }]
+}

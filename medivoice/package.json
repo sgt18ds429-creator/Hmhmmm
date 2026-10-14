@@ -7,5 +7,12 @@
     "build": "node tools/build.mjs",
     "test": "node --test test/*.test.mjs",
     "deploy": "node tools/build.mjs && NODE_USE_ENV_PROXY=1 node tools/deploy.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "mediabunny": "^1.61.4",
+    "pdfjs-dist": "^5.7.284",
+    "playwright": "^1.64.1",
+    "wrangler": "^4.151.0"
   }
 }

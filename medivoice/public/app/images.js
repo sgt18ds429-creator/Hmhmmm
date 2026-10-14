@@ -110,5 +110,6 @@ export async function findCandidates(figure, net, max = 6) {
 
 /** سطر نسب الصورة لمصدرها. */
 export function creditLine(c) {
+  if (c.source === 'slides') return `${c.title || 'سلايد'} · من ملف المحاضرة`;
   return [c.source, c.author && c.author !== c.source ? c.author : '', c.license].filter(Boolean).join(' · ');
 }

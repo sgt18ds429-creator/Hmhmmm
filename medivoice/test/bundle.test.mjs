@@ -12,7 +12,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 async function loadWorker() {
   execFileSync(process.execPath, [join(root, 'tools', 'build.mjs')], { stdio: 'pipe', env: { ...process.env, MV_BUILD: 'test' } });
   const src = readFileSync(join(root, 'dist', 'worker.js'), 'utf8')
-    .replace('import { DurableObject } from "cloudflare:workers";', 'class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }');
+    .replace(/import \{ DurableObject \} from ['"]cloudflare:workers['"];/, 'class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }');
   const dir = mkdtempSync(join(tmpdir(), 'mv-'));
   writeFileSync(join(dir, 'worker.mjs'), src);
   return (await import(join(dir, 'worker.mjs'))).default;

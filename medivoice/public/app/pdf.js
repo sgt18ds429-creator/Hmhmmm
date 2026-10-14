@@ -1,7 +1,7 @@
 // pdf.js — قالب الملزمة: يبني صفحة HTML مستقلة تُحوَّل إلى PDF (A4) بمتصفح Chrome على الخادم،
 // أو تُطبع مباشرة من جهاز المستخدم. كل نص يأتي من المستخدم أو من النماذج يُهرَّب قبل إدراجه.
 
-import { splitInline, blockText, stripMarkup } from './text.js';
+import { splitInline, blockText, stripMarkup, isNotes, MODE_LABEL } from './text.js';
 import { creditLine } from './images.js';
 import { pagedRuntime } from './paged.js';
 
@@ -103,6 +103,20 @@ figcaption b { color: #4d1ace; font-weight: 700; margin-inline-end: 1.4mm; }
 figcaption small { display: block; font-size: 7.4pt; color: #8778aa; margin-top: .6mm; }
 
 ul.box { margin: 2mm 0 5mm; padding: 3.4mm 5mm 1.6mm; background: #f6f1ff; border-inline-start: 1.1mm solid #7a19c4; }
+.mcq { margin: 0 0 4.4mm; padding: 3mm 4mm 2.4mm; border: .3mm solid #e2d8f8; border-radius: 2mm; break-inside: avoid; page-break-inside: avoid; }
+.mcq .q { font-weight: 600; color: #2a1a4d; margin-bottom: 1.6mm; }
+.mcq .q b { display: inline-block; min-width: 6.5mm; height: 6.5mm; line-height: 6.5mm; text-align: center; border-radius: 50%; background: #4d1ace; color: #fff; font: 600 8.5pt 'IBM Plex Sans', sans-serif; margin-inline-end: 2mm; }
+.mcq ol { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: .8mm 5mm; }
+.mcq ol li { padding-inline-start: 7mm; margin: 0; font-size: 10.3pt; }
+.mcq ol li::before { content: attr(data-l); position: absolute; inset-inline-start: 0; top: .2mm; width: 5.2mm; height: 5.2mm; border-radius: 50%; border: .3mm solid #b9aadb; color: #4d1ace; font: 600 8pt/5.2mm 'IBM Plex Sans', sans-serif; text-align: center; background: #fff; }
+.answers { width: 100%; border-collapse: collapse; font-size: 9.6pt; line-height: 1.65; margin-top: 2mm; }
+.answers th { text-align: start; font-size: 8.6pt; color: #6c5c96; padding: 1.4mm 2.4mm; border-bottom: .5mm solid #4d1ace; }
+.answers td { padding: 1.6mm 2.4mm; vertical-align: top; border-bottom: .25mm solid #e7dff8; }
+.answers td.n { width: 9mm; font: 600 9.5pt 'IBM Plex Sans', sans-serif; color: #4d1ace; }
+.answers td.a { width: 10mm; font: 700 10pt 'IBM Plex Sans', sans-serif; color: #2a1a4d; text-align: center; }
+.answers tr { break-inside: avoid; page-break-inside: avoid; }
+.cover .audit { position: absolute; inset-inline-start: 19mm; bottom: 22mm; display: inline-flex; align-items: center; gap: 2mm; font-size: 8.6pt; color: #fff; padding: 1.2mm 3.6mm; background: rgba(255,255,255,.16); border-radius: 99mm; }
+.cover .audit i { width: 2.6mm; height: 2.6mm; border-radius: 50%; background: #6fe3b4; }
 .tbl { width: 100%; border-collapse: collapse; font-size: 10pt; line-height: 1.7; margin: 2mm 0 5mm; }
 .tbl th { text-align: start; font-weight: 700; color: #4d1ace; background: #f1eaff; padding: 1.8mm 2.6mm; border-bottom: .5mm solid #4d1ace; vertical-align: bottom; }
 .tbl td { padding: 1.8mm 2.6mm; vertical-align: top; border-bottom: .25mm solid #e7dff8; overflow-wrap: anywhere; }
@@ -163,14 +177,16 @@ export function buildPdfHtml(doc, opts = {}) {
   const meta = doc.meta || {};
   const title = String(meta.title || 'محاضرة');
   const body = doc.blocks.filter((b) => b.t !== 'fig').map(blockText).join(' ');
-  const notes = meta.mode === 'notes';
+  const notes = isNotes(meta.mode);
   const dir = dirOf(body);
   const plainTitle = stripMarkup(title);
   const titleSize = plainTitle.length <= 28 ? 38 : plainTitle.length <= 56 ? 31 : plainTitle.length <= 90 ? 25 : 21;
 
-  let figNo = 0;
+  let figNo = 0, qNo = 0;
   const sources = [];
   const parts = [];
+  const answers = [];
+  const L = ['a', 'b', 'c', 'd'];
   for (const b of doc.blocks) {
     if (b.t === 'h') {
       if (b.level === 3) parts.push(`<h3 dir="${dirOf(b.text)}">${inlineHtml(b.text)}</h3>`);
@@ -183,6 +199,10 @@ export function buildPdfHtml(doc, opts = {}) {
       const cols = b.head.length;
       const row = (cells, tag) => `<tr>${Array.from({ length: cols }, (_, c) => `<${tag} dir="${dirOf(cells[c] || '')}">${inlineHtml(cells[c] || '')}</${tag}>`).join('')}</tr>`;
       parts.push(`<table class="tbl" dir="${dirOf(blockText(b))}"><thead>${row(b.head, 'th')}</thead><tbody>${b.rows.map((r) => row(r, 'td')).join('')}</tbody></table>`);
+    } else if (b.t === 'mcq') {
+      qNo++;
+      answers.push({ n: qNo, a: L[b.ans] || '?', why: b.why || '' });
+      parts.push(`<div class="mcq" dir="${dirOf(b.q)}"><div class="q"><b>${qNo}</b>${inlineHtml(b.q)}</div><ol>${b.opts.map((o, i) => `<li data-l="${L[i]}" style="position:relative" dir="${dirOf(o)}">${inlineHtml(o)}</li>`).join('')}</ol></div>`);
     } else if (b.t === 'note') {
       const d = dirOf(b.text);
       parts.push(`<div class="note" dir="${d}"><b class="tag">${d === 'rtl' ? 'مهم' : 'Important'}</b>${inlineHtml(b.text)}</div>`);
@@ -190,11 +210,18 @@ export function buildPdfHtml(doc, opts = {}) {
       figNo++;
       const d = dirOf(b.caption || body);
       const label = d === 'rtl' ? `شكل ${figNo}` : `Figure ${figNo}`;
-      if (b.pick) sources.push({ n: figNo, label, ...b.pick });
+      if (b.pick && b.pick.source !== 'slides') sources.push({ n: figNo, label, ...b.pick });
       const srcUrl = opts.images?.[b.id] || b.img.dataUrl;
       parts.push(`<figure><div class="frame"><img src="${esc(srcUrl)}" alt=""></div><figcaption dir="${d}"><b>${label}</b>${inlineHtml(b.caption || '')}${b.pick ? `<small dir="ltr">${esc(creditLine(b.pick))}</small>` : ''}</figcaption></figure>`);
     }
   }
+
+  const answerKey = answers.length ? `
+<h2 class="section-break" dir="rtl"><span class="hx">مفتاح الإجابات</span></h2>
+<table class="answers" dir="rtl">
+  <thead><tr><th>س</th><th>الجواب</th><th>التعليل</th></tr></thead>
+  <tbody>${answers.map((a) => `<tr><td class="n">${a.n}</td><td class="a">${esc(a.a)}</td><td dir="${dirOf(a.why)}">${inlineHtml(a.why)}</td></tr>`).join('')}</tbody>
+</table>` : '';
 
   const terms = doc.terms || [];
   const gloss = terms.length ? `
@@ -245,7 +272,8 @@ ${opts.screen ? '@media screen { body { background: #2a1a4d; } .cover, main { ma
   <div class="grid"></div>
   <svg class="ghost" viewBox="0 0 300 300" aria-hidden="true"><path d="${LOGO_PATH}"/></svg>
   <div class="brand">${brandMark}<div><b>ميدي فويز</b><span dir="ltr">MediVoice</span></div></div>
-  <div class="kind">${notes ? 'ملزمة مشروحة' : 'ملزمة محاضرة'}</div>
+  <div class="kind">${notes ? `<span dir="ltr">${esc(MODE_LABEL[meta.mode] || 'Notes')}</span>` : 'ملزمة محاضرة'}</div>
+  ${doc.stats?.audit ? '<div class="audit"><i></i>روجعت كاملة مقابل التسجيل قبل التسليم</div>' : ''}
   <div class="head" dir="${dirOf(title)}">
     ${meta.subject ? `<div class="subject">${esc(meta.subject)}</div>` : ''}
     <h1 style="font-size:${titleSize}pt">${inlineHtml(title)}</h1>
@@ -259,6 +287,7 @@ ${opts.screen ? '@media screen { body { background: #2a1a4d; } .cover, main { ma
 </section>
 <main id="flow">
 ${parts.join('\n')}
+${answerKey}
 ${gloss}
 ${src}
 <div class="endnote" dir="rtl">أُعدّت هذه الملزمة بواسطة ميدي فويز من تسجيل صوتي للمحاضرة. ${notes ? 'كتابة الشرح' : 'التفريغ'} والقاموس واختيار الصور تمت آلياً وقد تحتوي أخطاء؛ المرجع النهائي هو المحاضر والمصادر المعتمدة.</div>
