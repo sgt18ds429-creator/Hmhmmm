@@ -595,3 +595,45 @@ Output the complete corrected notes only, with no introduction or comment.`
   return { system, user };
 }
 
+
+// ───────────── الترجمة (النسخة الثانية من الملزمة) ─────────────
+
+/**
+ * ترجمة قسم من الملزمة إلى اللغة الأخرى مع إبقاء الترميز كما هو سطراً بسطر.
+ * @param to 'en' | 'ar'
+ */
+export function translatePrompt(markup, { to = 'en', meta = {} } = {}) {
+  const system = to === 'en'
+    ? `You are a medical translator and editor producing the English edition of Arabic university study notes. Translate faithfully into clear, natural academic English for medical students: every fact, number, example and emphasis, nothing added and nothing dropped.
+
+Markup rules (strict):
+- Keep every line's kind and order exactly: "## " and "### " headings stay headings, "- " bullets stay bullets with the same number of items, "1." numbered items stay numbered, "> " lines stay "> " lines, table rows "| a | b |" stay rows with the same number of columns and rows, and blank lines between blocks stay.
+- Medical terms appear in [[ ]] and are already English: keep them inside [[ ]] exactly as spelled. When the Arabic gives a term's meaning followed by the term in [[ ]], write the term once (inside [[ ]]) and do not repeat it.
+- Headings written as "Arabic (English)" become the English only; keep letters, numbers and labels such as "(A: Airway)" or "Step 2".
+- Never leave Arabic words in the output. Never add comments, notes or a preamble.
+
+Output the translated notes only.`
+    : `أنت مترجم طبي ومحرر تُعدّ النسخة العربية من ملزمة جامعية مكتوبة بالإنجليزية. ترجم بأمانة إلى عربية فصحى واضحة لطلبة الطب: كل معلومة ورقم ومثال وتأكيد، بلا إضافة ولا حذف.
+
+قواعد الترميز (صارمة):
+- أبقِ نوع كل سطر وترتيبه كما هو: عناوين "## " و "### " تبقى عناوين، النقاط "- " تبقى نقاطاً بنفس العدد، البنود المرقمة "1." تبقى مرقمة، أسطر "> " تبقى "> "، صفوف الجداول "| أ | ب |" تبقى صفوفاً بنفس عدد الأعمدة والصفوف، والأسطر الفارغة بين الكتل تبقى.
+- المصطلحات الطبية بين [[ ]] تبقى بالإنجليزية داخل [[ ]] كما هي، ويُذكر معناها العربي قبلها عند أول ورود.
+- العناوين تُكتب بالعربية ثم الإنجليزية بين قوسين.
+- لا تترك جملاً إنجليزية في الناتج، ولا تضف تعليقاً أو مقدمة.
+
+أخرج الملزمة المترجمة فقط.`;
+  const ctx = meta.subject ? (to === 'en' ? `Subject: ${meta.subject}\n\n` : `المادة: ${meta.subject}\n\n`) : '';
+  const user = `${ctx}${to === 'en' ? 'The notes' : 'الملزمة'}:\n<<<\n${markup}\n>>>`;
+  return { system, user };
+}
+
+/** ترجمة عنوان الملزمة وتعليقات الصور (JSON). */
+export function translateExtrasPrompt({ title = '', captions = [] }, { to = 'en' } = {}) {
+  const system = to === 'en'
+    ? 'You translate medical study-notes metadata from Arabic to English. Keep [[ ]] around medical terms exactly. Answer in JSON only.'
+    : 'تترجم بيانات ملزمة طبية من الإنجليزية إلى العربية الفصحى. أبقِ المصطلحات بين [[ ]] كما هي. أجب بصيغة JSON فقط.';
+  const user = `${to === 'en' ? 'Translate the title and each figure caption (keep the order; same count).' : 'ترجم العنوان وكل تعليق صورة (بنفس الترتيب والعدد).'}
+${JSON.stringify({ title, captions }, null, 1)}
+${to === 'en' ? 'Output' : 'أخرج'}: {"title":"...","captions":["...", ...]}`;
+  return { system, user };
+}

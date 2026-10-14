@@ -244,10 +244,8 @@ export async function start(MV, root) {
           } }, 'فك الربط')));
         if (adding && (state.count || 1) < 6) {
           pasteBtn.lastChild.textContent = 'إضافة';
-          input.placeholder = 'مفتاح Gemini من حساب Google ثاني';
-          box.append(
-            h('p', { class: 'dim' }, 'الحصة المجانية اليومية لأقوى نماذج Gemini قليلة (نحو 20 طلب لكل نموذج). كل مفتاح من حساب Google مختلف إله حصة مستقلة، والموقع يتنقل بينها وحده. أضف مفتاح ثاني أو ثالث وتصير الملزمة أقوى وأثبت.'),
-            h('div', { class: 'paste-row' }, input, pasteBtn));
+          input.placeholder = 'إضافة مفتاح Gemini آخر';
+          box.append(h('div', { class: 'paste-row' }, input, pasteBtn));
         }
       } else {
         box.append(

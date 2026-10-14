@@ -184,6 +184,9 @@
 .paper .doc-title { font-family: var(--font-display); font-size: clamp(1.5rem, 5.6vw, 2.1rem); font-weight: 700; line-height: 1.5; color: #2a1a4d; margin: 2px 0 10px; outline: none; }
 .paper .doc-meta { display: flex; flex-wrap: wrap; gap: 4px 16px; color: #6c5c96; font-size: 0.84rem; padding-bottom: 14px; border-bottom: 2px solid #e7dff8; margin-bottom: 14px; }
 .doc-badges { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.lang-seg { max-width: 300px; margin: -6px 0 22px; }
+.lang-seg button { min-height: 38px; }
+.paper [dir='ltr'] .blk.h2 .txt, .paper [dir='ltr'] .blk.h3 .txt, .paper [dir='ltr'] .blk.p .txt { font-family: var(--font-latin, 'IBM Plex Sans'), var(--font-body); }
 .badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 12px; border-radius: 999px; font-size: 0.8rem; font-weight: 600; background: #ece3ff; color: #4d1ace; }
 .badge .icon { width: 14px; height: 14px; stroke-width: 2.4; }
 .badge.ok { background: #dcf5ea; color: #1d7a55; }

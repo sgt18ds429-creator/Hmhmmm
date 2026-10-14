@@ -133,6 +133,7 @@ export function pagedRuntime(cfg) {
   const pages = [];
   const deferred = []; // صور لم تسعها الصفحة: تنتقل لبداية التالية ويكمل النص مكانها
   let page = null;
+  let curDir = cfg.dir; // اتجاه الجزء الحالي (الملزمة بلغتين: كل جزء باتجاهه)
 
   const limit = () => page.body.getBoundingClientRect().bottom;
   const fits = (node) => node.getBoundingClientRect().bottom <= limit() + 0.6;
@@ -146,7 +147,7 @@ export function pagedRuntime(cfg) {
   function newPage() {
     const el = d.createElement('section');
     el.className = 'pg';
-    el.dir = cfg.dir;
+    el.dir = curDir;
     el.innerHTML = cfg.pageHtml;
     d.body.append(el);
     page = { el, body: el.querySelector('.pg-body') };
@@ -217,7 +218,10 @@ export function pagedRuntime(cfg) {
   }
 
   function place(node) {
-    if (node.classList.contains('section-break') && page.body.firstElementChild) newPage();
+    if (node.dataset && node.dataset.dir) curDir = node.dataset.dir;
+    const breaks = node.classList.contains('section-break') || node.classList.contains('part');
+    if (breaks && page.body.firstElementChild) newPage();
+    else if (node.dataset && node.dataset.dir && !page.body.firstElementChild) page.el.dir = curDir;
     page.body.append(node);
     prepare(node);
     if (fits(node)) return;

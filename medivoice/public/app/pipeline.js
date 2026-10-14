@@ -8,7 +8,7 @@ import {
   countWords, collectTerms, blockText, stripMarkup, parseJsonLoose, uid, langOf, termsIn, textHash, normalize, isNotes,
 } from './text.js';
 import {
-  whisperPrompt, audioPrompt, cleanupPrompt, glossaryPrompt, figuresPrompt,
+  whisperPrompt, audioPrompt, cleanupPrompt, glossaryPrompt, figuresPrompt, translatePrompt, translateExtrasPrompt,
   notesPlanPrompt, notesSectionPrompt, reviewPrompt, proofreadPrompt, figureTextPickPrompt,
   reviewNotesPrompt, mcqPrompt, figuresBatchPrompt, slideFiguresPrompt,
 } from './prompts.js';
@@ -290,11 +290,11 @@ export class Engine {
    * كتابة نص طويل (الشرح المفصل): أدق نماذج Gemini أولاً، ثم Groq.
    * @returns {Promise<{text, model, truncated}|{blocked:true}|null>} null = لا يوجد محرك متاح الآن
    */
-  async write({ system, user, maxTokens = 16000, groqTokens = 4000, temperature = 0.2, groq = true, thinking = null }) {
+  async write({ system, user, maxTokens = 16000, groqTokens = 4000, temperature = 0.2, groq = true, thinking = null, lite = false }) {
     let blocked = null;
     if (this.hasGemini) {
       // عند التأخر لا ننتظر النماذج الدقيقة إذا كانت في تهدئة: الخفيفة أسرع ولها حدود أعلى
-      const r = await this.gemini({ system, parts: [{ text: user }], maxTokens, temperature, thinking, strongWaitMs: this.late(0.6) ? 0 : 40_000 });
+      const r = await this.gemini({ system, parts: [{ text: user }], maxTokens, temperature, thinking, lite, strongWaitMs: lite || this.late(0.6) ? 0 : 40_000 });
       if (r && !r.blocked) return r;
       if (r?.blocked) blocked = r;
     }
@@ -1012,14 +1012,20 @@ export async function complete(doc, engine, { io, emit = () => {} }) {
   // صور السلايدات أولاً (قصّ محلي سريع) حتى لا تتسابق مع استبدال الصور في enrich
   if (doc.slides?.figs?.length) await safe(placeSlideFigures(doc, io));
   const points = mode === 'notes' || mode === 'integrated' ? safe(keyPoints(engine, doc.meta, doc.blocks, lang)) : null;
-  const mcq = mode === 'highyield' ? safe((async () => { emit({ type: 'stage', name: 'mcq' }); return mcqBlocks(engine, doc.meta, doc.blocks, lang); })()) : null;
-  const [kp, qs] = await Promise.all([points, mcq, enrich(doc, engine, { io, emit })]);
+  // الأسئلة بالإنجليزية دائماً (أسلوب الامتحانات)
+  const mcq = mode === 'highyield' ? safe((async () => { emit({ type: 'stage', name: 'mcq' }); return mcqBlocks(engine, doc.meta, doc.blocks, 'en'); })()) : null;
+  // النسخة الثانية: الشرح يُترجم بالتوازي مع القاموس والصور، ثم تُلحق به النقاط والصور
+  const alt = isNotes(mode) && doc.meta.bilingual !== false ? safe(translateBlocks(doc, engine, { emit })) : null;
+  const [kp, qs, tr] = await Promise.all([points, mcq, alt, enrich(doc, engine, { io, emit })]);
+  doc.blocks = doc.blocks.filter((b) => b.t !== 'slidereq'); // طلبات سلايدات بلا صورة
+  const body = doc.blocks.slice(); // متن الشرح بصوره، قبل النقاط والأسئلة
   const extra = [...(kp || []), ...(qs || [])];
   if (extra.length) {
     doc.blocks.push(...extra);
     doc.stats.words = doc.blocks.reduce((n, b) => n + countWords(blockText(b)), 0);
   }
-  doc.blocks = doc.blocks.filter((b) => b.t !== 'slidereq'); // طلبات سلايدات بلا صورة
+  if (tr) await safe(finishAlt(doc, engine, tr, kp || [], body));
+  else doc.alt = null;
   doc.stats.models = engine.modelStats;
   doc.stats.elapsedSec = Math.round((Date.now() - engine.t0) / 1000);
   return doc;
@@ -1380,6 +1386,135 @@ async function placeSlideFigures(doc, io) {
       doc.blocks[i] = { id: uid(), t: 'fig', caption: b.caption || f.what, query: '', kind: f.kind, pick: { id: `slide:${b.page}`, source: 'slides', title: `سلايد ${b.page}`, license: 'من ملف المحاضرة', page: '' }, candidates: [], img };
     } catch { /* تبقى بلا صورة */ }
   }
+}
+
+// ───────────── النسخة الثانية: ترجمة الملزمة كاملة ─────────────
+
+const TEXT_TYPES = new Set(['h', 'p', 'ul', 'ol', 'table', 'note']);
+
+/** يقسم الكتل إلى أقسام عند كل عنوان رئيسي (##). */
+function sectionsOf(blocks) {
+  const out = [];
+  let cur = [];
+  for (const b of blocks) {
+    if (b.t === 'h' && b.level !== 3 && cur.length) { out.push(cur); cur = []; }
+    cur.push(b);
+  }
+  if (cur.length) out.push(cur);
+  return out;
+}
+
+/** هل حافظت الترجمة على بنية القسم؟ العناوين نفسها عدداً ومستوى، والجداول والملاحظات نفسها، والقوائم متقاربة. */
+export function sameShape(src, out) {
+  const heads = (l) => l.filter((b) => b.t === 'h').map((b) => b.level).join(',');
+  if (heads(src) !== heads(out)) return false;
+  const count = (l, t) => l.filter((b) => b.t === t).length;
+  if (count(src, 'table') !== count(out, 'table') || count(src, 'note') !== count(out, 'note')) return false;
+  const items = (l) => l.reduce((n, b) => n + (b.items?.length || 0), 0);
+  const a = items(src), b = items(out);
+  if (b < a * 0.8 || b > a * 1.25) return false;
+  const lists = count(src, 'ul') + count(src, 'ol'), lo = count(out, 'ul') + count(out, 'ol');
+  if (Math.abs(lists - lo) > Math.max(1, Math.round(lists * 0.25))) return false;
+  const words = (l) => l.reduce((n, x) => n + countWords(blockText(x)), 0);
+  const wa = words(src), wb = words(out);
+  return wb >= wa * 0.5 && wb <= wa * 2.2;
+}
+
+const cleanModelText = (t) => String(t || '').replace(/\r/g, '').replace(/^```[a-z]*\n?|```\s*$/gim, '').replace(/^<<<\n?|\n?>>>$/g, '').trim();
+
+/** يترجم قسماً واحداً (الكتل النصية فقط). يرجع الكتل المترجمة أو null. */
+async function translateSection(engine, blocks, { to, meta }) {
+  const text = blocks.filter((b) => TEXT_TYPES.has(b.t));
+  if (!text.length) return [];
+  const markup = blocksToMarkup(text);
+  let best = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    engine.check();
+    const { system, user } = translatePrompt(markup, { to, meta });
+    const r = await engine.write({ system, user, maxTokens: 14000, groqTokens: 7000, thinking: 'minimal', lite: true });
+    if (!r?.text || r.blocked) continue;
+    const out = parseMarkup(cleanModelText(r.text)).filter((b) => TEXT_TYPES.has(b.t)).map((b) => ({ id: uid(), ...b }));
+    if (!out.length) continue;
+    if (sameShape(text, out)) return out;
+    // عناوين مطابقة على الأقل: تصلح احتياطاً إذا فشلت المحاولة الثانية
+    const sameHeads = text.filter((b) => b.t === 'h').length === out.filter((b) => b.t === 'h').length;
+    if (sameHeads && !best) best = out;
+  }
+  return best;
+}
+
+/**
+ * يترجم شرح الملزمة إلى اللغة الأخرى (عربي ↔ إنجليزي) قسماً قسماً، أربعة أقسام معاً.
+ * يرجع { to, sections } حيث sections[i] كتل القسم i مترجمة (أو null إذا تعذر).
+ */
+export async function translateBlocks(doc, engine, { emit = () => {} }) {
+  const from = doc.lang || langOf(doc.blocks.map(blockText).join(' '));
+  const to = from === 'en' ? 'ar' : 'en';
+  const sections = sectionsOf(doc.blocks.filter((b) => b.t !== 'mcq'));
+  if (!sections.length) return null;
+  emit({ type: 'stage', name: 'translate', to });
+  let done = 0;
+  const out = await mapLimit(sections, engine.hasGemini ? 4 : 2, async (sec) => {
+    if (engine.late(1.2)) return null;
+    try {
+      const r = await translateSection(engine, sec, { to, meta: doc.meta });
+      emit({ type: 'translate', done: ++done, total: sections.length });
+      return r;
+    } catch (e) {
+      if (isFatal(e)) throw e;
+      return null;
+    }
+  });
+  const ok = out.filter(Boolean).length;
+  if (ok < Math.ceil(sections.length / 2)) return null; // أكثر من نصف الأقسام لم يُترجم: لا نسخة ثانية
+  return { to, out };
+}
+
+/**
+ * يكمل النسخة الثانية: ترجمة النقاط والعنوان وتعليقات الصور، ووضع الصور في مواضعها.
+ * body: متن الشرح بعد وضع الصور (نفس أقسام الترجمة بالترتيب).
+ */
+export async function finishAlt(doc, engine, tr, kp, body) {
+  const { to, out } = tr;
+  const sections = sectionsOf(body.filter((b) => b.t !== 'mcq'));
+  const blocks = [];
+  let partial = false;
+  const figs = []; // [{ block, alt }] لترجمة التعليقات
+  sections.forEach((sec, i) => {
+    const text = sec.filter((b) => TEXT_TYPES.has(b.t));
+    let t = out[i];
+    if (!t) { partial = true; t = text.map((b) => ({ ...b, id: uid(), untranslated: true })); }
+    // الصور في مواضعها النسبية داخل القسم (بعد نفس عدد الكتل النصية)
+    const placed = [...t];
+    let before = 0, inserted = 0;
+    for (const b of sec) {
+      if (b.t === 'fig') {
+        const at = Math.min(before + inserted, placed.length);
+        const alt = { id: uid(), t: 'fig', ref: b.id, caption: b.caption || '' };
+        placed.splice(at, 0, alt);
+        figs.push({ block: b, alt });
+        inserted++;
+      } else if (TEXT_TYPES.has(b.t)) before++;
+    }
+    blocks.push(...placed);
+  });
+  // أهم النقاط للمراجعة
+  if (kp.length) {
+    const t = await translateSection(engine, kp, { to, meta: doc.meta }).catch((e) => { if (isFatal(e)) throw e; return null; });
+    if (t) { for (const b of t) if (b.items && !b.rows) b.box = true; blocks.push(...t); }
+  }
+  // العنوان وتعليقات الصور دفعة واحدة
+  let title = '';
+  try {
+    const { system, user } = translateExtrasPrompt({ title: stripMarkup(doc.meta.title || ''), captions: figs.map((f) => f.block.caption || '') }, { to });
+    const r = await engine.json({ system, user, maxTokens: 4000, prefer: 'gemini-lite' });
+    if (r && typeof r.title === 'string') title = squash(r.title).slice(0, 160);
+    if (Array.isArray(r?.captions)) figs.forEach((f, i) => { if (typeof r.captions[i] === 'string' && r.captions[i].trim()) f.alt.caption = squash(r.captions[i]).slice(0, 320); });
+  } catch (e) {
+    if (isFatal(e)) throw e;
+  }
+  doc.alt = { lang: to, title, blocks, partial };
+  doc.stats.alt = { lang: to, sections: sections.length, translated: Math.min(sections.length, out.filter(Boolean).length), words: blocks.reduce((n, b) => n + countWords(blockText(b)), 0) };
 }
 
 // ───────────── المراجعة النهائية ─────────────

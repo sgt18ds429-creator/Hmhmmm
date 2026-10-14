@@ -50,6 +50,7 @@ export async function viewDoc(ctx, el, { id, fresh }) {
   const titleEl = editable(h('h1', { class: 'doc-title', dir: 'auto' }, stripMarkup(doc.meta.title || '')));
   titleEl.addEventListener('blur', () => {
     const t = titleEl.textContent.replace(/\s+/g, ' ').trim();
+    if (view === 'alt') { doc.alt.title = t; titleEl.textContent = t; save(); return; }
     doc.meta.title = t || 'محاضرة';
     titleEl.textContent = doc.meta.title;
     ctx.root.querySelector('.bar .title').textContent = doc.meta.title;
@@ -69,12 +70,27 @@ export async function viewDoc(ctx, el, { id, fresh }) {
       `مقاطع قد ينقصها كلام بسبب ضعف الصوت: ${doc.stats.review.map((r) => `${fmtTime(r.start)} إلى ${fmtTime(r.end)}`).join('، ')}`));
   }
   const notes = isNotes(doc.meta.mode);
+  // النسخة الثانية (الترجمة): عرض بلغة واحدة في كل مرة، والـ PDF يحوي اللغتين
+  const hasAlt = !!doc.alt?.blocks?.length;
+  let view = 'main';
+  const langName = (l) => (l === 'en' ? 'English' : 'العربية');
+  const mainLang = doc.lang || 'ar';
   if (notes) {
     const a = doc.stats.audit;
     paper.append(h('div', { class: 'doc-badges' },
       h('span', { class: 'badge mode ltr' }, MODE_LABEL[doc.meta.mode] || 'Notes'),
       a ? h('span', { class: 'badge ok', title: a.verdict || '' }, icon('check'), a.fixes || a.added ? `روجعت: ${countOf(a.fixes, ['تصحيح', 'تصحيحان', 'تصحيحات', 'تصحيحاً'])}${a.added ? `، ${countOf(a.added, ['إضافة', 'إضافتان', 'إضافات', 'إضافة'])}` : ''}` : 'روجعت مقابل التسجيل') : null,
-      doc.slides?.pages?.length ? h('span', { class: 'badge' }, icon('book'), `${doc.slides.pages.length} سلايد`) : null));
+      doc.slides?.pages?.length ? h('span', { class: 'badge' }, icon('book'), `${doc.slides.pages.length} سلايد`) : null,
+      hasAlt ? h('span', { class: 'badge' }, icon('text'), 'عربي + English') : null));
+    if (hasAlt) {
+      const seg = h('div', { class: 'seg lang-seg', role: 'group' });
+      const paintSeg = () => [...seg.children].forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === view)));
+      for (const [v, label] of [['main', langName(mainLang)], ['alt', langName(doc.alt.lang)]]) {
+        seg.append(h('button', { type: 'button', dataset: { v }, onclick: () => { if (view === v) return; view = v; paintSeg(); renderAll(); titleEl.textContent = stripMarkup(view === 'alt' && doc.alt.title ? doc.alt.title : doc.meta.title || ''); } }, label));
+      }
+      paintSeg();
+      paper.append(seg);
+    }
   }
   if (notes && doc.stats.fallback) {
     paper.append(h('div', { class: 'blk note' }, h('span', { class: 'tag' }, 'للمراجعة'),
@@ -109,8 +125,9 @@ export async function viewDoc(ctx, el, { id, fresh }) {
         block.text = lines[0];
         // أسطر إضافية تصير فقرات جديدة بعدها
         if (lines.length > 1 && block.t === 'p') {
-          const at = doc.blocks.indexOf(block);
-          doc.blocks.splice(at + 1, 0, ...lines.slice(1).map((t) => ({ id: uid(), t: 'p', text: t })));
+          const arr = listOf(block);
+          const at = arr.indexOf(block);
+          arr.splice(at + 1, 0, ...lines.slice(1).map((t) => ({ id: uid(), t: 'p', text: t })));
           renderAll();
         } else { node.dir = dirOf(block.text); fill(node, block.text); }
       } else {
@@ -140,6 +157,17 @@ export async function viewDoc(ctx, el, { id, fresh }) {
     return node;
   }
 
+  /** الكتل المعروضة الآن: الأصل، أو الترجمة ومعها أسئلة الاختيار (بالإنجليزية) من الأصل */
+  function currentBlocks() {
+    if (view !== 'alt') return doc.blocks;
+    const mcqAt = doc.blocks.findIndex((b) => b.t === 'mcq');
+    const mcqPart = mcqAt > 0 && doc.blocks[mcqAt - 1].t === 'h' ? doc.blocks.slice(mcqAt - 1) : doc.blocks.filter((b) => b.t === 'mcq');
+    return [...doc.alt.blocks, ...mcqPart];
+  }
+  const listOf = (b) => (doc.alt?.blocks?.includes(b) ? doc.alt.blocks : doc.blocks);
+  /** صورة في الترجمة تشير إلى صورة الأصل (ref) */
+  const figOf = (b) => (b.ref ? doc.blocks.find((x) => x.id === b.ref && x.t === 'fig') : b);
+
   function blockEl(b) {
     const grip = h('button', { class: 'grip', 'aria-label': 'خيارات الفقرة', onclick: () => blockMenu(b) }, icon('dots'));
     let node;
@@ -152,6 +180,7 @@ export async function viewDoc(ctx, el, { id, fresh }) {
         h('thead', null, h('tr', null, b.head.map((_, c) => h('th', null, cellNode(b, -1, c))))),
         h('tbody', null, b.rows.map((row, r) => h('tr', null, row.map((_, c) => h('td', null, cellNode(b, r, c)))))))));
     } else if (b.t === 'fig') node = figEl(b, grip);
+    else if (b.t === 'h' && b.untranslated) node = h('div', { class: 'blk h2' }, grip, textNode(b, null));
     else if (b.t === 'mcq') node = mcqEl(b, grip);
     else node = h('div', { class: 'blk' }); // نوع غير معروف: لا يُعرض
     node.dataset.id = b.id;
@@ -173,17 +202,19 @@ export async function viewDoc(ctx, el, { id, fresh }) {
   }
 
   function figEl(b, grip) {
+    const src = figOf(b); // في الترجمة: الصورة نفسها من الأصل والتعليق مترجم
+    if (!src) return h('div', { class: 'blk' });
     const cap = editable(h('div', { class: 'cap', dir: 'auto' }));
     fill(cap, b.caption || '');
     cap.addEventListener('focus', () => { cap.textContent = b.caption || ''; });
     cap.addEventListener('blur', () => { b.caption = cap.textContent.replace(/\s+/g, ' ').trim(); fill(cap, b.caption); save(); });
     cap.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); cap.blur(); } });
     return h('figure', { class: 'blk fig' }, grip,
-      b.img?.dataUrl ? h('img', { src: b.img.dataUrl, alt: b.caption || '', loading: 'lazy' }) : null,
+      src.img?.dataUrl ? h('img', { src: src.img.dataUrl, alt: b.caption || '', loading: 'lazy' }) : null,
       cap,
-      b.pick ? h('div', { class: 'credit' }, creditLine(b.pick)) : null,
+      src.pick ? h('div', { class: 'credit' }, creditLine(src.pick)) : null,
       h('div', { class: 'fig-actions' },
-        h('button', { class: 'mini', onclick: () => pickImage(b) }, icon('swap'), 'تبديل الصورة'),
+        b.ref ? null : h('button', { class: 'mini', onclick: () => pickImage(b) }, icon('swap'), 'تبديل الصورة'),
         h('button', { class: 'mini red', onclick: () => { removeBlock(b); save(); } }, icon('trash'), 'حذف')));
   }
 
@@ -192,13 +223,19 @@ export async function viewDoc(ctx, el, { id, fresh }) {
     if (old) old.replaceWith(blockEl(b));
   }
   function removeBlock(b) {
-    const i = doc.blocks.indexOf(b);
-    if (i >= 0) doc.blocks.splice(i, 1);
+    const arr = listOf(b);
+    const i = arr.indexOf(b);
+    if (i >= 0) arr.splice(i, 1);
+    if (b.t === 'fig' && !b.ref && doc.alt?.blocks) { // حذف صورة الأصل يحذف نظيرتها في الترجمة
+      const k = doc.alt.blocks.findIndex((x) => x.ref === b.id);
+      if (k >= 0) doc.alt.blocks.splice(k, 1);
+    }
     list.querySelector(`[data-id="${b.id}"]`)?.remove();
   }
   function renderAll() {
     clear(list);
-    for (const b of doc.blocks) { if (!b.id) b.id = uid(); list.append(blockEl(b)); }
+    list.dir = view === 'alt' ? (doc.alt.lang === 'en' ? 'ltr' : 'rtl') : (mainLang === 'en' ? 'ltr' : 'rtl');
+    for (const b of currentBlocks()) { if (!b.id) b.id = uid(); list.append(blockEl(b)); }
   }
   renderAll();
 
@@ -207,14 +244,15 @@ export async function viewDoc(ctx, el, { id, fresh }) {
     const act = (label, ic, fn, cls) => opts.push(h('button', { class: cls, onclick: () => { s.close(); fn(); } }, icon(ic), label));
     if (b.t === 'p') { act('تحويل إلى عنوان', 'heading', () => { b.t = 'h'; b.level = 2; b.text = stripMarkup(b.text); rerender(b); save(); }); act('تحويل إلى ملاحظة مهمة', 'warn', () => { b.t = 'note'; rerender(b); save(); }); }
     if (b.t === 'h' || b.t === 'note') act('تحويل إلى فقرة عادية', 'text', () => { b.t = 'p'; delete b.level; rerender(b); save(); });
+    const arr = listOf(b);
     if (b.t !== 'fig') act('إضافة فقرة بعدها', 'plus', () => {
-      const nb = { id: uid(), t: 'p', text: 'نص جديد' };
-      doc.blocks.splice(doc.blocks.indexOf(b) + 1, 0, nb);
+      const nb = { id: uid(), t: 'p', text: arr === doc.blocks && mainLang !== 'en' || arr !== doc.blocks && doc.alt?.lang !== 'en' ? 'نص جديد' : 'New text' };
+      arr.splice(arr.indexOf(b) + 1, 0, nb);
       list.querySelector(`[data-id="${b.id}"]`).after(blockEl(nb));
       list.querySelector(`[data-id="${nb.id}"] .txt`)?.focus();
       save();
     });
-    act('إضافة صورة بعدها', 'image', () => {
+    if (arr === doc.blocks) act('إضافة صورة بعدها', 'image', () => {
       const nb = { id: uid(), t: 'fig', caption: '', query: '', kind: 'diagram', pick: null, candidates: [], img: null };
       pickImage(nb, () => { doc.blocks.splice(doc.blocks.indexOf(b) + 1, 0, nb); list.querySelector(`[data-id="${b.id}"]`).after(blockEl(nb)); });
     });

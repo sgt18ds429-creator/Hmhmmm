@@ -40,7 +40,8 @@ export function viewNew(ctx, el, { file }) {
   ctx.setBar('sub', { title: 'محاضرة جديدة' });
   ctx.ribbon.set({ alpha: 0 });
   // output: نوع الملزمة (highyield / notes / integrated)، أو 'transcript' نص مفرّغ فقط
-  const form = { title: '', subject: '', lecturer: '', date: today(), keywords: '', speech: 'ar', output: 'notes', images: true, glossary: true };
+  // لغة الكلام تُكتشف تلقائياً، والملزمة تُكتب دائماً بالعربية والإنجليزية معاً
+  const form = { title: '', subject: '', lecturer: '', date: today(), keywords: '', speech: 'auto', output: 'notes', images: true, glossary: true };
   let info = null, pdfFile = null;
 
   const fileMeta = h('small', null, `${fmtSize(file.size)} · أقرأ الملف…`);
@@ -69,7 +70,6 @@ export function viewNew(ctx, el, { file }) {
   const fLecturer = field('اسم التدريسي', 'lecturer', { placeholder: 'اختياري', maxLength: 80 });
   const fKeywords = field('مصطلحات متوقعة', 'keywords', { rows: 2, placeholder: 'chest X-ray, pneumothorax, pleural effusion', dir: 'ltr', maxLength: 400 }, 'اختياري. بعض مصطلحات المحاضرة بالإنجليزية تزيد الدقة.');
   const subjects = h('datalist', { id: 'mv-subjects' });
-  const speechSeg = h('div');
   const types = h('div', { class: 'types', role: 'radiogroup', 'aria-label': 'نوع الملزمة' });
   const plainLink = h('button', { class: 'linkish', type: 'button', onclick: () => { form.output = form.output === 'transcript' ? 'notes' : 'transcript'; paintTypes(); } });
   const toggles = h('div', { class: 'stack' });
@@ -90,7 +90,6 @@ export function viewNew(ctx, el, { file }) {
     paintStart();
   }
   function paintOptions() {
-    clear(speechSeg).append(segmented([['ar', 'عربي ومصطلحات إنجليزية'], ['en', 'إنجليزي'], ['auto', 'تلقائي']], form.speech, (v) => { form.speech = v; }));
     paintTypes();
     clear(toggles).append(
       toggle('صور توضيحية', 'من مصادر طبية مفتوحة (Wikimedia Commons و NIH)، ولا تُوضع صورة إلا بعد التأكد أنها تطابق الشرح', form.images, (v) => { form.images = v; }),
@@ -103,14 +102,13 @@ export function viewNew(ctx, el, { file }) {
     warn,
     h('div', { class: 'field' }, h('span', null, 'شكل الملزمة'), types, pdfBox, pdfInput, plainLink),
     h('div', { class: 'stack' }, fTitle.el, h('div', { class: 'grid2' }, fSubject.el, fLecturer.el), subjects),
-    h('div', { class: 'field' }, h('span', null, 'لغة الشرح'), speechSeg),
     toggles,
     fKeywords.el,
     startBtn));
 
   db.getPref('form').then((saved) => {
     if (!saved) return;
-    for (const k of ['subject', 'lecturer', 'speech', 'output', 'images', 'glossary']) if (saved[k] !== undefined) form[k] = saved[k];
+    for (const k of ['subject', 'lecturer', 'output', 'images', 'glossary']) if (saved[k] !== undefined) form[k] = saved[k];
     if (!isNotes(form.output) && form.output !== 'transcript') form.output = 'notes';
     fSubject.input.value = form.subject; fLecturer.input.value = form.lecturer;
     paintOptions();
@@ -136,7 +134,7 @@ export function viewNew(ctx, el, { file }) {
     const { output, ...rest } = form;
     // الشرح يُكتب من تفريغ حرفي أمين (بلهجة المحاضر)، ثم يُرتّب ويُصحّح
     const meta = { ...rest, mode: isNotes(output) ? output : 'transcript', style: 'verbatim', title: form.title.trim(), subject: form.subject.trim(), lecturer: form.lecturer.trim(), keywords: form.keywords.trim() };
-    db.setPref('form', { subject: meta.subject, lecturer: meta.lecturer, speech: meta.speech, output, images: meta.images, glossary: meta.glossary });
+    db.setPref('form', { subject: meta.subject, lecturer: meta.lecturer, output, images: meta.images, glossary: meta.glossary });
     if (meta.subject) db.getPref('subjects', []).then((list) => db.setPref('subjects', [meta.subject, ...(list || []).filter((s) => s !== meta.subject)].slice(0, 12)));
     ctx.go('run', { file, meta, info, pdfFile: meta.mode === 'integrated' ? pdfFile : null }, { replace: true });
   }
@@ -307,8 +305,13 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
       else if (e.name === 'glossary') { setStage('figures'); status.textContent = 'أجهّز قاموس المصطلحات'; P.write = 1; P.extra = Math.max(P.extra, 0.05); }
       else if (e.name === 'figures') { setStage('figures'); status.textContent = 'أجهّز القاموس وأختار صوراً مطابقة للشرح'; P.write = 1; P.extra = Math.max(P.extra, 0.07); }
       else if (e.name === 'images') { status.textContent = 'أبحث عن صور مطابقة للشرح في المصادر المفتوحة'; P.extra = Math.max(P.extra, 0.09); }
-      else if (e.name === 'mcq') { status.textContent = 'أكتب أسئلة الاختيار من متعدد'; }
+      else if (e.name === 'mcq') { status.textContent = 'أكتب أسئلة الاختيار من متعدد بالإنجليزية'; }
+      else if (e.name === 'translate') { status.textContent = e.to === 'ar' ? 'أكتب النسخة العربية من الملزمة' : 'أكتب النسخة الإنجليزية من الملزمة'; }
       else if (e.name === 'done') { setStage('done'); P.write = 1; P.extra = 0.14; }
+      paintPct();
+    } else if (e.type === 'translate') {
+      status.textContent = `النسخة ${e.total ? `الإنجليزية: ${e.done} من ${e.total} أقسام` : 'الثانية'}${imagesPicked ? ` · صور مطابقة: ${imagesPicked}` : ''}`;
+      P.extra = Math.min(0.13, Math.max(P.extra, 0.05 + 0.07 * (e.done / Math.max(1, e.total))));
       paintPct();
     } else if (e.type === 'reviewed') {
       status.textContent = e.fixes || e.added ? `تمت المراجعة: ${countOf(e.fixes, ['تصحيح واحد', 'تصحيحان', 'تصحيحات', 'تصحيحاً'])}${e.added ? ` و ${countOf(e.added, ['إضافة واحدة', 'إضافتان', 'إضافات', 'إضافة'])}` : ''}` : 'تمت المراجعة: الملزمة مطابقة للتسجيل';
@@ -414,7 +417,7 @@ function stagesFor(mode, { listen = true } = {}) {
   if (mode === 'integrated') out.push(['slides', 'السلايدات']);
   if (listen) out.push(['transcribe', 'الاستماع']);
   if (isNotes(mode)) out.push(['write', 'الفهم والكتابة'], ['review', 'المراجعة']);
-  out.push(['figures', mode === 'highyield' ? 'الأسئلة والقاموس' : 'الصور والقاموس'], ['done', 'جاهز']);
+  out.push(['figures', isNotes(mode) ? 'الصور والترجمة' : 'الصور والقاموس'], ['done', 'جاهز']);
   return out;
 }
 

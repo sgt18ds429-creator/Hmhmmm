@@ -104,9 +104,27 @@ function makeIO({ section = (user, n) => null, verify = () => ({ choice: 'A', co
         calls.audit.push(user);
         return gemResponse(JSON.stringify(review ? review(user) : { fixes: [], missing: [], verdict: 'جيدة' }));
       }
-      if (system.includes('ممتحن')) {
+      if (system.includes('ممتحن') || system.includes('examiner')) {
         calls.mcq++;
-        return gemResponse(JSON.stringify(mcq ? mcq(user) : { questions: Array.from({ length: 8 }, (_, i) => ({ q: `سؤال ${i + 1} عن [[pneumothorax]]؟`, options: ['أ', 'ب', 'ج', 'د'], answer: i % 4, why: 'لأن' })) }));
+        return gemResponse(JSON.stringify(mcq ? mcq(user) : { questions: Array.from({ length: 8 }, (_, i) => ({ q: `Question ${i + 1} about [[pneumothorax]]?`, options: ['A', 'B', 'C', 'D'], answer: i % 4, why: 'Because' })) }));
+      }
+      if (system.includes('medical translator') || system.includes('مترجم طبي')) {
+        // ترجمة وهمية تحافظ على الترميز سطراً بسطر
+        calls.translate = (calls.translate || 0) + 1;
+        const src = user.match(/<<<\n([\s\S]*)\n>>>/)[1];
+        const out = src.split('\n').map((line) => {
+          const m = line.match(/^(#{2,3} |- |\d+\. |> )(.*)$/);
+          if (m) return `${m[1]}EN ${m[2]}`;
+          if (/^\|/.test(line) || !line.trim()) return line;
+          return `EN ${line}`;
+        }).join('\n');
+        return gemResponse(out);
+      }
+      if (system.includes('metadata') || system.includes('بيانات ملزمة')) {
+        calls.extras = (calls.extras || 0) + 1;
+        const end = Math.max(user.indexOf('\nOutput'), user.indexOf('\nأخرج'));
+        const data = JSON.parse(user.slice(user.indexOf('{'), end));
+        return gemResponse(JSON.stringify({ title: `EN ${data.title}`, captions: data.captions.map((c) => `EN ${c}`) }));
       }
       return { ok: false, status: 400, data: { error: { message: 'unexpected prompt' } } };
     },
@@ -553,8 +571,8 @@ test('High-Yield: أسئلة MCQ في آخر الملزمة بدل قائمة ا
   assert.equal(qs[0].opts.length, 4);
   const html = buildPdfHtml(doc, { paged: true });
   assert.match(html, /High-Yield/);
-  assert.match(html, /class="mcq"/);
-  assert.match(html, /مفتاح الإجابات/);
+  assert.match(html, /class="mcq/);
+  assert.match(html, /Answer key/);
   assert.ok(!html.includes('?? '), 'الأسئلة لا تظهر بترميزها الخام');
 });
 
@@ -605,4 +623,31 @@ test('detectSlideFigures يتجاهل الصفحات غير الموجودة و�
   const figs = await detectSlideFigures(new Engine(io, CAPS), [{ page: 1, small: { base64: 'a' } }, { page: 2, small: { base64: 'b' } }]);
   assert.deepEqual(figs.map((f) => [f.page, f.kind]), [[1, 'diagram'], [2, 'photo']]);
   assert.deepEqual(figs[0].box, [0, 0, 1000, 1000], 'المربع الصغير يصير الصفحة كلها');
+});
+
+
+test('الملزمة بلغتين: نسخة إنجليزية مترجمة بنفس العناوين، صورها تشير إلى صور الأصل، والـ PDF فيه الجزءان والأسئلة بالإنجليزية', async () => {
+  const { io, calls } = makeIO();
+  const doc = transcriptDoc({ mode: 'notes' });
+  const engine = new Engine(io, CAPS);
+  assert.equal(await writeNotes(doc, engine), true);
+  await complete(doc, engine, { io });
+  assert.ok(calls.translate >= 2, 'ترجمة قسم قسم');
+  assert.equal(doc.alt?.lang, 'en');
+  const heads = (l) => l.filter((b) => b.t === 'h').length;
+  const body = doc.blocks.filter((b) => b.t !== 'mcq');
+  assert.equal(heads(doc.alt.blocks), heads(body), 'نفس عدد العناوين (مع أهم النقاط)');
+  assert.ok(doc.alt.blocks.some((b) => b.t === 'h' && /^EN /.test(b.text)));
+  const figs = doc.blocks.filter((b) => b.t === 'fig');
+  const altFigs = doc.alt.blocks.filter((b) => b.t === 'fig');
+  assert.equal(altFigs.length, figs.length, 'كل صورة لها نظير في الترجمة');
+  for (const f of altFigs) { assert.ok(figs.some((x) => x.id === f.ref)); assert.match(f.caption, /^EN /); }
+  assert.ok(doc.alt.blocks.some((b) => b.box), 'أهم النقاط مترجمة داخل صندوق');
+  assert.match(doc.alt.title, /^EN /);
+  const html = buildPdfHtml(doc, { paged: true });
+  assert.match(html, /النسخة العربية/);
+  assert.match(html, /English edition/);
+  assert.match(html, /data-dir="ltr"/);
+  assert.match(html, /AR \+ EN/);
+  assert.ok(html.indexOf('English edition') > html.indexOf('النسخة العربية'));
 });
