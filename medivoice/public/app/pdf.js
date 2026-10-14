@@ -4,7 +4,7 @@
 // الهوية من اللوكو: تدرّج بنفسجي → أرجواني، مربعات بزوايا مدوّرة، أعمدة الصوت، وخط El Messiri للعناوين.
 // الملزمة بلغتين: جزء بلغة المحاضرة ثم جزء مترجم (doc.alt)، وبعدهما الأسئلة والقاموس والمصادر.
 
-import { splitInline, splitLatin, blockText, stripMarkup, isNotes, MODE_LABEL } from './text.js';
+import { inlineRuns, blockText, stripMarkup, isNotes, MODE_LABEL } from './text.js';
 import { creditLine } from './images.js';
 import { pagedRuntime } from './paged.js';
 import { markHtml, MARK_CSS } from '../brand.js';
@@ -39,10 +39,12 @@ export const dirOf = (text) => (arabicRatio(String(text).replace(/\[\[[^\]]*\]\]
  */
 export function inlineHtml(text) {
   const rtl = dirOf(text) === 'rtl';
-  const plain = (t) => (rtl
-    ? splitLatin(t).map((q) => (q.latin ? `<span class="lt${q.text.length <= 36 ? ' nw' : ''}">${esc(q.text)}</span>` : esc(q.text))).join('')
-    : esc(t));
-  return splitInline(text).map((p) => (p.term ? `<span class="t${p.text.length <= 30 ? ' nw' : ''}">${esc(p.text)}</span>` : plain(p.text))).join('');
+  const term = (t) => `<span class="t${t.length <= 30 ? ' nw' : ''}">${esc(t)}</span>`;
+  const latin = (t) => `<span class="lt${t.length <= 36 ? ' nw' : ''}">${esc(t)}</span>`;
+  // المقاطع الإنجليزية المربوطة (AP/PA، [[CT]]/[[MRI]]) تبقى معاً باتجاه إنجليزي داخل السطر العربي
+  return inlineRuns(text, rtl).map((r) => (r.group
+    ? `<span class="lt${r.text.length <= 36 ? ' nw' : ''}">${r.group.map((x) => (x.term ? term(x.text) : esc(x.text))).join('')}</span>`
+    : r.term ? term(r.text) : r.latin ? latin(r.text) : esc(r.text))).join('');
 }
 
 /** أعمدة صوت (زخرفة من اللوكو): ارتفاعات متناظرة تشبه الموجة الصوتية */

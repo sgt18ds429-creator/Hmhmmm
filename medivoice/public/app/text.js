@@ -18,7 +18,8 @@ export function normalize(s) {
     .replace(/ڤ/g, 'ف');
 }
 
-export const stripMarkup = (s) => String(s || '').replace(/\[\[|\]\]/g, '').replace(/^\s*(#{1,4}|[-*•>])\s+/gm, '');
+// [ \t] لا \s: الأخيرة تعبر الأسطر الفارغة فتصير المطابقة تربيعية على نص فيه آلاف الأسطر الفارغة
+export const stripMarkup = (s) => String(s || '').replace(/\[\[|\]\]/g, '').replace(/^[ \t]*(#{1,4}|[-*•>])[ \t]+/gm, '');
 
 /** كلمات مطبّعة (حروف وأرقام فقط). */
 export function tokens(s) {
@@ -69,22 +70,77 @@ export function repetitionScore(text, n = 5) {
   return dup / (w.length - n + 1);
 }
 
+// مفتاح مقارنة كلمة: مطبّعة وبلا علامات ترقيم على طرفيها («إنت،» = «إنت»). الرمز الخالص يُقارن كما هو
+const EDGE_PUNCT = /^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu;
+const wordKey = (w) => normalize(w).replace(EDGE_PUNCT, '') || w;
+const TRAIL_PUNCT = /[^\p{L}\p{N}]+$/u;
+const HAS_LETTER = /\p{L}/u;
+
+/**
+ * يطوي العبارات المكررة متتالية داخل نص، بمسح خطي على الكلمات (لا تعبير نمطي بتراجع قد يجمّد الصفحة):
+ * - وحدة فيها حروف (كلمة إلى 24 كلمة) تتكرر 3 مرات فأكثر، أو مرتين وهي 10 كلمات فأكثر → مرة واحدة.
+ * - وحدة بلا حروف (أرقام ورموز مثل «2, 2, 2» أو «+ + +» أو «| --- |») لا تُطوى إلا إذا تكررت 8 مرات فأكثر،
+ *   لأن تكرارها القليل غالباً قيم حقيقية (قراءات ضغط، درجات، أعمدة جدول).
+ * علامة الترقيم في آخر التكرار الأخير تبقى (نهاية الجملة).
+ */
+function collapseRuns(s) {
+  const toks = [];
+  for (const m of s.matchAll(/\S+/g)) toks.push({ w: m[0], at: m.index });
+  const n = toks.length;
+  if (n < 3) return s;
+  const keys = toks.map((t) => wordKey(t.w));
+  const letter = toks.map((t) => HAS_LETTER.test(t.w));
+  const drop = new Uint8Array(n);
+  const swap = new Map(); // آخر كلمة في الوحدة المُبقاة ← آخر كلمة في التكرار الأخير (بترقيمها)
+  let i = 0, changed = false;
+  while (i < n) {
+    let step = 1;
+    for (let len = 1; len <= 24 && i + 2 * len <= n; len++) {
+      if (keys[i + len] !== keys[i]) continue;
+      let reps = 1;
+      for (;;) {
+        const at = i + reps * len;
+        if (at + len > n) break;
+        let same = true;
+        for (let j = 0; j < len; j++) if (keys[at + j] !== keys[i + j]) { same = false; break; }
+        if (!same) break;
+        reps++;
+      }
+      if (reps < 2) continue;
+      let words = 0;
+      for (let j = 0; j < len; j++) if (letter[i + j]) words++;
+      const ok = words ? reps >= 3 || (reps >= 2 && words >= 10) : reps >= 8;
+      if (!ok) continue;
+      for (let j = i + len; j < i + reps * len; j++) drop[j] = 1;
+      const kept = toks[i + len - 1].w, last = toks[i + reps * len - 1].w;
+      swap.set(i + len - 1, kept.replace(TRAIL_PUNCT, '') + (last.match(TRAIL_PUNCT)?.[0] || ''));
+      changed = true;
+      step = reps * len;
+      break;
+    }
+    i += step;
+  }
+  if (!changed) return s;
+  let out = s.slice(0, toks[0].at);
+  let first = true;
+  for (let k = 0; k < n; k++) {
+    if (drop[k]) continue;
+    if (!first) out += s.slice(toks[k - 1].at + toks[k - 1].w.length, toks[k].at);
+    out += swap.has(k) ? swap.get(k) : toks[k].w;
+    first = false;
+  }
+  return out + s.slice(toks[n - 1].at + toks[n - 1].w.length);
+}
+
 /**
  * يطوي التكرار داخل نص (سطر أو فقرة):
- * - كلمة أو عبارة قصيرة (حتى 4 كلمات) تتكرر 3 مرات فأكثر متتالية → مرة واحدة.
+ * - كلمة أو عبارة تتكرر متتالية (انظر collapseRuns) → مرة واحدة.
  * - جملة تتكرر (بعد التطبيع) ضمن الفقرة نفسها → تبقى المرة الأولى فقط.
  */
 export function collapseRepeats(text) {
   let t = String(text || '');
   if (!t.trim()) return t;
-  // عبارة قصيرة مكررة متتالية (بينها مسافات أو فواصل)
-  for (let pass = 0; pass < 3; pass++) {
-    const before = t;
-    // الوحدة الأقصر أولاً (كسول) حتى تُطوى «إنت، إنت، إنت» إلى واحدة لا إلى اثنتين
-    // بداية الوحدة: أول النص أو بعد فاصل (بدون lookbehind حتى يعمل على متصفحات iPhone الأقدم)
-    t = t.replace(/(^|[\s،,.؛;:!؟?(\[])(\S+(?:[ \t]+\S+){0,7}?)(?:[ \t]*[،,.؛;:!؟?-]*[ \t]+\2){2,}(?=[\s،,.؛;:!؟?)\]]|$)/gu, '$1$2');
-    if (t === before) break;
-  }
+  t = collapseRuns(t);
   // جمل مكررة داخل الفقرة
   const parts = splitSentences(t, /[.!؟?]/);
   if (parts.length > 1) {
@@ -138,24 +194,52 @@ export function collapseCycles(items, keyOf) {
   return { items: items.filter((_, k) => keep[k]), keep, removed };
 }
 
+const isTableLine = (l) => /^[ \t]*\|/.test(l);
+
+/** صف جدول بترميز «| a | b |»: يُطوى التكرار داخل كل خلية وحدها (لا عبر الخلايا، فقيم مثل «↓ | ↓ | ↓» حقيقية). */
+function collapseTableLine(line) {
+  const cells = line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|');
+  let changed = false;
+  const fixed = cells.map((c) => {
+    if (!c.trim()) return c;
+    const out = collapseRepeats(c.trim());
+    if (out !== c.trim()) changed = true;
+    return ` ${out} `;
+  });
+  return changed ? `|${fixed.join('|')}|` : line;
+}
+
 export function collapseMarkup(markup) {
   // الأسطر الفارغة لا تفصل الدورة: نقارن الأسطر غير الفارغة، ونحذف المكرر منها فقط ويبقى الباقي كما هو
   // (الجداول والقوائم تبقى أسطرها متصلة)
   const rawLines = String(markup || '').replace(/\r/g, '').split('\n');
   const idx = [];
-  rawLines.forEach((l, k) => { if (l.trim() && !/^\s*\|/.test(l)) idx.push(k); });
+  rawLines.forEach((l, k) => { if (l.trim() && !isTableLine(l)) idx.push(k); });
   const cyc = collapseCycles(idx.map((k) => rawLines[k]), (l) => sentenceKey(l));
   const drop = new Set(idx.filter((_, j) => !cyc.keep[j]));
   const lines = drop.size ? rawLines.filter((_, k) => !drop.has(k)) : rawLines;
   const seen = new Set();
   const out = [];
   let removed = cyc.removed;
+  let rows = new Set(); // صفوف الجدول الحالي: الصف المكرر فيه حلقة (النموذج يعيد آخر صف حتى ينقطع)
   for (const raw of lines) {
+    if (isTableLine(raw)) {
+      const line = collapseTableLine(raw);
+      if (line !== raw) removed++;
+      const key = line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => normalize(stripMarkup(c)).replace(/\s+/g, ' ').trim()).join('|');
+      if (/[\p{L}\p{N}]/u.test(key)) {
+        if (rows.has(key)) { removed++; continue; }
+        rows.add(key);
+      }
+      out.push(line);
+      continue;
+    }
+    rows = new Set();
     const line = raw.trim() ? collapseRepeats(raw) : raw;
     if (line !== raw) removed++;
     if (!line.trim()) { out.push(line); continue; }
     const key = sentenceKey(line);
-    if (key.split(' ').length >= 5 && !/^\|/.test(line.trim())) {
+    if (key.split(' ').length >= 5) {
       if (seen.has(key)) { removed++; continue; }
       seen.add(key);
     }
@@ -311,8 +395,10 @@ export function blocksToMarkup(blocks) {
  * مثل «(Introduction to Chest X-ray)» أو كلمات إنجليزية متتالية. يرجع [{ latin:boolean, text }].
  * الأقواس تدخل مع العبارة، وعلامة الترقيم في آخر الجملة تبقى خارجها.
  */
-const LATIN_TAIL = "(?:[A-Za-z0-9'’]|[-–.](?=[A-Za-z0-9]))*";
-const LATIN_RUN = new RegExp(`\\((?=\\s*[A-Za-z])[^()\\u0600-\\u06FF]{1,140}\\)|[A-Za-z]${LATIN_TAIL}(?:[ ]+[A-Za-z0-9]${LATIN_TAIL})*`, 'g');
+const LATIN_TAIL = "(?:[A-Za-z0-9'’]|[-–.:](?=[A-Za-z0-9]))*";
+// كلمات إنجليزية متتالية، والمربوطة بـ / & + = × تبقى مقطعاً واحداً (AP/PA، T1/T2، mg/dL، H&E)
+// وإلا قلب اتجاه السطر العربي ترتيبها
+const LATIN_RUN = new RegExp(`\\((?=\\s*[A-Za-z])[^()\\u0600-\\u06FF]{1,140}\\)|[A-Za-z]${LATIN_TAIL}(?:(?:[ ]+|[ ]*[/&+=×][ ]*)[A-Za-z0-9]${LATIN_TAIL})*`, 'g');
 export function splitLatin(text) {
   const s = String(text || '');
   const out = [];
@@ -338,6 +424,33 @@ export function splitInline(text) {
     last = re.lastIndex;
   }
   if (last < s.length) out.push({ term: false, text: s.slice(last).replace(/\[\[|\]\]/g, '') });
+  return out;
+}
+
+/**
+ * مقاطع نص للعرض: مصطلحات [[ ]]، ومقاطع إنجليزية (في النص العربي فقط)، ونص عادي.
+ * في النص العربي: المصطلحات والمقاطع الإنجليزية المتجاورة التي يفصلها مسافة أو / & + = × - : فقط
+ * (مثل «[[CT]]/[[MRI]]» أو «[[CT]] scan») تُجمع في مجموعة واحدة باتجاه إنجليزي، وإلا عرضها السطر العربي مقلوبة.
+ * @returns [{ text, term?, latin?, group?:[...] }]
+ */
+const LTR_JOIN = /^[ ]*(?:[/&+=×:\-–][ ]*)?$/;
+export function inlineRuns(text, rtl) {
+  const runs = [];
+  for (const part of splitInline(text)) {
+    if (part.term) { runs.push({ term: true, text: part.text }); continue; }
+    if (!rtl) { runs.push({ text: part.text }); continue; }
+    for (const q of splitLatin(part.text)) runs.push(q.latin ? { latin: true, text: q.text } : { text: q.text });
+  }
+  if (!rtl) return runs;
+  const ltr = (x) => !!x && (x.term || x.latin);
+  const joins = (k) => runs[k] && !ltr(runs[k]) && runs[k].text.length <= 5 && LTR_JOIN.test(runs[k].text) && ltr(runs[k + 1]);
+  const out = [];
+  for (let i = 0; i < runs.length; i++) {
+    if (!ltr(runs[i]) || !joins(i + 1)) { out.push(runs[i]); continue; }
+    const group = [runs[i]];
+    while (joins(i + 1)) { group.push(runs[i + 1], runs[i + 2]); i += 2; }
+    out.push({ group, text: group.map((x) => x.text).join('') });
+  }
   return out;
 }
 
@@ -559,7 +672,11 @@ export const fmtTime = (sec) => {
 /** استخراج JSON من رد نموذج حتى لو أحاطه بنص أو أسوار كود. */
 export function parseJsonLoose(text) {
   if (text && typeof text === 'object') return text;
-  const s = String(text || '').trim().replace(/^```(?:json)?\s*|\s*```$/g, '');
+  // أسوار الكود تُزال بلا تعبير نمطي (رد متدهور فيه آلاف المسافات يجعل «\s*```$» تربيعياً)
+  let s = String(text || '').trim();
+  if (s.startsWith('```')) { const nl = s.indexOf('\n'); s = nl >= 0 ? s.slice(nl + 1) : s.slice(3); }
+  if (s.endsWith('```')) s = s.slice(0, -3);
+  s = s.trim();
   try { return JSON.parse(s); } catch {}
   const a = s.indexOf('{'), b = s.lastIndexOf('}');
   if (a >= 0 && b > a) { try { return JSON.parse(s.slice(a, b + 1)); } catch {} }
@@ -589,12 +706,22 @@ export function qualityGate(doc) {
   return stat;
 }
 
-/** مفتاح مقارنة كتلة نصية (فقرة، ملاحظة، قائمة)؛ '' للكتل التي لا تُقارن (عناوين، صور، جداول). */
-const blockKey = (b) => (b.t === 'p' || b.t === 'note' ? textKey(b.text) : b.t === 'ul' || b.t === 'ol' ? textKey(b.items.join(' | ')) : '');
+/**
+ * مفتاح مقارنة كتلة؛ '' للكتل التي لا تُقارن (الصور). العناوين والجداول والأسئلة تدخل أيضاً حتى تُكشف
+ * حلقة «عنوان + فقرة» أو جدول/سؤال يتكرر.
+ */
+const blockKey = (b) => {
+  if (b.t === 'p' || b.t === 'note') return textKey(b.text);
+  if (b.t === 'ul' || b.t === 'ol') return textKey(b.items.join(' | '));
+  if (b.t === 'h') { const k = textKey(b.text); return k && `h${b.level === 3 ? 3 : 2} ${k}`; }
+  if (b.t === 'table') { const k = textKey([...(b.head || []), ...(b.rows || []).flat()].join(' ')); return k && `table ${k}`; }
+  if (b.t === 'mcq') { const k = textKey([b.q, ...(b.opts || [])].join(' ')); return k && `mcq ${k}`; }
+  return '';
+};
 
 /**
  * ينظّف قائمة كتل: يطوي الدورات المتتالية (فقرات تعيد نفسها في حلقة)، ويطوي التكرار داخل كل نص،
- * ويحذف البنود والفقرات المكررة داخل القسم الواحد، والكتل الفارغة.
+ * ويحذف البنود والصفوف والفقرات والجداول المكررة داخل القسم الواحد، والأسئلة المكررة، والكتل الفارغة.
  */
 export function cleanBlockList(blocks, stat = { repeats: 0, duplicates: 0, empty: 0, cycles: 0 }) {
   const fix = (t) => {
@@ -605,18 +732,27 @@ export function cleanBlockList(blocks, stat = { repeats: 0, duplicates: 0, empty
   const cyc = collapseCycles(blocks, blockKey);
   stat.cycles = (stat.cycles || 0) + cyc.removed;
   let seen = new Set(); // نطاق التكرار: القسم الواحد (## … ##)، فقائمة «أهم النقاط» يحق لها اقتباس جمل المتن
+  let tables = new Set();
+  const questions = new Set(); // السؤال نفسه مرتين في أي موضع
   const kept = [];
   for (const b of cyc.items) {
-    if (b.t === 'h' && b.level !== 3) seen = new Set();
+    if (b.t === 'h' && b.level !== 3) { seen = new Set(); tables = new Set(); }
     if (typeof b.text === 'string') b.text = fix(b.text);
     if (typeof b.caption === 'string') b.caption = fix(b.caption);
-    if (b.t === 'mcq') { b.q = fix(b.q); b.why = fix(b.why || ''); }
+    if (b.t === 'mcq') {
+      b.q = fix(b.q || ''); b.why = fix(b.why || '');
+      if (Array.isArray(b.opts)) b.opts = b.opts.map(fix);
+      const k = blockKey(b);
+      if (k && questions.has(k)) { stat.duplicates++; continue; }
+      if (k) questions.add(k);
+    }
     if (Array.isArray(b.items)) {
       const local = new Set();
       b.items = b.items.map(fix).filter((it) => {
         const k = textKey(it);
         if (!k) { stat.empty++; return false; }
-        if (k.split(' ').length >= 4 && (local.has(k) || seen.has(k))) { stat.duplicates++; return false; }
+        // داخل القائمة نفسها: البند المكرر يُحذف مهما قصر (حلقة «- حمى» عشرين مرة)، وبين القوائم: 4 كلمات فأكثر
+        if (local.has(k) || (k.split(' ').length >= 4 && seen.has(k))) { stat.duplicates++; return false; }
         local.add(k);
         return true;
       });
@@ -625,7 +761,19 @@ export function cleanBlockList(blocks, stat = { repeats: 0, duplicates: 0, empty
     }
     if (Array.isArray(b.rows)) {
       b.head = (b.head || []).map(fix);
-      b.rows = b.rows.map((r) => r.map(fix));
+      const rowKeys = new Set();
+      b.rows = b.rows.map((r) => r.map(fix)).filter((r) => {
+        // الرموز وحدها قيم حقيقية في الجداول (↑ ↓ + −)، فالمفتاح يبقيها
+        const k = r.map((c) => normalize(stripMarkup(c)).replace(/\s+/g, ' ').trim()).join('|');
+        if (!k.replace(/\|/g, '')) { stat.empty++; return false; }
+        if (rowKeys.has(k)) { stat.duplicates++; return false; } // صف مكرر في الجدول نفسه: حلقة
+        rowKeys.add(k);
+        return true;
+      });
+      if (!b.rows.length) { stat.empty++; continue; }
+      const k = blockKey(b);
+      if (k && tables.has(k)) { stat.duplicates++; continue; }
+      if (k) tables.add(k);
     }
     if (b.t === 'p' || b.t === 'note') {
       const k = textKey(b.text);
@@ -635,7 +783,12 @@ export function cleanBlockList(blocks, stat = { repeats: 0, duplicates: 0, empty
         seen.add(k);
       }
     }
-    if (b.t === 'h' && !textKey(b.text)) { stat.empty++; continue; }
+    if (b.t === 'h') {
+      if (!textKey(b.text)) { stat.empty++; continue; }
+      // العنوان نفسه مرتين متتاليتين بلا شيء بينهما
+      const prev = kept[kept.length - 1];
+      if (prev?.t === 'h' && blockKey(prev) === blockKey(b)) { stat.duplicates++; continue; }
+    }
     kept.push(b);
   }
   return kept;

@@ -70,6 +70,7 @@ export class Engine {
     this.modelStats = {}; // لكل نموذج: ok/429/503/other — للتشخيص في doc.stats.models
     // التوازي يتسع مع عدد مفاتيح Gemini (لكل مفتاح حدّه بالدقيقة): 1 → 1، 2 → 2، 3 فأكثر → 3
     this.par = caps.gemini ? Math.max(1, Math.min(3, caps.geminiKeys || 1)) : 1;
+    this.strong5xx = 0; // ردود ضغط (503) متتالية على النماذج الدقيقة: بعد 3 ننزل للخفيفة بدل انتظارها
   }
 
   tally(model, res) {
@@ -182,16 +183,19 @@ export class Engine {
     const order = lite
       ? [...this.gem.items.filter((x) => /lite/.test(x.id)), ...this.gem.items.filter((x) => !/lite/.test(x.id)).reverse()]
       : this.gem.items;
+    // بلا بديل (Groq) نصبر على ضغط Google أطول: الاستسلام هنا يعني مقطعاً أو قسماً ضائعاً
+    const patience = patienceMs || 300_000;
     let netFails = 0, blocked = 0;
-    for (let attempt = 0; attempt < 24; attempt++) {
+    for (let attempt = 0; attempt < 60; attempt++) {
       this.check();
       const now = Date.now();
       let m = order.find((x) => !x.dead && x.until <= now);
       if (!lite && m && /lite/.test(m.id)) {
         // الاستماع للصوت وكتابة الشرح: النماذج الخفيفة أضعف بالمصطلحات واللهجة. إذا النماذج الدقيقة في تهدئة
         // قصيرة (حد الدقيقة) ننتظرها، ولا ننزل للخفيفة إلا إذا طال الانتظار أو خلصت حصتها اليومية.
+        // أما إذا كانت مضغوطة (503 متتالية) فانتظارها لا يفيد: الخفيفة الآن أفضل من لا شيء
         const strong = order.filter((x) => !x.dead && !/lite/.test(x.id));
-        if (strong.length) {
+        if (strong.length && this.strong5xx < 3) {
           const wait = Math.min(...strong.map((x) => x.until)) - now;
           if (wait <= strongWaitMs) { await this.pause(Math.max(wait, 0) + 400, 'gemini'); continue; }
         }
@@ -211,6 +215,8 @@ export class Engine {
       if (system) body.systemInstruction = { parts: [{ text: system }] };
       const res = await this.io.gemini(m.id, body, { sec, signal: this.signal });
       this.tally(m.id, res);
+      const overloaded = [500, 502, 503, 504, 0].includes(res.status);
+      if (!isLite) this.strong5xx = overloaded ? this.strong5xx + 1 : res.ok ? 0 : this.strong5xx;
       if (res.ok && res.data) {
         m.fails = 0;
         const cand = res.data.candidates?.[0];
@@ -241,12 +247,12 @@ export class Engine {
       if (res.status === 400 || res.status === 413) return { blocked: true, reason: `bad_request: ${msg.slice(0, 120)}` };
       // ضغط على النموذج (503/500) أو انقطاع: نهدّئه مدة تطول مع كل فشل وننتقل لغيره، ولا نستسلم بسرعة
       // (في المساء تكثر 503 على النماذج المجانية، والاستسلام يعني ملزمة ناقصة)
-      if (res.status === 503 || res.status === 500 || res.status === 502 || res.status === 504 || res.status === 0) {
+      if (overloaded) {
         netFails++;
         m.fails = (m.fails || 0) + 1;
         this.gem.cool(m, Math.min(30_000, 6000 * m.fails));
-        // patienceMs: من له بديل (Groq) لا ينتظر طويلاً
-        if (netFails > 14 || (patienceMs && Date.now() - started > patienceMs)) return null;
+        // patienceMs: من له بديل (Groq) لا ينتظر طويلاً؛ ومن لا بديل له يصبر حتى 5 دقائق
+        if (netFails > 40 || Date.now() - started > patience) return null;
         continue;
       }
       if (++netFails > 6) return null;
@@ -348,7 +354,7 @@ function isEmptyMarkup(text) {
   return !t || /^\[?\s*لا يوجد كلام\s*\]?\.?$/.test(t);
 }
 
-async function refineChunk(engine, chunk, draft, meta, { first, last, exact, weak = false, known = [] }) {
+async function refineChunk(engine, chunk, draft, meta, { first, last, exact, weak = false, known = [], retry = 0 }) {
   const { io, emit } = engine;
   const draftWords = draft ? countWords(draft) : 0;
   // مسودة Whisper تصلح مرجعاً فقط إذا كانت موثوقة. على الموسيقى والتسجيل الضعيف تكون مشوّهة،
@@ -392,7 +398,8 @@ async function refineChunk(engine, chunk, draft, meta, { first, last, exact, wea
     for (let tries = 0; tries < 3; tries++) {
       const { system, user } = audioPrompt(meta, { draft: useDraft ? anchor : '', first, last, exact: exact && useDraft && anchor === draft, insist, known });
       // بعد حلقة تكرار نعيد بحرارة خفيفة: الحرارة صفر هي التي تُبقي النموذج في الحلقة
-      const r = await engine.gemini({ system, parts: [audio, { text: user }], sec, maxTokens: 16000, thinking: 'minimal', temperature: looped ? 0.3 : 0 });
+      // مع مسودة Whisper موثوقة لا ننتظر ضغط Google أكثر من دقيقتين ونصف (المسودة المنقّحة بديل)
+      const r = await engine.gemini({ system, parts: [audio, { text: user }], sec, maxTokens: 16000, thinking: 'minimal', temperature: looped ? 0.3 : 0, patienceMs: trusted ? 150_000 : 300_000 });
       if (!r || r.blocked) break;
       sec = 0;
       // حلقة تكرار في الاستماع: نطويها، ونعيد الاستماع مرة بدون المسودة (غالباً هي التي جرّته إليها)
@@ -459,6 +466,12 @@ async function refineChunk(engine, chunk, draft, meta, { first, last, exact, wea
     return { markup: draft, engine: 'raw', review: true };
   }
   if (draft === '') return { markup: '', engine: 'none', review: false };
+  // لا مسودة ولا استماع الآن، لكن نماذج Gemini ما زالت حية (ضغط مؤقت لا نفاد حصة): ننتظر ونعيد المقطع
+  // بدل أن تفشل المحاضرة كلها بعد أن اكتمل أغلبها
+  if ((engine.hasGemini || engine.hasTx) && retry < 2) {
+    await engine.pause(20_000 * (retry + 1), 'gemini');
+    return refineChunk(engine, chunk, draft, meta, { first, last, exact, weak, known, retry: retry + 1 });
+  }
   throw new PipelineError('no_engine', 'no engine available for this chunk');
 }
 
@@ -529,8 +542,10 @@ export async function runLecture({ file, meta, cfg, caps, io, emit = () => {}, s
   const running = new Set();
   const seenTerms = new Map(); // مصطلحات الأجزاء المنجزة: تُعطى للأجزاء اللاحقة حتى يتوحّد إملاؤها
   const noteTerms = (markup) => { for (const m of String(markup).matchAll(/\[\[([^\]]{2,60})\]\]/g)) { const k = m[1].trim().toLowerCase(); if (!seenTerms.has(k)) seenTerms.set(k, m[1].trim()); } };
-  // لغة الكلام: تُكتشف من أول مسودة (Whisper يرجعها) وتُثبَّت لباقي المقاطع
-  let language = meta.speech === 'en' ? 'en' : meta.speech === 'ar' ? 'ar' : undefined;
+  // لغة الكلام: Whisper يكتشفها لكل مقطع من صوته (لا تُثبَّت: محاضرة تبدأ بالإنجليزية ثم تكمل بالعربية
+  // كانت تُفرض عليها الإنجليزية كلها فيترجمها Whisper). آخر لغة اكتُشفت تحدد لغة نص السياق فقط
+  const language = meta.speech === 'en' ? 'en' : meta.speech === 'ar' ? 'ar' : undefined;
+  let heard = language;
   const LANGS = { arabic: 'ar', english: 'en', ar: 'ar', en: 'en' };
   let failure = null;
   // مسودات Whisper تُطلب بالتوازي فور قصّ كل مقطع (كانت متتابعة فتأخذ ربع الوقت)، أما نقاط القطع بين المقاطع
@@ -572,16 +587,17 @@ export async function runLecture({ file, meta, cfg, caps, io, emit = () => {}, s
           await sttSlot();
           try {
             emit({ type: 'chunk', index: chunk.index, stage: 'stt' });
-            prompt = whisperPrompt(language === 'en' ? { ...meta, speech: 'en' } : meta, '');
+            prompt = whisperPrompt(heard === 'en' ? { ...meta, speech: 'en' } : meta, '');
             const data = await engine.whisper(chunk, { language, prompt, sec: chunk.audioSec });
             const found = LANGS[String(data?.language || '').toLowerCase()];
-            if (!language && found && countWords(data?.text || '') >= 40) language = found;
+            if (!language && found && countWords(data?.text || '') >= 40) heard = found;
             return data;
           } finally { sttFree(); }
         })().catch((e) => { failure = failure || e; return null; })
         : Promise.resolve(null);
 
       const prevChain = chain;
+      let task = null;
       chain = (async () => {
         const data = await draftJob;
         const prev = await prevChain;
@@ -603,18 +619,20 @@ export async function runLecture({ file, meta, cfg, caps, io, emit = () => {}, s
         const exact = draft !== null && dual;
         const ctx = { first: chunk.index === 0, last: chunk.last, exact, weak, known: [...seenTerms.values()].slice(-70) };
 
-        const task = refineChunk(engine, chunk, draft, meta, ctx).then(async (r) => {
+        task = refineChunk(engine, chunk, draft, meta, ctx).then(async (r) => {
           const part = { index: chunk.index, start: chunk.start, end: chunk.end, cutEnd, tail, markup: r.markup, engine: r.engine, model: r.model || '', review: !!r.review, words: countWords(r.markup) };
           parts[chunk.index] = part;
           noteTerms(part.markup);
           if (checkpoint) await checkpoint.set(chunk.index, part);
           emit({ type: 'part', index: chunk.index, part });
-        }).catch((e) => { failure = failure || e; }).finally(() => running.delete(task));
-        running.add(task);
+        }).catch((e) => { failure = failure || e; });
         return { cutEnd, tail };
       })();
       chain.catch(() => {});
-      // لا نتقدم كثيراً أمام التدقيق حتى لا تتراكم المقاطع في الذاكرة
+      // المقطع يُحسب «قيد المعالجة» منذ قصّه حتى ينتهي استماعه (لا منذ بدء الاستماع)، فلا يُقصّ ويُضغط
+      // أكثر من الحد وهو ينتظر مسودته: ذاكرة أقل على الهاتف وطلبات متزامنة أقل (أخطاء 429 أقل)
+      const life = chain.then(() => task, () => {}).catch(() => {}).finally(() => running.delete(life));
+      running.add(life);
       while (running.size >= maxInFlight) await Promise.race(running);
       if (failure) throw failure;
     }
@@ -889,9 +907,14 @@ async function writeSection(engine, meta, plan, s, paras, opts, depth = 0) {
     const got = termsIn(text);
     const plain = ` ${normalize(stripMarkup(text)).replace(/[^a-z0-9]+/g, ' ')} `;
     const missing = [...srcTerms.keys()].filter((k) => !got.has(k) && !plain.includes(` ${k}`)).map((k) => srcTerms.get(k));
-    const cand = { text, words: outWords, missing, truncated: !!r.truncated, model: r.model || '' };
-    // الشرح: الأوفى أفضل. النقاط الامتحانية: ما لم يتجاوز حجم التفريغ أفضل، ثم الأقل نقصاً
-    const score = (c) => (high ? -(c.words > words * 1.1 ? (c.words - words) : 0) - c.missing.length * 15 : c.words - c.missing.length * 15);
+    // التكرار يُقاس على الناتج بعد الطي: ما بقي فيه من حلقة
+    const cand = { text, words: outWords, missing, truncated: !!r.truncated, model: r.model || '', rep: repetitionScore(text), loop };
+    // الشرح: الأوفى أفضل. النقاط الامتحانية: ما لم يتجاوز حجم التفريغ أفضل، ثم الأقل نقصاً.
+    // والمحاولة التي انزلقت في حلقة تخسر دائماً أمام محاولة نظيفة (كانت تفوز بطولها المكرر)
+    const score = (c) => {
+      const base = high ? -(c.words > words * 1.1 ? (c.words - words) : 0) - c.missing.length * 15 : c.words * (1 - Math.min(1, c.rep)) - c.missing.length * 15;
+      return base - (high ? c.rep * 400 : 0) - (c.loop > 0.3 || c.rep > 0.15 ? 1e6 : 0);
+    };
     if (!best || score(cand) > score(best)) best = cand;
     // انقطع لطول الناتج: نقسم القسم نصفين ونكتب كلاً منهما
     if (cand.truncated && splittable) {
@@ -905,7 +928,8 @@ async function writeSection(engine, meta, plan, s, paras, opts, depth = 0) {
     const long = high && words >= 150 && outWords > words * 1.1; // نقاط امتحانية أطول من الكلام نفسه: توسّع واختراع
     const lost = srcTerms.size >= 8 && missing.length > srcTerms.size * (high ? 0.6 : 0.4);
     const repeated = loop > 0.3; // انزلق الكاتب إلى تكرار الجمل: نعيد الكتابة مرة مع تنبيه
-    if ((!short && !lost && !long && !repeated) || engine.late(0.7)) break; // عند التأخر نقبل الناتج ولا نعيد
+    // عند التأخر نقبل الناتج ولا نعيد، إلا الحلقة: الكاتب الذي ينزلق فيها يتوقف عن الكتابة فيضيع باقي القسم
+    if ((!short && !lost && !long && !repeated) || (engine.late(0.7) && !repeated)) break;
     retry = { prevWords: short ? outWords : 0, missing: missing.slice(0, 30), tooLong: long ? outWords : 0, target: Math.max(60, Math.round(words * 0.4)), repeated };
   }
   if (!best || (words >= 120 && best.words < words * (high ? 0.06 : 0.25))) return { markup: fallbackMarkup(s, source), fallback: true, review: true, words };
@@ -1128,29 +1152,35 @@ export async function complete(doc, engine, { io, emit = () => {}, review = fals
   // نص الشرح يُقرأ الآن قبل أن تُدرج الصور. النقاط للمراجعة للشرح المفصل، والأسئلة للنقاط الامتحانية
   // صور السلايدات أولاً (قصّ محلي سريع) حتى لا تتسابق مع استبدال الصور في enrich
   if (doc.slides?.figs?.length) await safe(placeSlideFigures(doc, io));
-  // بصمة نص كل قسم قبل المراجعة: الأقسام التي تغيّرها المراجعة تُترجم من جديد بعدها
-  const sectionSigs = () => sectionsOf(doc.blocks.filter((b) => b.t !== 'mcq')).map((sec) => textHash(blocksToMarkup(sec.filter((b) => TEXT_TYPES.has(b.t)))));
-  const before = review && isNotes(mode) ? sectionSigs() : null;
   // المراجعة النهائية مقابل التسجيل تعمل بالتوازي مع الترجمة والصور والقاموس (كانت قبلها، فتطيل الانتظار)
-  const audit = before ? safe(reviewNotes(doc, engine, { emit })) : null;
+  const audit = review && isNotes(mode) ? safe(reviewNotes(doc, engine, { emit })) : Promise.resolve(null);
   const points = mode === 'notes' || mode === 'integrated' ? safe(keyPoints(engine, doc.meta, doc.blocks, lang)) : null;
-  // الأسئلة بالإنجليزية دائماً (أسلوب الامتحانات)
-  const mcq = mode === 'highyield' ? safe((async () => { emit({ type: 'stage', name: 'mcq' }); return mcqBlocks(engine, doc.meta, doc.blocks, 'en'); })()) : null;
-  // النسخة الثانية: الشرح يُترجم بالتوازي مع القاموس والصور، ثم تُلحق به النقاط والصور
-  const alt = isNotes(mode) && doc.meta.bilingual !== false ? safe(translateBlocks(doc, engine, { emit })) : null;
-  const [kp, qs, tr] = await Promise.all([points, mcq, alt, enrich(doc, engine, { io, emit }), audit]);
-  // ما غيّرته المراجعة يُترجم من جديد حتى تتطابق النسختان
-  if (tr && before) {
-    const after = sectionSigs();
-    const changed = after.map((sig, i) => (sig !== before[i] ? i : -1)).filter((i) => i >= 0);
-    if (after.length === before.length && changed.length) {
-      const secs = sectionsOf(doc.blocks.filter((b) => b.t !== 'mcq'));
-      await mapLimit(changed, 3, async (i) => {
-        const t = await safe(translateSection(engine, secs[i], { to: tr.to, meta: doc.meta, strong: true }));
-        if (t) tr.out[i] = t;
-      });
-      doc.stats.retranslated = changed.length;
-    }
+  // الأسئلة بالإنجليزية دائماً (أسلوب الامتحانات). تُكتب بعد المراجعة ما أمكن حتى تتبع أجوبتها الشرح المصحَّح،
+  // دون انتظار أكثر من دقيقة ونصف
+  let mcqAfterReview = false;
+  const mcq = mode === 'highyield' ? safe((async () => {
+    let timer = null;
+    const waited = await Promise.race([audit.then(() => true), new Promise((r) => { timer = setTimeout(() => r(false), 90_000); })]);
+    clearTimeout(timer);
+    mcqAfterReview = waited;
+    engine.check();
+    emit({ type: 'stage', name: 'mcq' });
+    return mcqBlocks(engine, doc.meta, doc.blocks, 'en');
+  })()) : null;
+  // النسخة الثانية: الشرح يُترجم بالتوازي مع القاموس والصور. ما غيّرته المراجعة يُترجم من جديد فور انتهائها
+  // (المجموعات التي تغيّرت فقط، بالنماذج السريعة)، ثم تُلحق بالترجمة النقاط والصور
+  const translating = isNotes(mode) && doc.meta.bilingual !== false;
+  const alt = translating ? safe((async () => {
+    const tr = await translateBlocks(doc, engine, { emit });
+    const rev = await audit;
+    if (tr && rev?.applied) await retranslate(doc, engine, tr);
+    return tr;
+  })()) : null;
+  const [kp, qs, tr, , rev] = await Promise.all([points, mcq, alt, enrich(doc, engine, { io, emit }), audit]);
+  // تصحيحات المراجعة تصل أيضاً للنقاط وللأسئلة التي كُتبت من الشرح قبل تصحيحه
+  if (rev?.parsed) {
+    const extraBefore = [...(kp || []), ...(qs && !mcqAfterReview ? qs : [])];
+    if (extraBefore.length) applyReview(extraBefore, rev.parsed, { additions: false });
   }
   doc.blocks = doc.blocks.filter((b) => b.t !== 'slidereq'); // طلبات سلايدات بلا صورة
   const body = doc.blocks.slice(); // متن الشرح بصوره، قبل النقاط والأسئلة
@@ -1161,6 +1191,9 @@ export async function complete(doc, engine, { io, emit = () => {}, review = fals
   }
   if (tr) await safe(finishAlt(doc, engine, tr, kp || [], body));
   else doc.alt = null;
+  // الترجمة لا تسقط بصمت: يُبلَّغ الطالب إذا تعذّرت كلها أو بعضها
+  if (translating && !doc.alt?.blocks?.length) emit({ type: 'note', code: 'translate_failed' });
+  else if (doc.alt?.partial) emit({ type: 'note', code: 'translate_partial' });
   // بوابة الجودة الأخيرة: فحص كل الصفحات قبل التسليم (تكرار، فقرات مكررة، كتل فارغة)
   emit({ type: 'stage', name: 'gate' });
   doc.stats.gate = qualityGate(doc);
@@ -1618,16 +1651,30 @@ function groupByWords(blocks, maxWords) {
   return out;
 }
 
+/** مجموعات كتل القسم النصية (نحو 650 كلمة لكل منها) ببصمة نصها، حتى تُعاد ترجمة ما تغيّر منها فقط. */
+function sectionGroups(blocks) {
+  return groupByWords(blocks.filter((b) => TEXT_TYPES.has(b.t)), 650).map((src) => ({ src, sig: textHash(blocksToMarkup(src)), out: null }));
+}
+
 /**
- * يترجم قسماً: على مجموعات صغيرة (نحو 650 كلمة) حتى تكون الطلبات سريعة ولا تنقطع، وتصلح لـ Groq إذا ضغطت Gemini.
- * يرجع الكتل المترجمة أو null إذا تعذّرت مجموعة منها.
+ * مجموعات القسم بعد تغيّر نصه (المراجعة): ما بقي نصه كما هو يأخذ ترجمته السابقة (بالبصمة)، وما تغيّر يبقى
+ * بلا ترجمة (out = null) ومعه ترجمته القديمة احتياطاً (prev) إن بدأ بنفس الكتلة.
  */
+function regroup(sec, old = []) {
+  const bySig = new Map(old.filter((g) => g.out).map((g) => [g.sig, g.out]));
+  const byHead = new Map(old.filter((g) => g.out && g.src[0]).map((g) => [g.src[0], g.out]));
+  return sectionGroups(sec).map((g) => {
+    const out = bySig.get(g.sig);
+    if (out) g.out = out; else g.prev = byHead.get(g.src[0]) || null;
+    return g;
+  });
+}
+
+/** يترجم قسماً كاملاً (للنقاط): الكتل المترجمة أو null إذا تعذّرت مجموعة منه. */
 async function translateSection(engine, blocks, { to, meta, strong = false }) {
-  const text = blocks.filter((b) => TEXT_TYPES.has(b.t));
-  if (!text.length) return [];
   const out = [];
-  for (const group of groupByWords(text, 650)) {
-    const t = await translateGroup(engine, group, { to, meta, strong });
+  for (const g of sectionGroups(blocks)) {
+    const t = await translateGroup(engine, g.src, { to, meta, strong });
     if (!t) return null;
     out.push(...t);
   }
@@ -1635,8 +1682,9 @@ async function translateSection(engine, blocks, { to, meta, strong = false }) {
 }
 
 /**
- * يترجم شرح الملزمة إلى اللغة الأخرى (عربي ↔ إنجليزي) قسماً قسماً بالتوازي، ثم يعيد ما تعذّر بنموذج أقوى.
- * يرجع { to, out } حيث out[i] كتل القسم i مترجمة (أو null إذا تعذر).
+ * يترجم شرح الملزمة إلى اللغة الأخرى (عربي ↔ إنجليزي) على مجموعات صغيرة بالتوازي، ثم يعيد ما تعذّر بنموذج أقوى
+ * (بالتوازي أيضاً). لا يُترك شيء بسبب التأخر: الترجمة جزء من الملزمة المطلوبة.
+ * يرجع { to, groups } حيث groups[i] مجموعات القسم i، ولكل منها out (الكتل المترجمة أو null).
  */
 export async function translateBlocks(doc, engine, { emit = () => {} }) {
   const from = doc.lang || langOf(doc.blocks.map(blockText).join(' '));
@@ -1644,62 +1692,110 @@ export async function translateBlocks(doc, engine, { emit = () => {} }) {
   const sections = sectionsOf(doc.blocks.filter((b) => b.t !== 'mcq'));
   if (!sections.length) return null;
   emit({ type: 'stage', name: 'translate', to });
+  const groups = sections.map(sectionGroups);
+  const all = groups.flat();
   let done = 0;
-  const attempt = (strong) => async (sec) => {
+  const run = (strong) => async (g) => {
     try {
-      const r = await translateSection(engine, sec, { to, meta: doc.meta, strong });
-      if (r) emit({ type: 'translate', done: ++done, total: sections.length });
-      return r;
+      g.out = await translateGroup(engine, g.src, { to, meta: doc.meta, strong });
     } catch (e) {
       if (isFatal(e)) throw e;
-      return null;
+      g.out = null;
     }
+    if (g.out) emit({ type: 'translate', to, done: ++done, total: all.length });
   };
-  const out = await mapLimit(sections, engine.hasGemini ? Math.min(8, 2 + 2 * engine.par) : 2, async (sec) => (engine.late(1.2) ? null : attempt(false)(sec)));
-  // جولة ثانية لما تعذّر: بالنموذج الأقوى المتاح، قسماً قسماً
-  for (let i = 0; i < sections.length; i++) {
-    if (out[i] || engine.late(1.35)) continue;
-    out[i] = await attempt(true)(sections[i]);
-  }
-  const ok = out.filter(Boolean).length;
-  if (ok < Math.ceil(sections.length / 2)) return null; // أكثر من نصف الأقسام لم يُترجم: لا نسخة ثانية
-  return { to, out };
+  await mapLimit(all, engine.hasGemini ? Math.min(8, 2 + 2 * engine.par) : 2, run(false));
+  // جولة ثانية لما تعذّر: بالنموذج الأقوى المتاح، بالتوازي (كانت قسماً قسماً)
+  const failed = all.filter((g) => !g.out);
+  if (failed.length) await mapLimit(failed, 3, run(true));
+  return { to, groups };
+}
+
+/** بعد المراجعة: يعيد ترجمة المجموعات التي غيّرتها فقط، بالنماذج السريعة. */
+async function retranslate(doc, engine, tr) {
+  const sections = sectionsOf(doc.blocks.filter((b) => b.t !== 'mcq'));
+  if (sections.length !== tr.groups.length) return;
+  const todo = [];
+  sections.forEach((sec, i) => { tr.groups[i] = regroup(sec, tr.groups[i]); todo.push(...tr.groups[i].filter((g) => !g.out)); });
+  if (!todo.length) return;
+  await mapLimit(todo, 4, async (g) => {
+    try { g.out = await translateGroup(engine, g.src, { to: tr.to, meta: doc.meta }); } catch (e) { if (isFatal(e)) throw e; }
+    if (!g.out && g.prev) g.out = g.prev; // ترجمة ما قبل المراجعة أفضل من نص بلا ترجمة
+  });
+  doc.stats.retranslated = todo.length;
 }
 
 /**
- * يكمل النسخة الثانية: ترجمة النقاط والعنوان وتعليقات الصور، ووضع الصور في مواضعها.
+ * موضع صورة في الترجمة: بعد الكتلة k من المجموعة. في المجموعة المترجمة يُثبَّت بأقرب عنوان قبلها (العناوين
+ * متطابقة عدداً بين الأصل والترجمة) ثم بعدد الكتل بعده، ولا يتجاوز العنوان التالي، فتبقى الصورة في موضوعها
+ * حتى لو دمج المترجم فقرتين.
+ */
+function figureSlot(g, k, out, start, end) {
+  if (k >= g.src.length - 1) return end;
+  if (g.map) return start + g.map[k] + 1;
+  let hs = -1, hcount = 0;
+  for (let j = 0; j <= k; j++) if (g.src[j].t === 'h') { hs = j; hcount++; }
+  let p = start - 1;
+  if (hcount) for (let j = start, c = 0; j < end; j++) if (out[j].t === 'h' && ++c === hcount) { p = j; break; }
+  let limit = end;
+  for (let j = p + 1; j < end; j++) if (out[j].t === 'h') { limit = j; break; }
+  return Math.max(start, Math.min(p + (k - hs) + 1, limit));
+}
+
+/**
+ * يكمل النسخة الثانية: يجمع المجموعات المترجمة (وما تعذّر يبقى بلغته مع تنبيه)، ويضع الصور في مواضعها،
+ * ويترجم النقاط والعنوان وتعليقات الصور.
  * body: متن الشرح بعد وضع الصور (نفس أقسام الترجمة بالترتيب).
  */
 export async function finishAlt(doc, engine, tr, kp, body) {
-  const { to, out } = tr;
+  const { to } = tr;
   const sections = sectionsOf(body.filter((b) => b.t !== 'mcq'));
   const blocks = [];
-  let partial = false;
+  let partial = false, translated = 0, total = 0;
   const figs = []; // [{ block, alt }] لترجمة التعليقات
+  const noteText = to === 'en' ? 'The following part could not be translated right now; it is in the original language.' : 'تعذّرت ترجمة الجزء التالي الآن، فهو بلغته الأصلية.';
+  const copyOf = (b) => ({ ...b, id: uid(), untranslated: true, items: b.items ? [...b.items] : undefined, head: b.head ? [...b.head] : undefined, rows: b.rows ? b.rows.map((r) => [...r]) : undefined });
   sections.forEach((sec, i) => {
-    const text = sec.filter((b) => TEXT_TYPES.has(b.t));
-    let t = out[i];
-    if (!t) {
-      // آخر احتياط: يبقى النص الأصلي مسبوقاً بتنبيه واضح بلغة النسخة، حتى لا يضيع المحتوى
-      partial = true;
-      const head = text.find((b) => b.t === 'h');
-      const note = { id: uid(), t: 'note', text: to === 'en' ? 'This section could not be translated right now; it follows in the original language.' : 'تعذّرت ترجمة هذا القسم الآن، فهو بلغته الأصلية.' };
-      t = [...(head ? [{ ...head, id: uid(), untranslated: true }] : []), note, ...text.filter((b) => b !== head).map((b) => ({ ...b, id: uid(), untranslated: true }))];
-    }
-    // الصور في مواضعها النسبية داخل القسم (بعد نفس عدد الكتل النصية)
-    const placed = [...t];
-    let before = 0, inserted = 0;
+    const groups = regroup(sec, tr.groups?.[i] || []);
+    const out = [];
+    const where = new Map(); // كتلة الأصل ← { gi, k }
+    const span = [];
+    groups.forEach((g, gi) => {
+      g.src.forEach((b, k) => where.set(b, { gi, k }));
+      const start = out.length;
+      total++;
+      if (!g.out && g.prev) g.out = g.prev; // ترجمة ما قبل المراجعة أفضل من نص بلا ترجمة
+      if (g.out) {
+        translated++;
+        out.push(...g.out);
+      } else {
+        // يبقى بلغته الأصلية مع تنبيه واضح (بعد عنوانه إن بدأ بعنوان)، ومواضع كتله معروفة بالضبط للصور
+        partial = true;
+        const copy = g.src.map(copyOf);
+        const note = { id: uid(), t: 'note', text: noteText };
+        const lead = copy[0]?.t === 'h' ? 1 : 0;
+        out.push(...copy.slice(0, lead), note, ...copy.slice(lead));
+        g.map = copy.map((_, k) => (k < lead ? k : k + 1));
+      }
+      span[gi] = [start, out.length];
+    });
+    // الصور: بعد آخر كتلة نصية سبقتها في الأصل
+    const inserts = [];
+    let last = null;
     for (const b of sec) {
       if (b.t === 'fig') {
-        const at = Math.min(before + inserted, placed.length);
+        const w = last && where.get(last);
+        const at = w ? figureSlot(groups[w.gi], w.k, out, span[w.gi][0], span[w.gi][1]) : 0;
         const alt = { id: uid(), t: 'fig', ref: b.id, caption: b.caption || '' };
-        placed.splice(at, 0, alt);
+        inserts.push({ at, alt, n: inserts.length });
         figs.push({ block: b, alt });
-        inserted++;
-      } else if (TEXT_TYPES.has(b.t)) before++;
+      } else if (TEXT_TYPES.has(b.t)) last = b;
     }
-    blocks.push(...placed);
+    inserts.sort((a, b) => a.at - b.at || a.n - b.n);
+    for (let j = inserts.length - 1; j >= 0; j--) out.splice(inserts[j].at, 0, inserts[j].alt);
+    blocks.push(...out);
   });
+  if (!translated) { doc.alt = null; doc.stats.alt = { lang: to, sections: sections.length, groups: total, translated: 0 }; return; }
   // أهم النقاط للمراجعة
   if (kp.length) {
     const t = await translateSection(engine, kp, { to, meta: doc.meta }).catch((e) => { if (isFatal(e)) throw e; return null; });
@@ -1723,45 +1819,69 @@ export async function finishAlt(doc, engine, tr, kp, body) {
     if (isFatal(e)) throw e;
   }
   doc.alt = { lang: to, title, blocks, partial };
-  doc.stats.alt = { lang: to, sections: sections.length, translated: Math.min(sections.length, out.filter(Boolean).length), words: blocks.reduce((n, b) => n + countWords(blockText(b)), 0) };
+  doc.stats.alt = { lang: to, sections: sections.length, groups: total, translated, words: blocks.reduce((n, b) => n + countWords(blockText(b)), 0) };
 }
 
 // ───────────── المراجعة النهائية ─────────────
 
 const squash = (t) => String(t || '').replace(/\s+/g, ' ').trim();
 
-/** يطبّق استبدالاً نصياً على كتلة (نص، بنود، خلايا، سؤال). يرجع عدد المواضع التي تغيّرت. */
-function replaceInBlock(b, find, replace, all) {
+/**
+ * يطبّق استبدالاً نصياً على كتلة (نص، بنود، خلايا، سؤال). يرجع عدد المواضع التي تغيّرت (أو التي ستتغيّر مع dry).
+ * إذا كان الاستبدال يضع [[ ]] حول نص، لا يمس مواضعه التي هي أصلاً داخل [[ ]] (كانت تصير [[[[term]]]]).
+ */
+function replaceInBlock(b, find, replace, all, dry = false) {
   let n = 0;
+  const wraps = replace.includes('[[') && !find.includes('[[');
   const sub = (s) => {
     if (typeof s !== 'string' || !s.includes(find)) return s;
-    n++;
-    return all ? s.split(find).join(replace) : s.replace(find, replace);
+    let out = '', from = 0, idx;
+    while ((idx = s.indexOf(find, from)) >= 0) {
+      const insideTerm = wraps && /\[\[[^\]]*$/.test(s.slice(0, idx));
+      out += s.slice(from, idx) + (insideTerm ? find : replace);
+      from = idx + find.length;
+      if (!insideTerm) { n++; if (!all) break; }
+    }
+    return dry ? s : out + s.slice(from);
   };
-  if (typeof b.text === 'string') b.text = sub(b.text);
-  if (Array.isArray(b.items)) b.items = b.items.map(sub);
-  if (Array.isArray(b.head)) b.head = b.head.map(sub);
-  if (Array.isArray(b.rows)) b.rows = b.rows.map((r) => r.map(sub));
-  if (b.t === 'mcq') { b.q = sub(b.q); b.opts = b.opts.map(sub); b.why = sub(b.why); }
-  if (b.t === 'fig' && typeof b.caption === 'string') b.caption = sub(b.caption);
+  const set = (o, k) => { if (n && !all) return; o[k] = sub(o[k]); };
+  const setList = (arr) => { if (!Array.isArray(arr)) return; for (let i = 0; i < arr.length; i++) set(arr, i); };
+  set(b, 'text');
+  setList(b.items);
+  setList(b.head);
+  if (Array.isArray(b.rows)) for (const r of b.rows) setList(r);
+  if (b.t === 'mcq') { set(b, 'q'); setList(b.opts); set(b, 'why'); }
+  if (b.t === 'fig') set(b, 'caption');
   return n;
 }
 
+/** تصحيح إملاء مصطلح أو اسم (لا أرقام، 4 كلمات أو أقل): يوحَّد في كل المواضع. غيره يُطبَّق على موضعه الوحيد فقط. */
+const termFix = (find, replace) => {
+  const bare = (t) => t.replace(/\[\[|\]\]/g, '');
+  return countWords(bare(find)) <= 4 && countWords(bare(replace)) <= 5 && /[A-Za-z]/.test(find + replace) && !/\d/.test(find + replace);
+};
+
 /**
  * يطبّق نتيجة المراجعة بأمان: استبدالات يجب أن تطابق نصاً موجوداً، وإضافات تحت عناوين موجودة.
+ * التصحيح القصير الذي يرد في أكثر من موضع (مثل «500 mg كل 8» لدواءين) لا يُطبَّق: لا نعرف أي موضع قصدت المراجعة.
+ * @param opts.additions false = التصحيحات فقط (للنقاط والأسئلة)
  * @returns { fixes, added }
  */
-export function applyReview(blocks, parsed) {
+export function applyReview(blocks, parsed, { additions = true } = {}) {
   let fixes = 0, added = 0;
   for (const fx of Array.isArray(parsed?.fixes) ? parsed.fixes.slice(0, 40) : []) {
     const find = squash(fx?.find), replace = squash(fx?.replace);
     if (!find || find === replace || countWords(find) < 2) continue;
     if (replace.length > Math.max(find.length * 3, find.length + 300)) continue; // ليس تصحيحاً بل إعادة كتابة
-    const all = countWords(find) <= 6; // مصطلح أو عبارة قصيرة: توحيد في كل المواضع
+    const all = termFix(find, replace);
+    let total = 0;
+    for (const b of blocks) total += replaceInBlock(b, find, replace, true, true);
+    if (!total || (!all && total > 1)) continue;
     let n = 0;
     for (const b of blocks) { n += replaceInBlock(b, find, replace, all); if (n && !all) break; }
     if (n) fixes++;
   }
+  if (!additions) return { fixes, added };
   for (const add of Array.isArray(parsed?.missing) ? parsed.missing.slice(0, 15) : []) {
     const after = normalize(squash(add?.after).replace(/^#+\s*/, '').replace(/\[\[|\]\]/g, ''));
     const extra = parseMarkup(String(add?.add || '')).filter((b) => b.t !== 'figreq' && b.t !== 'slidereq' && b.t !== 'h');
@@ -1803,7 +1923,7 @@ export async function reviewNotes(doc, engine, { emit = () => {} } = {}) {
     doc.stats.audit = { fixes, added, verdict: String(parsed.verdict || '').slice(0, 200), model: r.model };
     doc.stats.words = doc.blocks.reduce((n, b) => n + countWords(blockText(b)), 0);
     emit({ type: 'reviewed', fixes, added });
-    return doc.stats.audit;
+    return { audit: doc.stats.audit, parsed, applied: fixes + added > 0 };
   } catch (e) {
     if (isFatal(e)) throw e;
     emit({ type: 'note', code: 'review_failed' });

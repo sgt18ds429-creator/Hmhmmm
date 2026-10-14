@@ -8,6 +8,9 @@ import { logoEl } from '../brand.js';
 import { viewNew, viewRun, viewRewrite, openRecorder } from './run.js';
 import { viewDoc } from './doc.js';
 
+// نوع الملزمة في قائمة «محاضراتي»
+const LIST_LABEL = { highyield: 'High-Yield', notes: 'شرح مفصّل', integrated: 'ملزمة متكاملة', transcript: 'نص مفرّغ' };
+
 const ACCEPT = 'audio/*,video/*,.m4a,.mp3,.wav,.ogg,.oga,.opus,.aac,.flac,.mp4,.mov,.m4v,.webm,.mkv,.3gp,.amr,.wma';
 
 const PROVIDERS = {
@@ -178,7 +181,7 @@ export async function start(MV, root) {
       list.append(h('button', { class: 'lec', onclick: () => go('doc', { id: it.id }) },
         h('b', { dir: 'auto' }, it.title || 'محاضرة بدون عنوان'),
         icon('back'),
-        h('small', null, [it.mode === 'notes' ? 'شرح مفصّل' : 'نص مفرّغ', it.subject, fmtDuration(it.duration), `${it.words.toLocaleString('en-US')} كلمة`, fmtAgo(it.createdAt)].filter(Boolean).join('  ·  '))));
+        h('small', null, [LIST_LABEL[it.mode] || 'نص مفرّغ', it.subject, fmtDuration(it.duration), `${it.words.toLocaleString('en-US')} كلمة`, fmtAgo(it.createdAt)].filter(Boolean).join('  ·  '))));
     }
   }
 

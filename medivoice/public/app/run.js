@@ -321,7 +321,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
       else if (e.name === 'done') { setStage('done'); P.write = 1; P.extra = 0.14; }
       paintPct();
     } else if (e.type === 'translate') {
-      status.textContent = `النسخة ${e.total ? `الإنجليزية: ${e.done} من ${e.total} أقسام` : 'الثانية'}${imagesPicked ? ` · صور مطابقة: ${imagesPicked}` : ''}`;
+      status.textContent = `النسخة ${e.total ? `${e.to === 'ar' ? 'العربية' : 'الإنجليزية'}: ${e.done} من ${e.total} أجزاء` : 'الثانية'}${imagesPicked ? ` · صور مطابقة: ${imagesPicked}` : ''}`;
       P.extra = Math.min(0.13, Math.max(P.extra, 0.05 + 0.07 * (e.done / Math.max(1, e.total))));
       paintPct();
     } else if (e.type === 'reviewed') {
@@ -356,6 +356,8 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
     } else if (e.type === 'note') {
       if (e.code === 'not_lecture') ctx.toast('هذا التسجيل ما بيه شرح علمي، فخليته نصاً مفرّغاً.');
       else if (e.code === 'notes_failed') ctx.toast('ما كدرت أكتب الشرح هسه، فبقت الملزمة نصاً مفرّغاً. تقدر تحوّلها لشرح بعدين من خيارات الملزمة.', 'err');
+      else if (e.code === 'translate_failed') ctx.toast('ما كدرت أكتب النسخة الثانية (الترجمة) هسه لأن المحرك مضغوط. الملزمة جاهزة بلغتها، وتقدر تعيد كتابتها بعدين.', 'err');
+      else if (e.code === 'translate_partial') ctx.toast('أجزاء قليلة من النسخة الثانية بقت بلغتها الأصلية لأن ترجمتها ما اكتملت، ومعلَّمة بملاحظة.');
     } else if (e.type === 'images') {
       // الصور تُفحص أثناء الكتابة أيضاً: لا نغطي حالة الكتابة، ونعرض العدد فقط
       if (e.picked) imagesPicked = Math.max(imagesPicked, e.picked);

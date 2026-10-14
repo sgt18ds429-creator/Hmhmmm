@@ -1,7 +1,7 @@
 // doc.js — عرض الملزمة وتعديلها: نص، جداول، مصطلحات، صور، قاموس، النص المفرّغ الأصلي، وتصدير PDF.
 
 import { h, icon, clear, sheet, confirm, fmtSize, countOf } from './ui.js';
-import { splitInline, splitLatin, blockText, stripMarkup, countWords, uid, fmtTime, isNotes, MODE_LABEL, qualityGate } from './text.js';
+import { splitInline, inlineRuns, blockText, stripMarkup, countWords, uid, fmtTime, isNotes, MODE_LABEL, qualityGate } from './text.js';
 import { NOTE_TYPES } from './run.js';
 import { buildPdfHtml, buildPdfParts, fmtDate, fmtDuration, dirOf } from './pdf.js';
 import { pagedRuntime } from './paged.js';
@@ -11,12 +11,13 @@ import * as db from './db.js';
 
 function fill(el, text) {
   clear(el);
-  // في النص العربي تُعزل المقاطع الإنجليزية حتى لا تنقلب أقواسها عند التفاف السطر
+  // في النص العربي تُعزل المقاطع الإنجليزية حتى لا تنقلب أقواسها عند التفاف السطر،
+  // والمربوطة منها (AP/PA، [[CT]]/[[MRI]]) تبقى معاً باتجاه إنجليزي
   const rtl = dirOf(text) === 'rtl';
-  for (const part of splitInline(text)) {
-    if (part.term) { el.append(h('span', { class: 't' }, part.text)); continue; }
-    if (!rtl) { el.append(part.text); continue; }
-    for (const q of splitLatin(part.text)) el.append(q.latin ? h('span', { class: q.text.length <= 36 ? 'lt nw' : 'lt' }, q.text) : q.text);
+  const piece = (r) => (r.term ? h('span', { class: 't' }, r.text) : r.latin ? h('span', { class: r.text.length <= 36 ? 'lt nw' : 'lt' }, r.text) : r.text);
+  for (const r of inlineRuns(text, rtl)) {
+    if (r.group) el.append(h('span', { class: r.text.length <= 36 ? 'lt nw' : 'lt' }, r.group.map((x) => (x.term ? h('span', { class: 't' }, x.text) : x.text))));
+    else el.append(piece(r));
   }
   return el;
 }
@@ -82,7 +83,8 @@ export async function viewDoc(ctx, el, { id, fresh }) {
     for (const v of [doc.meta.lecturer, fmtDate(doc.meta.date), doc.duration ? fmtDuration(doc.duration) : '', `${(doc.stats.words || 0).toLocaleString('en-US')} كلمة`, doc.stats.sections ? countOf(doc.stats.sections, ['قسم واحد', 'قسمان', 'أقسام', 'قسماً']) : '', doc.terms?.length ? `${doc.terms.length} مصطلح` : '']) if (v) metaLine.append(h('span', null, v));
   };
   paintMeta();
-  paper.append(doc.meta.subject ? h('div', { class: 'doc-kicker' }, doc.meta.subject) : null, titleEl, metaLine);
+  if (doc.meta.subject) paper.append(h('div', { class: 'doc-kicker' }, doc.meta.subject));
+  paper.append(titleEl, metaLine);
 
   if (doc.stats.review?.length) {
     paper.append(h('div', { class: 'blk note' }, h('span', { class: 'tag' }, 'للمراجعة'),
@@ -426,10 +428,8 @@ export async function viewDoc(ctx, el, { id, fresh }) {
       const file = new File([blob], name, { type: 'application/pdf' });
       const canShare = !!navigator.canShare?.({ files: [file] });
       const dl = h('a', { class: 'btn wide', href: url, download: name }, icon('download'), 'تنزيل الملف');
-      clear(box).append(
-        h('p', { class: 'muted' }, `الملزمة جاهزة (${fmtSize(blob.size)}).`),
-        dl,
-        canShare ? h('button', { class: 'btn ghost wide', onclick: () => navigator.share({ files: [file], title: name }).catch(() => {}) }, icon('share'), 'مشاركة أو حفظ في الملفات') : null);
+      clear(box).append(h('p', { class: 'muted' }, `الملزمة جاهزة (${fmtSize(blob.size)}).`), dl);
+      if (canShare) box.append(h('button', { class: 'btn ghost wide', onclick: () => navigator.share({ files: [file], title: name }).catch(() => {}) }, icon('share'), 'مشاركة أو حفظ في الملفات'));
       s.panel.querySelector('h2').textContent = 'PDF جاهز';
       setTimeout(() => URL.revokeObjectURL(url), 10 * 60 * 1000);
       ctx.refreshSession().catch(() => {});

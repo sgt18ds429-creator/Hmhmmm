@@ -746,3 +746,133 @@ test('ضغط متواصل على Gemini (503) أثناء الكتابة: يكم�
   assert.ok(groqCalls.filter((u) => u.includes('تفريغ هذا الجزء')).length >= 2, 'Groq كتب الأقسام');
   assert.equal(doc.stats.fallback, 0, 'لا أقسام بقيت نصاً خاماً');
 });
+
+// ───────────── حارس التكرار: لا يمس القيم الحقيقية، ويكشف كل أشكال الحلقات، ولا يجمّد الصفحة ─────────────
+import { collapseRepeats, collapseMarkup, inlineRuns, parseJsonLoose, stripMarkup } from '../public/app/text.js';
+
+test('حارس التكرار يبقي القيم الحقيقية المتكررة ويطوي الحلقات الطويلة بسرعة', () => {
+  for (const t of ['APGAR scored 2, 2, 2, 1, 2 = 9.', 'BP was 90/60, 90/60, 90/60 despite fluids.', 'Reflexes graded + + + on the right.', '| MCV | ↓ | ↓ | ↓ | N |']) {
+    assert.equal(collapseRepeats(t), t, t);
+  }
+  assert.equal(collapseRepeats('«إنت، إنت، إنت، إنت»'), '«إنت»');
+  assert.equal(collapseRepeats('قال: إنت، إنت، إنت. ثم سكت.'), 'قال: إنت. ثم سكت.');
+  const clause = 'الألم يكون في منتصف البطن ويخف بعد التبرز ويزداد بعد الأكل';
+  assert.equal(collapseRepeats(`${Array.from({ length: 15 }, () => clause).join('، ')}.`), `${clause}.`);
+  // عبارة قصيرة مرتين متتاليتين تبقى (تأكيد طبيعي)، والطويلة (10 كلمات فأكثر) مرتين تُطوى
+  assert.equal(collapseRepeats('the sound is lub-dub lub-dub at rest'), 'the sound is lub-dub lub-dub at rest');
+  const long = 'الصورة الشعاعية تظهر خط الجنبة الحشوية بوضوح مع غياب العلامات الرئوية خلفه';
+  assert.equal(collapseRepeats(`${long}، ${long}، ثم ننتقل للعلاج`), `${long}، ثم ننتقل للعلاج`);
+  const t0 = Date.now();
+  collapseRepeats('،'.repeat(40000)); collapseRepeats('.'.repeat(40000)); collapseRepeats('إنت، '.repeat(10000));
+  stripMarkup('\n'.repeat(50000)); parseJsonLoose(`{"a":[${' '.repeat(40000)}`);
+  assert.ok(Date.now() - t0 < 2000, `بطيء: ${Date.now() - t0}ms`);
+});
+
+test('الجداول تبقى سليمة: سطر الفاصل والقيم المتشابهة، والصف المكرر في حلقة يُحذف', () => {
+  const md = ['| الخاصية | CT | MRI | US |', '| --- | --- | --- | --- |', '| إشعاع مؤين | نعم | نعم | لا |', '| MCV | ↓ | ↓ | ↓ |', '| MCH | ↓ | ↑ | ↓ |',
+    '', '| الدواء | الجرعة |', '| --- | --- |', '| [[amoxicillin]] | 500 mg |', ...Array.from({ length: 20 }, () => '| [[ibuprofen]] | 400 mg كل 8 ساعات |')].join('\n');
+  const out = collapseMarkup(md).text;
+  const tables = parseMarkup(out).filter((b) => b.t === 'table');
+  assert.equal(tables.length, 2);
+  assert.deepEqual(tables[0].head, ['الخاصية', 'CT', 'MRI', 'US']);
+  assert.deepEqual(tables[0].rows, [['إشعاع مؤين', 'نعم', 'نعم', 'لا'], ['MCV', '↓', '↓', '↓'], ['MCH', '↓', '↑', '↓']]);
+  assert.equal(tables[1].rows.length, 2, 'الصف المكرر عشرين مرة يبقى مرة');
+  // البوابة: الصفوف المكررة في جدول محفوظ تُحذف أيضاً، والقيم تبقى
+  const doc = { blocks: [{ id: uid(), t: 'table', head: ['a', 'b'], rows: [['x', '↓'], ['y', '↓'], ['x', '↓'], ['x', '↓']] }], stats: {} };
+  const g = qualityGate(doc);
+  assert.deepEqual(doc.blocks[0].rows, [['x', '↓'], ['y', '↓']]);
+  assert.equal(g.duplicates, 2);
+});
+
+test('بوابة الجودة تكشف أشكال الحلقات الأخرى: عنوان+فقرة، بنود قصيرة، قائمة مرقمة، سؤال مكرر', () => {
+  const md = `## الفحص\n${'### فحص الرأس\nننظر للوجه.\n\n'.repeat(8)}## الأعراض\n${'- حمى\n'.repeat(20)}\n## الخطوات\n${Array.from({ length: 12 }, (_, i) => `${i + 1}. فحص البطن`).join('\n')}\n\n## MCQs\n${'?? Which sign indicates [[pneumothorax]]?\na) Visceral pleural line\nb) Kerley B lines\nc) Air bronchogram\nd) Meniscus sign\n= a | Because\n\n'.repeat(2)}`;
+  const doc = { blocks: parseMarkup(md).map((b) => ({ id: uid(), ...b })), stats: {} };
+  qualityGate(doc);
+  const shape = doc.blocks.map((b) => (b.items ? `${b.t}:${b.items.length}` : `${b.t}${b.level || ''}`));
+  assert.deepEqual(shape, ['h2', 'h3', 'p', 'h2', 'ul:1', 'h2', 'ol:1', 'h2', 'mcq']);
+});
+
+test('المقاطع الإنجليزية المربوطة تبقى معاً في السطر العربي (AP/PA، [[CT]]/[[MRI]]، [[CT]] scan)', () => {
+  const runs = (t) => inlineRuns(t, true).filter((r) => r.latin || r.group || r.term).map((r) => r.text);
+  assert.deepEqual(runs('صورة AP/PA للصدر'), ['AP/PA']);
+  assert.deepEqual(runs('مقطع T1/T2 والتركيز mg/dL وصبغة H&E'), ['T1/T2', 'mg/dL', 'H&E']);
+  assert.deepEqual(runs('نطلب [[CT]]/[[MRI]] حسب الحالة'), ['CT/MRI']);
+  assert.deepEqual(runs('نطلب [[CT]] scan للمريض'), ['CT scan']);
+  assert.deepEqual(runs('نطلب [[CT]] أو [[MRI]]'), ['CT', 'MRI'], 'كلمة عربية بينهما: يبقيان منفصلين');
+  const html = buildPdfHtml({ meta: { title: 'x', mode: 'notes' }, blocks: [{ id: 'a', t: 'p', text: 'نطلب [[CT]]/[[MRI]] حسب الحالة' }], stats: {}, terms: [] });
+  assert.match(html, /<span class="lt nw"><span class="t nw">CT<\/span>\/<span class="t nw">MRI<\/span><\/span>/);
+});
+
+test('المراجعة: التصحيح القصير الوارد في أكثر من موضع لا يُطبَّق، وتصحيح المصطلح يوحَّد بلا أقواس متداخلة', () => {
+  const blocks = [
+    { id: uid(), t: 'ul', items: ['[[amoxicillin]] يعطى 500 mg كل 8 ساعات.', '[[paracetamol]] يعطى 500 mg كل 8 ساعات.'] },
+    { id: uid(), t: 'p', text: 'الانصباب [[pleural effusion]] يظهر بعلامة الهلال، و pleural effusion الصغير لا يظهر.' },
+    { id: uid(), t: 'p', text: 'دخول [[plural air]] للمسافة الجنبية، ثم [[plural air]] مرة أخرى.' },
+  ];
+  const r = applyReview(blocks, { fixes: [
+    { find: '500 mg كل 8', replace: '875 mg كل 12' },
+    { find: 'pleural effusion', replace: '[[pleural effusion]]' },
+    { find: '[[plural air]]', replace: '[[pleural air]]' },
+  ] });
+  assert.equal(r.fixes, 2);
+  assert.match(blocks[0].items[0], /500 mg كل 8/);
+  assert.match(blocks[0].items[1], /500 mg كل 8/);
+  assert.ok(!/\[\[\[\[/.test(blocks[1].text), blocks[1].text);
+  assert.equal((blocks[1].text.match(/\[\[pleural effusion\]\]/g) || []).length, 2);
+  assert.equal((blocks[2].text.match(/\[\[pleural air\]\]/g) || []).length, 2);
+});
+
+test('القسم الذي انزلق في حلقة ثم كُتب نظيفاً: تُعتمد المحاولة النظيفة لا الأطول', async () => {
+  const loop = `## استرواح الصدر\n| الدواء | الجرعة |\n|---|---|\n${'| [[ibuprofen]] | 400 mg كل 8 ساعات |\n'.repeat(40)}\n${Array.from({ length: 30 }, () => 'الألم يكون في منتصف البطن ويخف بعد التبرز ويزداد بعد الأكل').join('، ')}`;
+  let n = 0;
+  const { io } = makeIO({ section: (user) => (user.includes('«استرواح الصدر»') ? (++n === 1 ? gemResponse(loop) : gemResponse(`${SECTION_NOTES.pneumothorax}\n\nعلامة نظيفة CLEANMARK.`)) : null) });
+  const doc = transcriptDoc();
+  const engine = new Engine(io, CAPS);
+  assert.equal(await writeNotes(doc, engine), true);
+  assert.equal(n, 2);
+  const text = doc.blocks.map(blockText).join('\n');
+  assert.match(text, /CLEANMARK/);
+  assert.ok(!/ibuprofen/.test(text), 'المحاولة المتكررة لم تُعتمد');
+});
+
+test('الترجمة لا تسقط بصمت: الجزء الذي تعذّرت ترجمته يبقى بلغته مع تنبيه، والباقي مترجم', async () => {
+  const { io } = makeIO();
+  const orig = io.gemini;
+  io.gemini = async (model, body) => {
+    const system = body.systemInstruction?.parts?.[0]?.text || '';
+    const user = body.contents[0].parts.map((p) => p.text || '').join('\n');
+    if ((system.includes('medical translator') || system.includes('مترجم طبي')) && user.includes('الانصباب')) return { ok: false, status: 400, data: { error: { message: 'bad' } } };
+    return orig(model, body);
+  };
+  const doc = transcriptDoc({ mode: 'notes' });
+  const engine = new Engine(io, CAPS);
+  assert.equal(await writeNotes(doc, engine), true);
+  const notes = [];
+  await complete(doc, engine, { io, emit: (e) => { if (e.type === 'note') notes.push(e.code); } });
+  assert.ok(doc.alt, 'النسخة الثانية موجودة');
+  assert.equal(doc.alt.partial, true);
+  assert.ok(doc.alt.blocks.some((b) => b.t === 'note' && /could not be translated/.test(b.text)));
+  assert.ok(doc.alt.blocks.some((b) => /^EN /.test(blockText(b))), 'الأجزاء الأخرى مترجمة');
+  assert.ok(notes.includes('translate_partial'));
+});
+
+test('ضغط متواصل (503) على النماذج الدقيقة: ينزل للنموذج الخفيف بدل الاستسلام', async () => {
+  const seen = [];
+  // ساعة وهمية: الانتظار يقدّم الوقت (التهدئة تُحسب بـ Date.now)
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow() + skew;
+  const io = {
+    sleep: async (ms) => { skew += ms; },
+    async gemini(model) {
+      seen.push(model);
+      if (!/lite/.test(model)) return { ok: false, status: 503, data: { error: { message: 'The model is overloaded.' } } };
+      return gemResponse('نص كامل من النموذج الخفيف');
+    },
+  };
+  const engine = new Engine(io, { gemini: true, groq: false, geminiModels: ['gemini-strong-a', 'gemini-strong-b', 'gemini-x-lite'], groqModels: [], sttModels: [] });
+  let r;
+  try { r = await engine.gemini({ system: 's', parts: [{ text: 'u' }] }); } finally { Date.now = realNow; }
+  assert.equal(r?.model, 'gemini-x-lite');
+  assert.ok(seen.filter((m) => !/lite/.test(m)).length >= 3);
+});

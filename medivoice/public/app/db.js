@@ -42,7 +42,7 @@ function summary(doc) {
     title: doc.meta.title || '', subject: doc.meta.subject || '', lecturer: doc.meta.lecturer || '',
     duration: doc.duration || 0, words: doc.stats?.words || 0,
     figures: doc.blocks.filter((b) => b.t === 'fig').length, terms: doc.terms?.length || 0,
-    mode: doc.meta.mode === 'notes' ? 'notes' : 'transcript',
+    mode: ['highyield', 'notes', 'integrated'].includes(doc.meta.mode) ? doc.meta.mode : 'transcript',
   };
 }
 
