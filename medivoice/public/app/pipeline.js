@@ -75,6 +75,11 @@ export class Engine {
     const k = res.ok ? 'ok' : res.status === 429 ? 'r429' : res.status === 503 || res.status === 500 ? 'r5xx' : 'other';
     const m = this.modelStats[model] || (this.modelStats[model] = { ok: 0, r429: 0, r5xx: 0, other: 0 });
     m[k]++;
+    if (k === 'other') {
+      // للتشخيص: رمز الحالة وبداية رسالة الخطأ
+      const msg = String(res.data?.error?.message || res.data?.error || '').slice(0, 80);
+      (m.why || (m.why = [])).length < 4 && m.why.push(`${res.status} ${msg}`);
+    }
   }
 
   check() { if (this.signal?.aborted) throw new PipelineError('aborted', 'aborted'); }
@@ -637,11 +642,12 @@ export async function runLecture({ file, meta, cfg, caps, io, emit = () => {}, s
   if (!blocks.length) throw new PipelineError('empty', 'no speech found');
 
   if (slides) doc.slides = slides;
+  let written = false;
   if (isNotes(meta.mode)) {
-    if (await writeNotes(doc, engine, { emit, checkpoint })) await reviewNotes(doc, engine, { emit });
-    else doc.meta.mode = 'transcript';
+    written = await writeNotes(doc, engine, { emit, checkpoint });
+    if (!written) doc.meta.mode = 'transcript';
   }
-  await complete(doc, engine, { io, emit });
+  await complete(doc, engine, { io, emit, review: written });
   emit({ type: 'stage', name: 'done' });
   return doc;
 }
@@ -668,8 +674,7 @@ export async function rewriteLecture({ doc, caps, io, emit = () => {}, signal, c
   };
   if (copy.meta.mode === 'integrated' && !copy.slides?.pages?.length) copy.meta.mode = 'notes';
   if (!(await writeNotes(copy, engine, { emit, checkpoint }))) throw new PipelineError('not_lecture', 'not a lecture');
-  await reviewNotes(copy, engine, { emit });
-  await complete(copy, engine, { io, emit });
+  await complete(copy, engine, { io, emit, review: true });
   emit({ type: 'stage', name: 'done' });
   return copy;
 }
@@ -1107,19 +1112,37 @@ function spreadRequests(blocks, max) {
  * المراحل الأخيرة معاً: نقاط المراجعة (للشرح المفصل) + القاموس + الصور.
  * كلها اختيارية: فشل أي منها لا يُفشل المحاضرة.
  */
-export async function complete(doc, engine, { io, emit = () => {} }) {
+export async function complete(doc, engine, { io, emit = () => {}, review = false }) {
   const lang = doc.lang || langOf(doc.blocks.map(blockText).join(' '));
   const mode = doc.meta.mode;
   const safe = (p) => p.catch((e) => { if (isFatal(e)) throw e; return null; });
   // نص الشرح يُقرأ الآن قبل أن تُدرج الصور. النقاط للمراجعة للشرح المفصل، والأسئلة للنقاط الامتحانية
   // صور السلايدات أولاً (قصّ محلي سريع) حتى لا تتسابق مع استبدال الصور في enrich
   if (doc.slides?.figs?.length) await safe(placeSlideFigures(doc, io));
+  // بصمة نص كل قسم قبل المراجعة: الأقسام التي تغيّرها المراجعة تُترجم من جديد بعدها
+  const sectionSigs = () => sectionsOf(doc.blocks.filter((b) => b.t !== 'mcq')).map((sec) => textHash(blocksToMarkup(sec.filter((b) => TEXT_TYPES.has(b.t)))));
+  const before = review && isNotes(mode) ? sectionSigs() : null;
+  // المراجعة النهائية مقابل التسجيل تعمل بالتوازي مع الترجمة والصور والقاموس (كانت قبلها، فتطيل الانتظار)
+  const audit = before ? safe(reviewNotes(doc, engine, { emit })) : null;
   const points = mode === 'notes' || mode === 'integrated' ? safe(keyPoints(engine, doc.meta, doc.blocks, lang)) : null;
   // الأسئلة بالإنجليزية دائماً (أسلوب الامتحانات)
   const mcq = mode === 'highyield' ? safe((async () => { emit({ type: 'stage', name: 'mcq' }); return mcqBlocks(engine, doc.meta, doc.blocks, 'en'); })()) : null;
   // النسخة الثانية: الشرح يُترجم بالتوازي مع القاموس والصور، ثم تُلحق به النقاط والصور
   const alt = isNotes(mode) && doc.meta.bilingual !== false ? safe(translateBlocks(doc, engine, { emit })) : null;
-  const [kp, qs, tr] = await Promise.all([points, mcq, alt, enrich(doc, engine, { io, emit })]);
+  const [kp, qs, tr] = await Promise.all([points, mcq, alt, enrich(doc, engine, { io, emit }), audit]);
+  // ما غيّرته المراجعة يُترجم من جديد حتى تتطابق النسختان
+  if (tr && before) {
+    const after = sectionSigs();
+    const changed = after.map((sig, i) => (sig !== before[i] ? i : -1)).filter((i) => i >= 0);
+    if (after.length === before.length && changed.length) {
+      const secs = sectionsOf(doc.blocks.filter((b) => b.t !== 'mcq'));
+      await mapLimit(changed, 3, async (i) => {
+        const t = await safe(translateSection(engine, secs[i], { to: tr.to, meta: doc.meta, strong: true }));
+        if (t) tr.out[i] = t;
+      });
+      doc.stats.retranslated = changed.length;
+    }
+  }
   doc.blocks = doc.blocks.filter((b) => b.t !== 'slidereq'); // طلبات سلايدات بلا صورة
   const body = doc.blocks.slice(); // متن الشرح بصوره، قبل النقاط والأسئلة
   const extra = [...(kp || []), ...(qs || [])];

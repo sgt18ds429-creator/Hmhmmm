@@ -709,3 +709,16 @@ test('التفريغ المنسوخ احتياطاً يُقرأ: بلا تكرا
   assert.equal(blocks.filter((b) => b.t === 'p').length, 1, 'فقرة واحدة مقروءة');
   assert.equal((md.match(/كم مرة تعطيه/g) || []).length, 1);
 });
+
+test('المراجعة تعمل بالتوازي مع الترجمة، والقسم الذي صحّحته المراجعة يُترجم من جديد', async () => {
+  const { io, calls } = makeIO({ review: () => ({ fixes: [{ find: 'دخول الهواء إلى المسافة الجنبية', replace: 'تجمّع الهواء في المسافة الجنبية' }], missing: [], verdict: 'جيدة' }) });
+  const doc = transcriptDoc({ mode: 'notes' });
+  const engine = new Engine(io, CAPS);
+  assert.equal(await writeNotes(doc, engine), true);
+  await complete(doc, engine, { io, review: true });
+  assert.equal(calls.audit.length, 1, 'المراجعة جرت داخل complete');
+  assert.equal(doc.stats.audit.fixes, 1);
+  assert.ok(doc.blocks.some((b) => /تجمّع الهواء في المسافة الجنبية/.test(blockText(b))), 'التصحيح في النسخة العربية');
+  assert.equal(doc.stats.retranslated, 1, 'قسم واحد أعيدت ترجمته');
+  assert.ok(doc.alt.blocks.some((b) => /تجمّع الهواء في المسافة الجنبية/.test(blockText(b))), 'النسخة الثانية تحمل التصحيح (الترجمة الوهمية تبقي النص)');
+});
