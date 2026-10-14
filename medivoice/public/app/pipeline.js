@@ -527,7 +527,9 @@ export async function runLecture({ file, meta, cfg, caps, io, emit = () => {}, s
   const running = new Set();
   const seenTerms = new Map(); // مصطلحات الأجزاء المنجزة: تُعطى للأجزاء اللاحقة حتى يتوحّد إملاؤها
   const noteTerms = (markup) => { for (const m of String(markup).matchAll(/\[\[([^\]]{2,60})\]\]/g)) { const k = m[1].trim().toLowerCase(); if (!seenTerms.has(k)) seenTerms.set(k, m[1].trim()); } };
-  const language = meta.speech === 'en' ? 'en' : meta.speech === 'ar' ? 'ar' : undefined;
+  // لغة الكلام: تُكتشف من أول مسودة (Whisper يرجعها) وتُثبَّت لباقي المقاطع
+  let language = meta.speech === 'en' ? 'en' : meta.speech === 'ar' ? 'ar' : undefined;
+  const LANGS = { arabic: 'ar', english: 'en', ar: 'ar', en: 'en' };
   let failure = null;
   // مسودات Whisper تُطلب بالتوازي فور قصّ كل مقطع (كانت متتابعة فتأخذ ربع الوقت)، أما نقاط القطع بين المقاطع
   // فتُحسب بالترتيب عبر سلسلة وعود: كل مقطع ينتظر مسودته ونقطة قطع سابقه فقط
@@ -561,14 +563,18 @@ export async function runLecture({ file, meta, cfg, caps, io, emit = () => {}, s
       const chunk = cfg.compress === false ? rawChunk : await compressChunk(rawChunk, { signal });
       if (chunk.compressed) compressedBytes += chunk.compressed.from - chunk.compressed.to;
 
-      // مسودة Whisper لهذا المقطع (تبدأ فوراً)
-      const prompt = whisperPrompt(meta, '');
+      // مسودة Whisper لهذا المقطع (تبدأ فوراً). السياق المكتوب بلغة المحاضرة حتى لا يُضلّل الكشف
+      let prompt = '';
       const draftJob = engine.hasStt
         ? (async () => {
           await sttSlot();
           try {
             emit({ type: 'chunk', index: chunk.index, stage: 'stt' });
-            return await engine.whisper(chunk, { language, prompt, sec: chunk.audioSec });
+            prompt = whisperPrompt(language === 'en' ? { ...meta, speech: 'en' } : meta, '');
+            const data = await engine.whisper(chunk, { language, prompt, sec: chunk.audioSec });
+            const found = LANGS[String(data?.language || '').toLowerCase()];
+            if (!language && found && countWords(data?.text || '') >= 40) language = found;
+            return data;
           } finally { sttFree(); }
         })().catch((e) => { failure = failure || e; return null; })
         : Promise.resolve(null);
