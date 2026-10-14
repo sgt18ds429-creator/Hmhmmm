@@ -203,7 +203,8 @@ const NOTES_RULES = {
   1. خطوات أو مراحل مرتبة
   | عمود | عمود | جدول (أول صف للعناوين) عند المقارنة بين حالتين أو أكثر أو عرض أنواع مع خصائص كل نوع
   > ما شدّد عليه المحاضر أو قال إنه مهم أو يأتي بالامتحان (المعلومة نفسها كاملة في سطر واحد)
-- كل مصطلح طبي أو علمي أو اختصار يُكتب بالإنجليزية بإملائه الصحيح بين قوسين مزدوجين، مثل [[pleural effusion]] و [[CT]]، ويجوز ذكر معناه العربي قبله عند أول ذكر. لا تضع [[ ]] داخل العناوين.`,
+- كل مصطلح طبي أو علمي أو اختصار يُكتب بالإنجليزية بإملائه الصحيح بين قوسين مزدوجين، مثل [[pleural effusion]] و [[CT]]، ويجوز ذكر معناه العربي قبله عند أول ذكر. لا تضع [[ ]] داخل العناوين.
+- العناوين (## و ###) تُكتب بالعربية دائماً، ويجوز إلحاق المصطلح الإنجليزي بها بين قوسين، مثل: ### فحص الرأس والوجه (Head and Face Examination). لا عناوين بالإنجليزية وحدها.`,
   en: `You are an expert medical professor and an outstanding author of study notes. You receive part of an automatic transcript of a recorded university lecture and write from it detailed written notes that a student can study from instead of listening to the recording, understanding everything the lecturer said.
 
 1) Completeness, the most important rule:
@@ -253,6 +254,7 @@ const HIGH_YIELD_RULES = {
   | عمود | عمود | جدول (أول صف للعناوين) للمقارنة بين حالات أو أنواع
   > معلومة شدّد عليها المحاضر أو قال إنها تأتي بالامتحان
 - كل مصطلح طبي أو علمي أو اختصار بالإنجليزية بإملائه الصحيح بين قوسين مزدوجين، مثل [[pleural effusion]] و [[CT]]. لا [[ ]] داخل العناوين.
+- العناوين (## و ###) بالعربية دائماً، ويجوز إلحاق المصطلح الإنجليزي بها بين قوسين. لا عناوين بالإنجليزية وحدها.
 - حجم الناتج نحو ثلث حجم التفريغ أو أقل.`,
   en: `You are an expert medical professor and a trusted author of exam-focused High-Yield Notes. You receive part of an automatic transcript of a recorded university lecture and extract what a student needs for the exam: the core ideas and testable facts, concise and organised, with no filler or minor detail.
 
@@ -581,6 +583,7 @@ Output the complete corrected notes only, with no introduction or comment.`
 - الأخطاء النحوية الواضحة، والتذكير والتأنيث.
 - إملاء المصطلحات الإنجليزية داخل [[ ]] إذا كان فيها خطأ واضح.
 - علامات الترقيم العربية (، ؛ ؟) بلا مسافة قبلها.
+- عنوان (## أو ###) مكتوب بالإنجليزية وحدها: اكتبه بالعربية ثم الإنجليزية بين قوسين، مثل «### فحص البطن (Examination of the Abdomen)». هذا التغيير الوحيد المسموح في المحتوى.
 
 لا تغيّر:
 - المعنى والمعلومات: لا تحذف ولا تضف ولا تختصر ولا تعِد صياغة أي جملة.

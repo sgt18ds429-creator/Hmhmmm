@@ -195,24 +195,25 @@ export async function start(MV, root) {
       const box = h('section', { class: 'card prov' });
       const input = h('input', { class: 'input', type: 'text', placeholder: 'الصق المفتاح هنا', autocomplete: 'off', autocapitalize: 'off', spellcheck: false, 'aria-label': `مفتاح ${p.name}` });
       const pasteBtn = h('button', { class: 'btn small', onclick: paste }, icon('paste'), 'لصق المفتاح');
+      const adding = state.linked && id === 'gemini'; // مفتاح Gemini إضافي من حساب Google آخر
       async function submit(raw) {
         const key = String(raw || '').trim().replace(/^["']|["']$/g, '');
         if (key.length < 20) { ctx.toast('الصق المفتاح كاملاً.', 'err'); return; }
         pasteBtn.disabled = true;
         const label = pasteBtn.lastChild;
         label.textContent = 'أتحقق…';
-        const r = await ctx.api('/api/keys', { method: 'POST', body: { key } }); // الخادم يميّز المزوّد من شكل المفتاح
+        const r = await ctx.api('/api/keys', { method: 'POST', body: { key, provider: adding ? 'gemini' : undefined, add: adding } }); // الخادم يميّز المزوّد من شكل المفتاح
         pasteBtn.disabled = false;
-        label.textContent = 'لصق المفتاح';
+        label.textContent = adding ? 'إضافة' : 'لصق المفتاح';
         if (r.ok && r.data?.active) {
           ctx.session = MV.session = r.data;
           ctx.caps = null;
           ctx.ribbon.kick(0.8);
-          ctx.toast(`تم ربط ${PROVIDERS[r.data.linked]?.name || p.name}`, 'ok');
+          ctx.toast(adding ? `صار عندك ${r.data.keys.gemini.count} مفاتيح Gemini` : `تم ربط ${PROVIDERS[r.data.linked]?.name || p.name}`, 'ok');
           render();
         } else {
           const e = r.data?.error;
-          ctx.toast(e === 'bad_key' ? 'المفتاح غير صحيح. انسخه كاملاً من صفحة المفاتيح.' : e === 'provider_down' ? 'تعذّر التحقق من المفتاح الآن. جرّب بعد قليل.' : 'تعذّر الحفظ. تأكد من الإنترنت.', 'err');
+          ctx.toast(e === 'bad_key' ? 'المفتاح غير صحيح. انسخه كاملاً من صفحة المفاتيح.' : e === 'too_many_keys' ? 'الحد 6 مفاتيح.' : e === 'provider_down' ? 'تعذّر التحقق من المفتاح الآن. جرّب بعد قليل.' : 'تعذّر الحفظ. تأكد من الإنترنت.', 'err');
         }
       }
       async function paste() {
@@ -234,12 +235,20 @@ export async function start(MV, root) {
         h('div', null, h('h3', null, p.name), h('p', null, h('b', null, `${p.role}. `), p.desc)),
         state.linked ? h('span', { class: 'chip ok' }, icon('check'), 'مربوط') : h('span', { class: 'chip off' }, 'غير مربوط')));
       if (state.linked) {
-        box.append(h('div', { class: 'linked-row' }, h('span', null, 'المفتاح'), h('code', null, state.hint),
+        const many = (state.count || 1) > 1;
+        box.append(h('div', { class: 'linked-row' }, h('span', null, many ? `${state.count} مفاتيح` : 'المفتاح'), h('code', null, state.hint),
           h('button', { class: 'btn ghost small', onclick: async () => {
-            if (!(await confirm({ title: `فك ربط ${p.name}`, message: 'تقدر تربطه مرة ثانية بأي وقت.', ok: 'فك الربط', danger: true }))) return;
+            if (!(await confirm({ title: `فك ربط ${p.name}`, message: many ? 'تنفك كل المفاتيح. تقدر تربطها مرة ثانية بأي وقت.' : 'تقدر تربطه مرة ثانية بأي وقت.', ok: 'فك الربط', danger: true }))) return;
             const r = await ctx.api(`/api/keys?provider=${id}`, { method: 'DELETE' });
             if (r.ok && r.data?.active) { ctx.session = MV.session = r.data; ctx.caps = null; render(); }
           } }, 'فك الربط')));
+        if (adding && (state.count || 1) < 6) {
+          pasteBtn.lastChild.textContent = 'إضافة';
+          input.placeholder = 'مفتاح Gemini من حساب Google ثاني';
+          box.append(
+            h('p', { class: 'dim' }, 'الحصة المجانية اليومية لأقوى نماذج Gemini قليلة (نحو 20 طلب لكل نموذج). كل مفتاح من حساب Google مختلف إله حصة مستقلة، والموقع يتنقل بينها وحده. أضف مفتاح ثاني أو ثالث وتصير الملزمة أقوى وأثبت.'),
+            h('div', { class: 'paste-row' }, input, pasteBtn));
+        }
       } else {
         box.append(
           h('ol', { class: 'steps' }, p.steps.map((t) => h('li', null, t))),

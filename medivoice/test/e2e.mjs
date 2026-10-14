@@ -2,6 +2,7 @@
 //   BASE=http://127.0.0.1:8787 ADMIN_PW=... GROQ_KEY=... GEMINI_KEY=... node test/e2e.mjs <audio> <shots-dir> [--type=highyield|notes|integrated] [--pdf=file.pdf] [--cleanup]
 import { launch, BASE } from './browser.mjs';
 import path from 'node:path';
+import fs from 'node:fs/promises';
 const args = process.argv.slice(2);
 const [audio, shots] = args.filter((a) => !a.startsWith('--'));
 const opt = (k, d) => (args.find((a) => a.startsWith(`--${k}=`)) || `--${k}=${d}`).split('=').slice(1).join('=');
@@ -52,6 +53,7 @@ await page.locator('.types .type').filter({ hasText: type === 'highyield' ? 'Hig
 if (type === 'integrated' && pdfFile) await page.locator('input[type=file][accept*="pdf"]').setInputFiles(pdfFile);
 await page.waitForFunction(() => document.querySelector('.view .btn.wide') && !document.querySelector('.view .btn.wide').disabled, null, { timeout: 30000 });
 await page.locator('input[list=mv-subjects]').fill(process.env.SUBJECT ?? 'التصوير الشعاعي');
+if (process.env.LECTURER) await page.locator('label.field', { hasText: 'اسم التدريسي' }).locator('input').fill(process.env.LECTURER).catch(() => {});
 await page.locator('textarea').fill(process.env.KEYWORDS ?? 'chest X-ray, pneumothorax, pleural effusion');
 await page.waitForTimeout(300); await shot('05-new');
 await page.evaluate(() => scrollTo(0, document.body.scrollHeight)); await page.waitForTimeout(300); await shot('05b-new-bottom');
@@ -61,7 +63,8 @@ await page.locator('.view button.btn.wide', { hasText: 'ابدأ التحويل'
 await page.waitForSelector('.run');
 let n = 0;
 const t0 = Date.now();
-while (Date.now() - t0 < 600000) {
+const runLimit = (parseInt(process.env.RUN_TIMEOUT || '600', 10)) * 1000; // ثوانٍ؛ محاضرة ساعة تحتاج أكثر من 10 دقائق
+while (Date.now() - t0 < runLimit) {
   await page.waitForTimeout(n < 6 ? 2500 : 6000);
   if (await page.locator('.paper').count()) break;
   if (await page.locator('.result').count()) { await shot('06-run-failed'); console.log('FAILED:', await page.locator('.result').innerText()); break; }
@@ -82,7 +85,18 @@ const stats = await page.evaluate(() => new Promise((resolve) => {
   req.onsuccess = () => { const db = req.result; const all = db.transaction('lectures').objectStore('lectures').getAll(); all.onsuccess = () => { const d = all.result.sort((a, b) => b.createdAt - a.createdAt)[0]; resolve({ stats: d?.stats, slides: d?.slides ? { pages: d.slides.pages.length, figs: d.slides.figs } : null, slidereq: d?.blocks.filter((b) => b.t === 'slidereq').length, transcriptHasSlide: (d?.transcript || []).some((b) => b.t === 'slidereq') }); }; };
   req.onerror = () => resolve(null);
 }));
-console.log('stats:', JSON.stringify(stats).slice(0, 900));
+console.log('stats:', JSON.stringify(stats).slice(0, 1400));
+// المستند كاملاً (بلا بيانات الصور) لتحليل الناتج لاحقاً
+const dump = await page.evaluate(() => new Promise((resolve) => {
+  const req = indexedDB.open('medivoice');
+  req.onsuccess = () => { const db = req.result; const all = db.transaction('lectures').objectStore('lectures').getAll(); all.onsuccess = () => {
+    const d = all.result.sort((a, b) => b.createdAt - a.createdAt)[0];
+    const strip = (v) => (typeof v === 'string' && v.startsWith('data:') ? `data:…(${v.length})` : v);
+    resolve(JSON.stringify(d, (k, v) => (k === 'big' || k === 'small' || k === 'tiny' ? undefined : strip(v))));
+  }; };
+  req.onerror = () => resolve(null);
+}));
+if (dump) await fs.writeFile(path.join(shots, 'doc.json'), dump);
 const figs = page.locator('.blk.fig');
 for (let i = 0; i < await figs.count(); i++) {
   await figs.nth(i).scrollIntoViewIfNeeded();

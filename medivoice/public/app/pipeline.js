@@ -66,6 +66,13 @@ export class Engine {
     this.gem = new Lanes(caps.gemini ? caps.geminiModels : []);
     // نموذج النسخ الحرفي من Google: مرجع ثانٍ لاكتمال الاستماع، وله حصة مستقلة
     this.tx = new Lanes(caps.gemini ? caps.transcribeModels || [] : []);
+    this.modelStats = {}; // لكل نموذج: ok/429/503/other — للتشخيص في doc.stats.models
+  }
+
+  tally(model, res) {
+    const k = res.ok ? 'ok' : res.status === 429 ? 'r429' : res.status === 503 || res.status === 500 ? 'r5xx' : 'other';
+    const m = this.modelStats[model] || (this.modelStats[model] = { ok: 0, r429: 0, r5xx: 0, other: 0 });
+    m[k]++;
   }
 
   check() { if (this.signal?.aborted) throw new PipelineError('aborted', 'aborted'); }
@@ -103,6 +110,7 @@ export class Engine {
         generationConfig: { temperature: 0 },
       };
       const res = await this.io.gemini(m.id, body, { sec, signal: this.signal });
+      this.tally(m.id, res);
       if (res.ok && res.data) {
         const parts = res.data.candidates?.[0]?.content?.parts || [];
         const text = parts.map((p) => p.audioTranscription?.text || (typeof p.text === 'string' && !p.thought ? p.text : '')).join(' ').trim();
@@ -142,6 +150,7 @@ export class Engine {
         continue;
       }
       const res = await this.io.stt({ blob: chunk.blob, filename: `part${chunk.index}.${chunk.ext}`, model: m.id, language, prompt }, { sec, signal: this.signal });
+      this.tally(m.id, res);
       if (res.ok && res.data && (res.data.words || res.data.segments || typeof res.data.text === 'string')) return res.data;
       const fatal = fatalFromServer(res, 'groq');
       if (fatal) throw fatal;
@@ -192,6 +201,7 @@ export class Engine {
       const body = { contents: [{ role: 'user', parts }], generationConfig, safetySettings: SAFETY };
       if (system) body.systemInstruction = { parts: [{ text: system }] };
       const res = await this.io.gemini(m.id, body, { sec, signal: this.signal });
+      this.tally(m.id, res);
       if (res.ok && res.data) {
         const cand = res.data.candidates?.[0];
         const text = (cand?.content?.parts || []).filter((p) => !p.thought && typeof p.text === 'string').map((p) => p.text).join('');
@@ -249,6 +259,7 @@ export class Engine {
         else if (/qwen/.test(m.id)) body.reasoning_effort = 'none';
       }
       const res = await this.io.groq(body, { signal: this.signal });
+      this.tally(m.id, res);
       if (res.ok && res.data) {
         const choice = res.data.choices?.[0];
         const text = choice?.message?.content;
@@ -1009,6 +1020,8 @@ export async function complete(doc, engine, { io, emit = () => {} }) {
     doc.stats.words = doc.blocks.reduce((n, b) => n + countWords(blockText(b)), 0);
   }
   doc.blocks = doc.blocks.filter((b) => b.t !== 'slidereq'); // طلبات سلايدات بلا صورة
+  doc.stats.models = engine.modelStats;
+  doc.stats.elapsedSec = Math.round((Date.now() - engine.t0) / 1000);
   return doc;
 }
 
@@ -1051,6 +1064,7 @@ export async function enrich(doc, engine, { io, emit = () => {} }) {
         emit({ type: 'stage', name: 'images' });
         const found = await queue.results();
         doc.blocks = doc.blocks.map((b) => (b.t === 'figreq' && found.has(b.id) ? figBlock(found.get(b.id)) : b));
+        doc.stats.figures = queue.stats();
         return;
       }
       const textWords = doc.stats?.words || doc.blocks.reduce((n, b) => n + countWords(blockText(b)), 0);
@@ -1201,7 +1215,7 @@ async function chooseFigures(engine, items, lang) {
  * ثم جولة ثانية بعبارات أعم لما لم يُطابَق (إن سمح الوقت). الصورة الخاطئة أسوأ من عدمها: ما لم يُطابَق يبقى بلا صورة.
  * @returns نتائج بنفس ترتيب figs (null = لا صورة)
  */
-async function pickBatch(figs, engine, io, used, lang) {
+async function pickBatch(figs, engine, io, used, lang, stat = null) {
   const results = new Array(figs.length).fill(null);
   const tried = figs.map(() => new Set());
   for (let round = 0; round < 2; round++) {
@@ -1225,8 +1239,10 @@ async function pickBatch(figs, engine, io, used, lang) {
       return { i, f: figs[i], ok };
     });
     const items = found.filter((x) => x.ok.length);
+    if (stat) { stat.rounds++; stat.candidates += items.length; stat.noCandidates += todo.length - items.length; }
     if (!items.length) continue;
     const picks = await chooseFigures(engine, items, lang);
+    if (stat) { for (const v of picks.values()) stat[v.vision ? 'vision' : 'text']++; }
     await mapLimit([...picks.entries()], 3, async ([k, v]) => {
       const { i, f, ok } = items[k];
       const pick = ok[v.idx].c;
@@ -1235,7 +1251,7 @@ async function pickBatch(figs, engine, io, used, lang) {
       used.add(key);
       const img = await io.loadImage(pick, 'large').catch(() => null) || ok[v.idx].t;
       if (!img?.dataUrl) { used.delete(key); return; }
-      results[i] = { ...f, caption: v.caption || f.caption, pick, candidates: ok.map((x) => x.c), img: { dataUrl: img.dataUrl, w: img.w, h: img.h } };
+      results[i] = { ...f, caption: v.caption || f.caption, pick, candidates: ok.map((x) => x.c), img: { dataUrl: img.dataUrl, w: img.w, h: img.h }, vision: v.vision };
     });
   }
   return results;
@@ -1251,9 +1267,11 @@ function figureQueue(engine, { lang, emit }) {
   const jobs = [];
   const waiting = [];
   let active = 0, limit = 2, total = 0, picked = 0, cancelled = false;
+  const stat = { requested: 0, candidates: 0, noCandidates: 0, rounds: 0, vision: 0, text: 0, skipped: 0, failed: 0 };
   const take = async () => { while (active >= limit) await new Promise((r) => waiting.push(r)); active++; };
   const release = () => { active--; waiting.shift()?.(); };
   return {
+    stats: () => ({ ...stat, picked }),
     add(blocks, section) {
       const words = blocks.reduce((n, b) => n + countWords(blockText(b)), 0);
       const cap = Math.min(4, Math.max(1, Math.round(words / 250)));
@@ -1265,14 +1283,16 @@ function figureQueue(engine, { lang, emit }) {
         return f;
       });
       total += figs.length;
+      stat.requested += figs.length;
       const job = (async () => {
         await take();
         try {
-          if (cancelled || engine.late(0.95)) return;
-          const res = await pickBatch(figs, engine, engine.io, used, lang);
+          if (cancelled || engine.late(0.95)) { stat.skipped += figs.length; return; }
+          const res = await pickBatch(figs, engine, engine.io, used, lang, stat);
           res.forEach((r, i) => { if (r) { found.set(figs[i].anchor, r); emit({ type: 'images', picked: ++picked, total }); } });
         } catch (e) {
           if (isFatal(e)) throw e;
+          stat.failed += figs.length;
         } finally {
           release();
         }

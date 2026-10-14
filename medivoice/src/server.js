@@ -277,7 +277,7 @@ export class MediVoiceStore extends DurableObject {
       user: { label: code.label, code: displayCode(code.code), expires_at: code.expires_at || null },
       keys: {
         groq: { linked: !!code.groq_enc, hint: code.groq_hint || '' },
-        gemini: { linked: !!code.gemini_enc, hint: code.gemini_hint || '' },
+        gemini: { linked: !!code.gemini_enc, hint: code.gemini_hint || '', count: keyCount(code.gemini_hint) },
       },
       usage: {
         used_sec: Math.round(this.#usedSec(code.code, DAY)),
@@ -398,7 +398,10 @@ export class MediVoiceStore extends DurableObject {
       return out;
     }
     if (kind === 'groq' || kind === 'both') out.groq = await this.#open(code.groq_enc);
-    if (kind === 'gemini' || kind === 'both') out.gemini = await this.#open(code.gemini_enc);
+    if (kind === 'gemini' || kind === 'both') {
+      out.geminiKeys = parseKeys(await this.#open(code.gemini_enc));
+      out.gemini = out.geminiKeys[0] || null;
+    }
     return out;
   }
 
@@ -410,13 +413,22 @@ export class MediVoiceStore extends DurableObject {
     else if (kind === 'lecture') this.sql.exec('UPDATE codes SET lectures = lectures + 1, last_active = ? WHERE code = ?', now, code);
   }
 
-  async setKey(deviceId, provider, key) {
+  /**
+   * يحفظ مفتاحاً. Gemini يقبل عدة مفاتيح (من حسابات Google مختلفة) تُخزَّن معاً كقائمة JSON مشفرة؛
+   * add=true يضيف إلى الموجود بدل استبداله. الحصة اليومية المجانية لكل مفتاح مستقلة، فالخادم يتنقل بينها.
+   */
+  async setKey(deviceId, provider, keys, { add = false } = {}) {
     const c = this.#check(deviceId);
     if (!c.ok) return { ok: false, status: 401, error: 'locked' };
-    const hint = key.slice(0, 4) + '…' + key.slice(-4);
-    const sealed = await this.#seal(key);
-    if (provider === 'groq') this.sql.exec('UPDATE codes SET groq_enc = ?, groq_hint = ? WHERE code = ?', sealed, hint, c.code.code);
-    else this.sql.exec('UPDATE codes SET gemini_enc = ?, gemini_hint = ? WHERE code = ?', sealed, hint, c.code.code);
+    const list = Array.isArray(keys) ? keys : [keys];
+    const hintOf = (k) => k.slice(0, 4) + '…' + k.slice(-4);
+    if (provider === 'groq') {
+      this.sql.exec('UPDATE codes SET groq_enc = ?, groq_hint = ? WHERE code = ?', await this.#seal(list[0]), hintOf(list[0]), c.code.code);
+    } else {
+      const current = add ? parseKeys(await this.#open(c.code.gemini_enc)) : [];
+      const merged = [...new Set([...current, ...list])].slice(0, MAX_GEMINI_KEYS);
+      this.sql.exec('UPDATE codes SET gemini_enc = ?, gemini_hint = ? WHERE code = ?', await this.#seal(JSON.stringify(merged)), merged.map(hintOf).join(' · '), c.code.code);
+    }
     this.#event('key_linked', { code: c.code.code, detail: provider });
     return { ok: true, session: this.#sessionPayload(this.#row('SELECT * FROM codes WHERE code = ?', c.code.code)) };
   }
@@ -704,6 +716,43 @@ async function proxyFetch(request, target) {
   });
 }
 
+const MAX_GEMINI_KEYS = 6;
+/** القيمة المخزنة إما مفتاح واحد (قديم) أو قائمة JSON. */
+function parseKeys(text) {
+  if (!text) return [];
+  if (text.startsWith('[')) { try { return JSON.parse(text).filter((k) => typeof k === 'string' && k); } catch { return []; } }
+  return [text];
+}
+const keyCount = (hint) => (hint ? hint.split(' · ').length : 0);
+
+/** مفتاح+نموذج نفدت حصته اليومية: نتخطاه مدة حتى لا نضيع وقتاً على 429 متكررة (الذاكرة لكل Isolate فقط). */
+const exhausted = new Map();
+const EXHAUST_MS = 20 * 60_000;
+const isExhausted = (key, model) => (exhausted.get(`${key.slice(-8)}|${model}`) || 0) > Date.now();
+const markExhausted = (key, model) => exhausted.set(`${key.slice(-8)}|${model}`, Date.now() + EXHAUST_MS);
+let geminiRound = 0;
+
+/** يرسل طلب Gemini بمفاتيح المستخدم بالتناوب: عند نفاد حصة مفتاح (429 RESOURCE_EXHAUSTED) يجرّب المفتاح التالي. */
+async function geminiWithKeys(keys, model, body) {
+  const order = keys.map((_, i) => keys[(i + geminiRound) % keys.length]);
+  geminiRound++;
+  let last = null;
+  const live = order.filter((k) => !isExhausted(k, model));
+  for (const key of live.length ? live : order.slice(0, 1)) {
+    const up = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+      method: 'POST',
+      headers: { 'x-goog-api-key': key, 'content-type': 'application/json' },
+      body,
+    });
+    if (up.status !== 429 || keys.length === 1) return up;
+    // 429 قد تكون حصة الدقيقة (مؤقتة) أو حصة اليوم؛ في الحالتين المفتاح التالي أفضل الآن
+    last = up;
+    const text = await up.clone().text().catch(() => '');
+    if (/per_day|PerDay|daily|RESOURCE_EXHAUSTED/i.test(text) && !/per_minute|PerMinute/i.test(text)) markExhausted(key, model);
+  }
+  return last;
+}
+
 async function verifyKey(provider, key) {
   try {
     const res = provider === 'groq'
@@ -793,14 +842,19 @@ async function handleApi(request, env, ctx, url) {
 
   if (path === '/api/keys' && method === 'POST') {
     const body = await request.json().catch(() => ({}));
-    const key = String(body.key || '').trim();
-    if (key.length < 20 || key.length > 300 || /\s/.test(key)) return json({ error: 'bad_key' }, 400);
+    // يُقبل مفتاح واحد أو عدة مفاتيح Gemini مفصولة بمسافات أو أسطر أو فواصل
+    const keys = [...new Set(String(body.key || '').split(/[\s,;]+/).map((k) => k.replace(/^["']|["']$/g, '')).filter(Boolean))];
+    if (!keys.length || keys.some((k) => k.length < 20 || k.length > 300)) return json({ error: 'bad_key' }, 400);
     let provider = body.provider;
-    if (provider !== 'groq' && provider !== 'gemini') provider = key.startsWith('gsk_') ? 'groq' : 'gemini';
+    if (provider !== 'groq' && provider !== 'gemini') provider = keys[0].startsWith('gsk_') ? 'groq' : 'gemini';
+    if (provider === 'groq' && keys.length > 1) return json({ error: 'bad_key' }, 400);
+    if (keys.length > MAX_GEMINI_KEYS) return json({ error: 'too_many_keys' }, 400);
     if (!(await db.isActive(id))) return json({ error: 'locked' }, 401);
-    const v = await verifyKey(provider, key);
-    if (!v.ok) return json({ error: v.error, provider }, v.error === 'bad_key' ? 400 : 502);
-    const r = await db.setKey(id, provider, key);
+    for (const key of keys) {
+      const v = await verifyKey(provider, key);
+      if (!v.ok) return json({ error: v.error, provider, hint: key.slice(0, 4) + '…' + key.slice(-4) }, v.error === 'bad_key' ? 400 : 502);
+    }
+    const r = await db.setKey(id, provider, keys, { add: body.add === true });
     return r.ok ? json({ ...r.session, linked: provider }) : json({ error: r.error }, r.status);
   }
 
@@ -858,12 +912,8 @@ async function handleApi(request, env, ctx, url) {
     if (!/^[a-z0-9][a-z0-9.-]{2,60}$/.test(model)) return json({ error: 'bad_model' }, 400);
     const auth = await db.authorize(id, { kind: 'gemini', sec });
     if (!auth.ok) return json(auth, auth.status);
-    if (!auth.gemini) return json({ error: 'no_key', provider: 'gemini' }, 412);
-    const up = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-      method: 'POST',
-      headers: { 'x-goog-api-key': auth.gemini, 'content-type': 'application/json' },
-      body: request.body,
-    });
+    if (!auth.geminiKeys?.length) return json({ error: 'no_key', provider: 'gemini' }, 412);
+    const up = await geminiWithKeys(auth.geminiKeys, model, await request.arrayBuffer());
     if (up.ok && sec > 0) ctx.waitUntil(db.logUsage(auth.code, 'audio', sec));
     return relay(up);
   }
