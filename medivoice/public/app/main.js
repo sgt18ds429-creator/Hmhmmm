@@ -54,7 +54,7 @@ export async function start(MV, root) {
   }
   async function loadCaps() {
     const s = ctx.session, cfg = s.config;
-    const caps = { groq: s.keys.groq.linked, gemini: s.keys.gemini.linked, sttModels: cfg.sttModels, groqModels: cfg.groqModels, geminiModels: cfg.geminiModels, transcribeModels: cfg.transcribeModels || [] };
+    const caps = { groq: s.keys.groq.linked, gemini: s.keys.gemini.linked, geminiKeys: s.keys.gemini.count || 1, sttModels: cfg.sttModels, groqModels: cfg.groqModels, geminiModels: cfg.geminiModels, transcribeModels: cfg.transcribeModels || [] };
     if (caps.groq || caps.gemini) {
       const r = await MV.api('/api/models');
       if (r.ok && r.data) {

@@ -28,6 +28,81 @@ export const countWords = (s) => tokens(s).length;
 
 export const uid = () => Math.random().toString(36).slice(2, 10);
 
+// ───────────── حارس التكرار ─────────────
+// النماذج (وWhisper) تنزلق أحياناً إلى حلقة تكرار: كلمة أو جملة تتكرر عشرات المرات. هذه الدوال تكشفها وتطويها.
+
+const sentenceKey = (t) => tokens(t).join(' ');
+
+/**
+ * نسبة التكرار في نص: حصة المقاطع الخماسية (5 كلمات متتالية) المكررة من مجموعها.
+ * نص طبيعي ≈ 0 إلى 0.15، ونص في حلقة تكرار > 0.4.
+ */
+export function repetitionScore(text, n = 5) {
+  const w = tokens(text);
+  if (w.length < n * 4) return 0;
+  const seen = new Set();
+  let dup = 0;
+  for (let i = 0; i + n <= w.length; i++) {
+    const k = w.slice(i, i + n).join(' ');
+    if (seen.has(k)) dup++; else seen.add(k);
+  }
+  return dup / (w.length - n + 1);
+}
+
+/**
+ * يطوي التكرار داخل نص (سطر أو فقرة):
+ * - كلمة أو عبارة قصيرة (حتى 4 كلمات) تتكرر 3 مرات فأكثر متتالية → مرة واحدة.
+ * - جملة تتكرر (بعد التطبيع) ضمن الفقرة نفسها → تبقى المرة الأولى فقط.
+ */
+export function collapseRepeats(text) {
+  let t = String(text || '');
+  if (!t.trim()) return t;
+  // عبارة قصيرة مكررة متتالية (بينها مسافات أو فواصل)
+  for (let pass = 0; pass < 3; pass++) {
+    const before = t;
+    // الوحدة الأقصر أولاً (كسول) حتى تُطوى «إنت، إنت، إنت» إلى واحدة لا إلى اثنتين
+    t = t.replace(/(\S+(?:[ \t]+\S+){0,7}?)(?:[ \t]*[،,.؛;:!؟?-]*[ \t]+\1){2,}(?=[\s،,.؛;:!؟?]|$)/gu, '$1');
+    if (t === before) break;
+  }
+  // جمل مكررة داخل الفقرة
+  const parts = t.split(/(?<=[.!؟?])\s+/);
+  if (parts.length > 1) {
+    const seen = new Set();
+    const kept = [];
+    for (const p of parts) {
+      const k = sentenceKey(p);
+      if (k.split(' ').length >= 3 && seen.has(k)) continue;
+      seen.add(k);
+      kept.push(p);
+    }
+    t = kept.join(' ');
+  }
+  return t;
+}
+
+/**
+ * يطوي التكرار في نص ترميز كامل: داخل كل سطر، ثم الأسطر/الفقرات المكررة (الأقصر من 5 كلمات تُترك كما هي).
+ * يرجع { text, removed } حيث removed عدد ما حُذف من أسطر وعبارات تقريبياً.
+ */
+export function collapseMarkup(markup) {
+  const lines = String(markup || '').replace(/\r/g, '').split('\n');
+  const seen = new Set();
+  const out = [];
+  let removed = 0;
+  for (const raw of lines) {
+    const line = raw.trim() ? collapseRepeats(raw) : raw;
+    if (line !== raw) removed++;
+    if (!line.trim()) { out.push(line); continue; }
+    const key = sentenceKey(line);
+    if (key.split(' ').length >= 5 && !/^\|/.test(line.trim())) {
+      if (seen.has(key)) { removed++; continue; }
+      seen.add(key);
+    }
+    out.push(line);
+  }
+  return { text: out.join('\n').replace(/\n{3,}/g, '\n\n'), removed };
+}
+
 // ───────────── ترميز التنسيق ─────────────
 //  ## عنوان      ### عنوان فرعي
 //  - عنصر قائمة   1. عنصر مرقّم

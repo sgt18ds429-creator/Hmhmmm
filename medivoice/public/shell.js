@@ -23,7 +23,7 @@ class Ribbon {
     this.resize();
   }
   resize() {
-    const dpr = Math.min(devicePixelRatio || 1, 2);
+    const dpr = Math.min(devicePixelRatio || 1, 1.25); // خطوط مسطحة: دقة أعلى تكلّف الهاتف بلا فائدة
     this.w = innerWidth; this.h = innerHeight;
     this.c.width = Math.round(this.w * dpr); this.c.height = Math.round(this.h * dpr);
     this.x.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -32,11 +32,15 @@ class Ribbon {
   /** y: موضع عمودي (0..1)، energy: ارتفاع الموجة (0..1)، alpha: الظهور */
   set(o) { Object.assign(this.to, o); if (!this.running) this.start(); }
   kick(amount = 0.5) { this.pulse = Math.min(1, this.pulse + amount); }
-  start() { if (this.running || document.hidden) return; this.running = true; this.last = performance.now(); requestAnimationFrame((n) => this.frame(n)); }
+  start() { if (this.running || document.hidden || this.paused) return; this.running = true; this.last = performance.now(); requestAnimationFrame((n) => this.frame(n)); }
   stop() { this.running = false; }
+  /** إيقاف مؤقت (أثناء اللعبة مثلاً): لا رسم إطلاقاً حتى الاستئناف */
+  pause() { this.paused = true; this.stop(); }
+  resume() { this.paused = false; this.start(); }
   frame(now) {
     if (!this.running) return;
-    const dt = Math.min(0.05, (now - this.last) / 1000);
+    if (now - this.last < 32) { requestAnimationFrame((n) => this.frame(n)); return; } // نحو 30 إطاراً بالثانية تكفي
+    const dt = Math.min(0.08, (now - this.last) / 1000);
     this.last = now;
     const k = 1 - Math.pow(0.0025, dt);
     for (const key of ['y', 'energy', 'alpha']) this.cur[key] += (this.to[key] - this.cur[key]) * k;

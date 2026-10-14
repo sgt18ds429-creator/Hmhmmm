@@ -79,7 +79,7 @@ export async function viewDoc(ctx, el, { id, fresh }) {
     const a = doc.stats.audit;
     paper.append(h('div', { class: 'doc-badges' },
       h('span', { class: 'badge mode ltr' }, MODE_LABEL[doc.meta.mode] || 'Notes'),
-      a ? h('span', { class: 'badge ok', title: a.verdict || '' }, icon('check'), a.fixes || a.added ? `روجعت: ${countOf(a.fixes, ['تصحيح', 'تصحيحان', 'تصحيحات', 'تصحيحاً'])}${a.added ? `، ${countOf(a.added, ['إضافة', 'إضافتان', 'إضافات', 'إضافة'])}` : ''}` : 'روجعت مقابل التسجيل') : null,
+      a ? h('span', { class: 'badge ok', title: a.verdict || '' }, icon('check'), a.fixes || a.added ? `روجعت: ${[a.fixes ? countOf(a.fixes, ['تصحيح', 'تصحيحان', 'تصحيحات', 'تصحيحاً']) : '', a.added ? countOf(a.added, ['إضافة', 'إضافتان', 'إضافات', 'إضافة']) : ''].filter(Boolean).join('، ')}` : 'روجعت مقابل التسجيل') : null,
       doc.slides?.pages?.length ? h('span', { class: 'badge' }, icon('book'), `${doc.slides.pages.length} سلايد`) : null,
       hasAlt ? h('span', { class: 'badge' }, icon('text'), 'عربي + English') : null));
     if (hasAlt) {

@@ -60,10 +60,32 @@ export function openGame({ onClose } = {}) {
   const nitro = () => now() < st.nitroUntil;
   const magnet = () => now() < st.magnetUntil;
 
+  // الخلفية الثابتة (السماء والنجوم والتوهج والأرض وجسم الطريق) تُرسم مرة واحدة في لوحة جانبية،
+  // لأن التدرّجات بحجم الشاشة في كل إطار هي أثقل ما في اللعبة على الهاتف أثناء عمل التحويل
+  let bg = null;
+  function paintBackground(dpr) {
+    bg = document.createElement('canvas');
+    bg.width = canvas.width; bg.height = canvas.height;
+    const b = bg.getContext('2d');
+    b.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const sky = b.createLinearGradient(0, 0, 0, horizon * 1.4);
+    sky.addColorStop(0, '#0d0720'); sky.addColorStop(1, '#2b1458');
+    b.fillStyle = sky; b.fillRect(-12, -12, W + 24, horizon * 1.4 + 12);
+    b.fillStyle = 'rgba(244,240,255,.5)';
+    for (let i = 0; i < 26; i++) { const sx = ((i * 97) % W), sy = (i * 53) % Math.max(1, horizon * 0.9); b.fillRect(sx, sy, 2, 2); }
+    const glow = b.createRadialGradient(W / 2, horizon, 4, W / 2, horizon, W * 0.6);
+    glow.addColorStop(0, 'rgba(201,35,193,.5)'); glow.addColorStop(1, 'rgba(201,35,193,0)');
+    b.fillStyle = glow; b.fillRect(0, 0, W, horizon * 1.5);
+    b.fillStyle = '#120b26'; b.fillRect(-12, horizon, W + 24, H - horizon + 12);
+    b.fillStyle = '#1b1330';
+    b.beginPath(); b.moveTo(W / 2 - roadTop, horizon); b.lineTo(W / 2 + roadTop, horizon); b.lineTo(W / 2 + roadBottom, H + 12); b.lineTo(W / 2 - roadBottom, H + 12); b.closePath(); b.fill();
+  }
+
   function layout() {
     const r = canvas.getBoundingClientRect();
     if (!r.width || !r.height) return;
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    // دقة محدودة عمداً: الهاتف يشغّل التحويل في الخلفية نفسها، ودقة 1.25 كافية للرسوم المسطحة
+    const dpr = Math.min(1.25, window.devicePixelRatio || 1);
     W = r.width; H = r.height;
     canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -71,6 +93,7 @@ export function openGame({ onClose } = {}) {
     roadBottom = Math.min(W * 0.48, 260);
     roadTop = roadBottom * 0.14;
     st.x = laneOffset(st.lane);
+    paintBackground(dpr);
   }
 
   function reset() {
@@ -317,20 +340,8 @@ export function openGame({ onClose } = {}) {
   }
 
   function road() {
-    // السماء والأفق
-    const sky = g.createLinearGradient(0, 0, 0, horizon * 1.4);
-    sky.addColorStop(0, '#0d0720'); sky.addColorStop(1, '#2b1458');
-    g.fillStyle = sky; g.fillRect(-12, -12, W + 24, horizon * 1.4 + 12);
-    g.fillStyle = 'rgba(244,240,255,.5)';
-    for (let i = 0; i < 26; i++) { const sx = ((i * 97) % W), sy = (i * 53) % Math.max(1, horizon * 0.9); g.fillRect(sx, sy, 2, 2); }
-    const glow = g.createRadialGradient(W / 2, horizon, 4, W / 2, horizon, W * 0.6);
-    glow.addColorStop(0, 'rgba(201,35,193,.5)'); glow.addColorStop(1, 'rgba(201,35,193,0)');
-    g.fillStyle = glow; g.fillRect(0, 0, W, horizon * 1.5);
-    // الأرض
-    g.fillStyle = '#120b26'; g.fillRect(-12, horizon, W + 24, H - horizon + 12);
-    // الطريق
-    g.fillStyle = '#1b1330';
-    g.beginPath(); g.moveTo(W / 2 - roadTop, horizon); g.lineTo(W / 2 + roadTop, horizon); g.lineTo(W / 2 + roadBottom, H + 12); g.lineTo(W / 2 - roadBottom, H + 12); g.closePath(); g.fill();
+    // السماء والأرض وجسم الطريق من اللوحة الجانبية
+    if (bg) { g.save(); g.setTransform(1, 0, 0, 1, 0, 0); g.drawImage(bg, 0, 0); g.restore(); }
     // الحواف والشرائط تتحرك نحو اللاعب
     const steps = 14;
     for (let i = 0; i < steps; i++) {
@@ -431,10 +442,13 @@ export function openGame({ onClose } = {}) {
     if (st.mode !== 'run' || st.finished) overlay();
   }
 
+  // نحو 30 إطاراً بالثانية تكفي، ونصف الإطارات يعني نصف الحمل على هاتف يحوّل محاضرة في الخلفية
+  const FRAME_MS = 31;
   function frame(t) {
     if (!running) return;
     if (!paused) {
-      const dt = Math.min(0.05, Math.max(0, (t - last) / 1000));
+      if (t - last < FRAME_MS) { raf = requestAnimationFrame(frame); return; }
+      const dt = Math.min(0.08, Math.max(0, (t - last) / 1000));
       last = t;
       if (!W) layout();
       if (W) { update(dt); draw(); }

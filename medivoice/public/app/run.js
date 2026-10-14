@@ -195,7 +195,8 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
   let game = null;
   const playGame = () => {
     if (game || !running) return;
-    game = openGame({ onClose: () => { game = null; } });
+    ctx.ribbon.pause?.(); // الشريط المتحرك يتوقف أثناء اللعبة حتى لا يتنافسا على الرسم
+    game = openGame({ onClose: () => { game = null; ctx.ribbon.resume?.(); } });
     game.update(shown, status.textContent);
   };
   const gameBtn = h('button', { class: 'btn game-btn', onclick: playGame }, icon('play'), 'العب سباق سيارات لحد ما تجهز');
@@ -307,6 +308,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
       else if (e.name === 'images') { status.textContent = 'أبحث عن صور مطابقة للشرح في المصادر المفتوحة'; P.extra = Math.max(P.extra, 0.09); }
       else if (e.name === 'mcq') { status.textContent = 'أكتب أسئلة الاختيار من متعدد بالإنجليزية'; }
       else if (e.name === 'translate') { status.textContent = e.to === 'ar' ? 'أكتب النسخة العربية من الملزمة' : 'أكتب النسخة الإنجليزية من الملزمة'; }
+      else if (e.name === 'gate') { status.textContent = 'أفحص كل صفحات الملزمة قبل التسليم: لا تكرار ولا فقرات ناقصة'; P.write = 1; P.extra = Math.max(P.extra, 0.13); }
       else if (e.name === 'done') { setStage('done'); P.write = 1; P.extra = 0.14; }
       paintPct();
     } else if (e.type === 'translate') {
@@ -314,7 +316,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
       P.extra = Math.min(0.13, Math.max(P.extra, 0.05 + 0.07 * (e.done / Math.max(1, e.total))));
       paintPct();
     } else if (e.type === 'reviewed') {
-      status.textContent = e.fixes || e.added ? `تمت المراجعة: ${countOf(e.fixes, ['تصحيح واحد', 'تصحيحان', 'تصحيحات', 'تصحيحاً'])}${e.added ? ` و ${countOf(e.added, ['إضافة واحدة', 'إضافتان', 'إضافات', 'إضافة'])}` : ''}` : 'تمت المراجعة: الملزمة مطابقة للتسجيل';
+      status.textContent = e.fixes || e.added ? `تمت المراجعة: ${[e.fixes ? countOf(e.fixes, ['تصحيح واحد', 'تصحيحان', 'تصحيحات', 'تصحيحاً']) : '', e.added ? countOf(e.added, ['إضافة واحدة', 'إضافتان', 'إضافات', 'إضافة']) : ''].filter(Boolean).join(' و ')}` : 'تمت المراجعة: الملزمة مطابقة للتسجيل';
     } else if (e.type === 'notes') {
       if (e.stage === 'slides') status.textContent = `أفحص صور السلايدات (${e.pages} صفحة)`;
       else if (e.stage === 'plan') status.textContent = 'أفهم المحاضرة وأقسّمها حسب المواضيع';

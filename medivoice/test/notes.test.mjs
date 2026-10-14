@@ -1,20 +1,31 @@
 // اختبارات الشرح المفصل والصور: النماذج والمصادر كلها وهمية، فلا يحتاج الاختبار مفاتيح ولا إنترنت.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Engine, writeNotes, enrich, complete, normalizePlan, rewriteLecture, sameContent, pickFigures, PipelineError } from '../public/app/pipeline.js';
+import { Engine, writeNotes, enrich, complete, normalizePlan, rewriteLecture, sameContent, pickFigures, PipelineError, qualityGate } from '../public/app/pipeline.js';
 import { parseMarkup, blockText, countWords, uid, blocksToMarkup } from '../public/app/text.js';
 import { buildPdfHtml } from '../public/app/pdf.js';
 
 // ── تفريغ محاضرة قصيرة بموضوعين ──
+// نص حشو بلا تكرار: حارس التكرار يطوي الجمل والعبارات المكررة، فالحشو جمل مختلفة من مفردات متنوعة
+const VOCAB = 'المريض الطبيب الفحص السريري العلامة العرض السبب العلاج الجرعة التشخيص الصورة الأشعة التحليل النتيجة المرحلة الحالة الطارئة المزمنة الحادة الأطفال البالغين الأعراض التاريخ المرضي العائلي الدواء الجراحة المتابعة المضاعفات الوقاية التغذية الوزن الطول الحرارة النبض الضغط التنفس القلب الرئة الكبد الكلية'.split(' ');
+const filler = (sentence, n) => {
+  let x = 7 + sentence.length;
+  const rnd = () => { x = (x * 1103515245 + 12345) % 2147483648; return x; };
+  return Array.from({ length: n }, () => {
+    const len = 7 + (rnd() % 3); // 7 إلى 9 كلمات كالجمل الأصلية
+    const words = Array.from({ length: len }, () => VOCAB[rnd() % VOCAB.length]);
+    return `${sentence.split(' ')[0]} ${words.join(' ')}. `;
+  }).join('');
+};
 const TRANSCRIPT_MD = `## مقدمة
 السلام عليكم شباب، اليوم راح نحجي عن الـ [[pneumothorax]] والـ [[pleural effusion]].
 
-الـ [[pneumothorax]] هو دخول هواء للـ [[pleural space]]، وأهم علامة بالأشعة هي الـ [[visceral pleural line]] وما نشوف [[lung markings]] وراها. ${'هذا كلام شرح طويل عن الحالة والأسباب والعلاج. '.repeat(30)}
+الـ [[pneumothorax]] هو دخول هواء للـ [[pleural space]]، وأهم علامة بالأشعة هي الـ [[visceral pleural line]] وما نشوف [[lung markings]] وراها. ${filler('هذا كلام شرح طويل عن الحالة والأسباب والعلاج. ', 30)}
 
 > هذي تجي بالامتحان: [[tension pneumothorax]] حالة طارئة.
 
 ## الانصباب الجنبي
-الـ [[pleural effusion]] هو تجمع سائل، ويبين كـ [[meniscus sign]] و [[blunting]] للـ [[costophrenic angle]]. ${'شرح إضافي عن السائل وكميته وأنواعه. '.repeat(30)}`;
+الـ [[pleural effusion]] هو تجمع سائل، ويبين كـ [[meniscus sign]] و [[blunting]] للـ [[costophrenic angle]]. ${filler('شرح إضافي عن السائل وكميته وأنواعه. ', 30)}`;
 
 function transcriptDoc(meta = {}) {
   const blocks = parseMarkup(TRANSCRIPT_MD).map((b) => ({ id: uid(), ...b }));
@@ -27,7 +38,7 @@ function transcriptDoc(meta = {}) {
 const SECTION_NOTES = {
   pneumothorax: `## استرواح الصدر [[pneumothorax]]
 ### التعريف
-استرواح الصدر هو دخول الهواء إلى المسافة الجنبية [[pleural space]]. ${'وهذا شرح مفصل لكل ما قاله المحاضر عن الأسباب والعلامات والعلاج. '.repeat(45)}
+استرواح الصدر هو دخول الهواء إلى المسافة الجنبية [[pleural space]]. ${filler('وهذا شرح مفصل لكل ما قاله المحاضر عن الأسباب والعلامات والعلاج. ', 45)}
 
 ### العلامات على الأشعة
 - ظهور خط الجنبة الحشوية [[visceral pleural line]]
@@ -37,7 +48,7 @@ const SECTION_NOTES = {
 
 > [[tension pneumothorax]] حالة طارئة وتأتي بالامتحان.`,
   effusion: `## الانصباب الجنبي [[pleural effusion]]
-الانصباب الجنبي تجمع سائل في المسافة الجنبية. ${'وهنا شرح مفصل للكمية والأنواع وما قاله المحاضر. '.repeat(45)}
+الانصباب الجنبي تجمع سائل في المسافة الجنبية. ${filler('وهنا شرح مفصل للكمية والأنواع وما قاله المحاضر. ', 45)}
 
 | العلامة | ما تعنيه |
 |---|---|
@@ -196,7 +207,7 @@ test('القسم الذي تتعذّر كتابته يبقى نصه المفرّ
   await writeNotes(doc, new Engine(io, CAPS));
   assert.equal(doc.stats.fallback, 1);
   const text = doc.blocks.map(blockText).join(' ');
-  assert.ok(text.includes('شرح إضافي عن السائل وكميته وأنواعه'), 'تفريغ القسم موجود');
+  assert.ok(text.includes('هو تجمع سائل'), 'تفريغ القسم موجود');
   assert.ok(doc.blocks.some((b) => b.t === 'h' && b.text === 'الانصباب الجنبي'));
 });
 
@@ -348,11 +359,11 @@ test('إذا خلصت حصة Gemini أثناء الكتابة يكمل Groq بأ
   const groqUsers = [];
   io.groq = async (body) => {
     groqUsers.push(body.messages[1].content);
-    return { ok: true, status: 200, data: { choices: [{ message: { content: `## قسم\n${'شرح مفصل جداً لكل ما ورد في هذا الجزء. '.repeat(60)}` }, finish_reason: 'stop' }] } };
+    return { ok: true, status: 200, data: { choices: [{ message: { content: `## قسم\n${filler('شرح مفصل جداً لكل ما ورد في هذا الجزء. ', 60)}` }, finish_reason: 'stop' }] } };
   };
   // تفريغ طويل: قسم واحد بنحو 1400 كلمة، يناسب Gemini لكنه أكبر من حد Groq
   const doc = transcriptDoc();
-  doc.blocks = parseMarkup(Array.from({ length: 14 }, (_, i) => `فقرة ${i} ${'كلام عن [[pneumothorax]] وشرحه وأسبابه. '.repeat(20)}`).join('\n\n')).map((b) => ({ id: uid(), ...b }));
+  doc.blocks = parseMarkup(Array.from({ length: 14 }, (_, i) => `فقرة ${i} [[pneumothorax]] ${filler('كلام عن [[pneumothorax]] وشرحه وأسبابه. ', 11)}`).join('\n\n')).map((b) => ({ id: uid(), ...b }));
   const plan = { kind: 'lecture', title: 'T', sections: [{ from: 0, title: 'كل المحاضرة' }] };
   const checkpoint = { get: async (k) => (k === 'n:plan' ? null : null), set: async () => {} };
   const engine = new Engine(io, { ...CAPS, groq: true, groqModels: ['openai/gpt-oss-120b'] });
@@ -375,7 +386,7 @@ test('إذا خلصت حصة Gemini أثناء الكتابة يكمل Groq بأ
 
 test('الأقسام تُكتب معاً (4 مع Gemini) والصور والقاموس والمراجعة تعمل في نفس الوقت', async () => {
   const sections = Array.from({ length: 8 }, (_, i) => ({ from: i * 2, title: `موضوع ${i + 1}` }));
-  const paras = Array.from({ length: 16 }, (_, i) => `فقرة ${i} عن [[topic ${Math.floor(i / 2)}]] ${'وشرح طويل لها. '.repeat(30)}`);
+  const paras = Array.from({ length: 16 }, (_, i) => `فقرة ${i} عن [[topic ${Math.floor(i / 2)}]] ${filler('وشرح طويل لها. ', 30)}`);
   const doc = transcriptDoc();
   doc.blocks = parseMarkup(paras.join('\n\n')).map((b) => ({ id: uid(), ...b }));
   let inFlight = 0, maxWriting = 0;
@@ -383,7 +394,7 @@ test('الأقسام تُكتب معاً (4 مع Gemini) والصور والقا
     plan: { kind: 'lecture', title: 'T', sections },
     section: (user) => {
       const n = Number(user.match(/«موضوع (\d+)»/)[1]);
-      return gemResponse(`## موضوع ${n}\n${'شرح مفصل جداً عن [[topic ' + (n - 1) + ']] وكل ما قيل فيه. '.repeat(26)}\n\n@fig: diagram | topic ${n} diagram | topic | a diagram of topic ${n} | رسم`);
+      return gemResponse(`## موضوع ${n}\n${'شرح مفصل جداً عن [[topic ' + (n - 1) + filler(']] وكل ما قيل فيه. ', 26)}\n\n@fig: diagram | topic ${n} diagram | topic | a diagram of topic ${n} | رسم`);
     },
   });
   const base = io.gemini;
@@ -415,8 +426,8 @@ test('الشرح الأقصر من الكلام المنطوق (حذف الحش�
   // التفريغ نحو 330 كلمة لكل قسم، والشرح نحو 40% منه ويذكر كل المصطلحات
   const { io, calls } = makeIO({
     section: (user) => gemResponse(user.includes('«استرواح الصدر»')
-      ? `## استرواح الصدر\n[[pneumothorax]] هو دخول هواء إلى [[pleural space]]، وعلامته [[visceral pleural line]] مع غياب [[lung markings]]، و[[tension pneumothorax]] طارئ. ${'شرح مركز بلا تكرار. '.repeat(30)}`
-      : `## الانصباب الجنبي\n[[pleural effusion]] سائل يظهر بـ [[meniscus sign]] و[[blunting]] للـ [[costophrenic angle]]. ${'شرح مركز بلا تكرار. '.repeat(30)}`),
+      ? `## استرواح الصدر\n[[pneumothorax]] هو دخول هواء إلى [[pleural space]]، وعلامته [[visceral pleural line]] مع غياب [[lung markings]]، و[[tension pneumothorax]] طارئ. ${filler('شرح مركز بلا تكرار. ', 30)}`
+      : `## الانصباب الجنبي\n[[pleural effusion]] سائل يظهر بـ [[meniscus sign]] و[[blunting]] للـ [[costophrenic angle]]. ${filler('شرح مركز بلا تكرار. ', 30)}`),
   });
   const doc = transcriptDoc();
   await writeNotes(doc, new Engine(io, CAPS));
@@ -457,19 +468,19 @@ test('sameContent يقبل تصحيح الإملاء ويرفض الحذف وا�
   assert.equal(sameContent(md, md.replace('[[meniscus sign]] | سطح', '[[meniscus sign]] | سطح')), true);
   assert.equal(sameContent(md, md.replace(/^\| \[\[blunting.*$/m, '')), false, 'حذف صف من الجدول');
   assert.equal(sameContent(md, `${md}\n\n- نقطة جديدة لم يقلها المحاضر`), false, 'إضافة');
-  assert.equal(sameContent(md, md.replace(/وهنا شرح مفصل للكمية والأنواع وما قاله المحاضر\. /g, '')), false, 'اختصار الشرح');
+  assert.equal(sameContent(md, md.replace(/وهنا [^.]*\. /g, '')), false, 'اختصار الشرح');
 });
 
 test('الصور والتدقيق يجريان أثناء كتابة الأقسام الباقية ولا ينتظران نهايتها', async () => {
   const sections = Array.from({ length: 6 }, (_, i) => ({ from: i * 2, title: `موضوع ${i + 1}` }));
   const doc = transcriptDoc();
-  doc.blocks = parseMarkup(Array.from({ length: 12 }, (_, i) => `فقرة ${i} عن [[topic ${Math.floor(i / 2)}]] ${'وشرح طويل لها. '.repeat(30)}`).join('\n\n')).map((b) => ({ id: uid(), ...b }));
+  doc.blocks = parseMarkup(Array.from({ length: 12 }, (_, i) => `فقرة ${i} عن [[topic ${Math.floor(i / 2)}]] ${filler('وشرح طويل لها. ', 30)}`).join('\n\n')).map((b) => ({ id: uid(), ...b }));
   const log = [];
   const { io } = makeIO({
     plan: { kind: 'lecture', title: 'T', sections },
     section: (user) => {
       const n = Number(user.match(/«موضوع (\d+)»/)[1]);
-      return gemResponse(`## موضوع ${n}\n${'شرح مفصل عن [[topic ' + (n - 1) + ']] وكل ما قيل فيه. '.repeat(26)}\n\n@fig: diagram | topic ${n} diagram | topic ${n} | a diagram of topic ${n} | رسم`);
+      return gemResponse(`## موضوع ${n}\n${'شرح مفصل عن [[topic ' + (n - 1) + filler(']] وكل ما قيل فيه. ', 26)}\n\n@fig: diagram | topic ${n} diagram | topic ${n} | a diagram of topic ${n} | رسم`);
     },
     proof: (md) => md,
   });
@@ -584,7 +595,7 @@ test('Integrated: الخطة تأخذ السلايدات، والكاتب يطل
     section: (user) => {
       seen.sections.push(user);
       const first = user.includes('«استرواح الصدر»');
-      return gemResponse(`## ${first ? 'استرواح الصدر' : 'الانصباب الجنبي'}\n${'شرح يدمج السلايد مع الكلام عن [[pneumothorax]] و [[pleural effusion]]. '.repeat(30)}\n\n@slide: ${first ? 2 : 3} | ${first ? 'رسم من السلايد' : 'أشعة من السلايد'}`);
+      return gemResponse(`## ${first ? 'استرواح الصدر' : 'الانصباب الجنبي'}\n${filler('شرح يدمج السلايد مع الكلام عن [[pneumothorax]] و [[pleural effusion]]. ', 30)}\n\n@slide: ${first ? 2 : 3} | ${first ? 'رسم من السلايد' : 'أشعة من السلايد'}`);
     },
   });
   const base = io.gemini;
@@ -650,4 +661,26 @@ test('الملزمة بلغتين: نسخة إنجليزية مترجمة بنف
   assert.match(html, /data-dir="ltr"/);
   assert.match(html, /AR \+ EN/);
   assert.ok(html.indexOf('English edition') > html.indexOf('النسخة العربية'));
+});
+
+test('حارس التكرار: قسم خرج في حلقة تكرار يُطوى ويُعاد مرة بتنبيه، وبوابة الجودة تحذف الفقرات المكررة', async () => {
+  const loop = `## استرواح الصدر\n${'هسة إحنا بال first session، '.repeat(40)}\n\n- [[pneumothorax]] دخول هواء.\n\n${Array.from({ length: 12 }, () => 'هذا abdominal pain، mid-abdomen، relieved by defecation.').join(' ')}`;
+  let n = 0;
+  const { io, calls } = makeIO({ section: (user) => (user.includes('«استرواح الصدر»') ? (++n === 1 ? gemResponse(loop) : null) : null) });
+  const doc = transcriptDoc();
+  const engine = new Engine(io, CAPS);
+  assert.equal(await writeNotes(doc, engine), true);
+  const pneumoCalls = calls.section.filter((u) => u.includes('«استرواح الصدر»'));
+  assert.equal(pneumoCalls.length, 2, 'المحاولة الثانية بعد حلقة التكرار');
+  assert.match(pneumoCalls[1], /كررت الجمل/);
+  await complete(doc, engine, { io });
+  const text = doc.blocks.map(blockText).join('\n');
+  assert.ok(!/first session.*first session.*first session/.test(text), 'لا حلقة تكرار في الناتج');
+  assert.ok(doc.stats.gate, 'بوابة الجودة سُجّلت');
+  // فقرات مكررة تُحذف في البوابة
+  doc.blocks.push({ id: uid(), t: 'p', text: 'فقرة مكررة تماماً عن الانصباب الجنبي وعلاماته الشعاعية' }, { id: uid(), t: 'p', text: 'فقرة مكررة تماماً عن الانصباب الجنبي وعلاماته الشعاعية' });
+  const before = doc.blocks.length;
+  const g = qualityGate(doc);
+  assert.equal(doc.blocks.length, before - 1);
+  assert.equal(g.duplicates, 1);
 });

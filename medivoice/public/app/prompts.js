@@ -380,6 +380,11 @@ export function notesSectionPrompt(meta, s, { lang = 'ar', outline = [], source 
       ? `Warning: your previous attempt left out these terms from the transcript: ${retry.missing.join(', ')}. Make sure everything said about them is explained (unless one is clearly a mis-hearing).`
       : `تنبيه: محاولتك السابقة لم تذكر هذه المصطلحات الواردة في التفريغ: ${retry.missing.join('، ')}. تأكد أن كل ما قيل عنها مشروح (إلا إذا كان أحدها خطأ سمع واضحاً).`);
   }
+  if (retry?.repeated) {
+    lines.push(en
+      ? 'Warning: your previous attempt repeated the same sentences and phrases many times. The transcript itself may contain repeated lines (a transcription loop): write each piece of information once only, never repeat a sentence, and stop when the content ends.'
+      : 'تنبيه: محاولتك السابقة كررت الجمل والعبارات نفسها مرات كثيرة. قد يحتوي التفريغ نفسه على أسطر مكررة (خلل في التفريغ): اكتب كل معلومة مرة واحدة فقط، ولا تكرر أي جملة، وتوقف عندما ينتهي المحتوى.');
+  }
   lines.push(mode === 'highyield'
     ? (en ? 'Now write the High-Yield notes for this part, following the rules.' : 'اكتب الآن النقاط الامتحانية المكثفة لهذا الجزء وفق القواعد.')
     : (en ? 'Now write the complete detailed notes for this part, following the rules.' : 'اكتب الآن الشرح المفصل لهذا الجزء كاملاً وفق القواعد.'));
@@ -628,12 +633,11 @@ Output the translated notes only.`
 }
 
 /** ترجمة عنوان الملزمة وتعليقات الصور (JSON). */
-export function translateExtrasPrompt({ title = '', captions = [] }, { to = 'en' } = {}) {
-  const system = to === 'en'
-    ? 'You translate medical study-notes metadata from Arabic to English. Keep [[ ]] around medical terms exactly. Answer in JSON only.'
-    : 'تترجم بيانات ملزمة طبية من الإنجليزية إلى العربية الفصحى. أبقِ المصطلحات بين [[ ]] كما هي. أجب بصيغة JSON فقط.';
-  const user = `${to === 'en' ? 'Translate the title and each figure caption (keep the order; same count).' : 'ترجم العنوان وكل تعليق صورة (بنفس الترتيب والعدد).'}
+export function translateExtrasPrompt({ title = '', captions = [] }, { to = 'en', titleTo = to } = {}) {
+  const name = (l) => (l === 'en' ? 'English' : 'Arabic (فصحى)');
+  const system = 'You translate medical study-notes metadata between Arabic and English. Keep [[ ]] around medical terms exactly as they are (the terms stay in English). Answer in JSON only.';
+  const user = `Translate the title into ${name(titleTo)} and each figure caption into ${name(to)} (keep the order; same count). A short cover title, not a sentence.
 ${JSON.stringify({ title, captions }, null, 1)}
-${to === 'en' ? 'Output' : 'أخرج'}: {"title":"...","captions":["...", ...]}`;
+Output: {"title":"...","captions":["...", ...]}`;
   return { system, user };
 }
