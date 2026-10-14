@@ -34,5 +34,14 @@ const code = readFileSync(join(root, 'dist', 'worker.js'));
 const form = new FormData();
 form.append('metadata', new Blob([JSON.stringify({ main_module: 'worker.js' })], { type: 'application/json' }));
 form.append('worker.js', new Blob([code], { type: 'application/javascript+module' }), 'worker.js');
-const result = await api(`/accounts/${account}/workers/scripts/${name}/content`, { method: 'PUT', body: form });
+let result = null;
+for (let attempt = 1; attempt <= 3 && !result; attempt++) {
+  try {
+    result = await api(`/accounts/${account}/workers/scripts/${name}/content`, { method: 'PUT', body: form });
+  } catch (e) {
+    if (attempt === 3) throw e;
+    console.log(`تعذّر الرفع (${e.message || e})، أعيد المحاولة ${attempt + 1}/3…`);
+    await new Promise((r) => setTimeout(r, 4000 * attempt));
+  }
+}
 console.log(`تم الرفع: ${result?.id || name} · ${(code.length / 1024).toFixed(0)} KB`);

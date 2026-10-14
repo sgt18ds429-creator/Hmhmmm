@@ -357,10 +357,11 @@ async function refineChunk(engine, chunk, draft, meta, { first, last, exact, wea
     emit({ type: 'chunk', index: chunk.index, stage: 'listen' });
     const audio = { inline_data: { mime_type: MIME[chunk.ext] || chunk.mime, data: await io.blobToBase64(chunk.blob) } };
     let sec = draft === null ? chunk.audioSec : 0; // إذا لم يُحسب المقطع عند Whisper يُحسب هنا (مرة واحدة)
-    let best = null, useDraft = trusted, anchor = draft, insist = false, ref = null;
+    let best = null, useDraft = trusted, anchor = draft, insist = false, ref = null, looped = false;
     for (let tries = 0; tries < 3; tries++) {
       const { system, user } = audioPrompt(meta, { draft: useDraft ? anchor : '', first, last, exact: exact && useDraft && anchor === draft, insist, known });
-      const r = await engine.gemini({ system, parts: [audio, { text: user }], sec, maxTokens: 16000, thinking: 'minimal' });
+      // بعد حلقة تكرار نعيد بحرارة خفيفة: الحرارة صفر هي التي تُبقي النموذج في الحلقة
+      const r = await engine.gemini({ system, parts: [audio, { text: user }], sec, maxTokens: 16000, thinking: 'minimal', temperature: looped ? 0.3 : 0 });
       if (!r || r.blocked) break;
       sec = 0;
       // حلقة تكرار في الاستماع: نطويها ونعيد الاستماع مرة بدون المسودة (غالباً هي التي جرّته إليها)
@@ -368,7 +369,7 @@ async function refineChunk(engine, chunk, draft, meta, { first, last, exact, wea
       if (loop > 0.15) r.text = collapseMarkup(r.text).text;
       if (loop > 0.3) {
         review = true;
-        if (tries === 0) { useDraft = false; insist = true; best = best || r; continue; }
+        if (tries === 0) { useDraft = false; insist = true; looped = true; best = best || r; continue; }
       }
       const words = countWords(r.text);
       if (isEmptyMarkup(r.text)) {
@@ -1458,9 +1459,10 @@ export function qualityGate(doc) {
     return out;
   };
   const pass = (blocks) => {
-    const seen = new Set();
+    let seen = new Set(); // نطاق التكرار: القسم الواحد (## … ##)، فقائمة «أهم النقاط» يحق لها اقتباس جمل المتن
     const kept = [];
     for (const b of blocks) {
+      if (b.t === 'h' && b.level !== 3) seen = new Set();
       if (typeof b.text === 'string') b.text = fix(b.text);
       if (typeof b.caption === 'string') b.caption = fix(b.caption);
       if (b.t === 'mcq') { b.q = fix(b.q); b.why = fix(b.why || ''); }

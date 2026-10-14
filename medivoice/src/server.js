@@ -28,7 +28,7 @@ const DEFAULT_SETTINGS = {
   defaultDailyHours: 8,
   pdfPerDay: 20,
   moveLimit: 2, // كم مرة بالشهر يُسمح بنقل التفعيل لمتصفح آخر على نفس الجهاز (0 = ممنوع)
-  chunkSec: 600,
+  chunkSec: 480, // 8 دقائق: أقصر من 10 حتى لا ينزلق الاستماع إلى حلقات تكرار، والمسودات متوازية فلا يبطئ
   overlapSec: 3,
   // أقوى النماذج المجانية أولاً؛ عند نفاد حصة نموذج ينتقل للذي بعده
   sttModels: ['whisper-large-v3', 'whisper-large-v3-turbo'],
