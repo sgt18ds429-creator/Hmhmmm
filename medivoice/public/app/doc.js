@@ -1,7 +1,7 @@
 // doc.js — عرض الملزمة وتعديلها: نص، جداول، مصطلحات، صور، قاموس، النص المفرّغ الأصلي، وتصدير PDF.
 
 import { h, icon, clear, sheet, confirm, fmtSize, countOf } from './ui.js';
-import { splitInline, blockText, stripMarkup, countWords, uid, fmtTime, isNotes, MODE_LABEL } from './text.js';
+import { splitInline, blockText, stripMarkup, countWords, uid, fmtTime, isNotes, MODE_LABEL, qualityGate } from './text.js';
 import { NOTE_TYPES } from './run.js';
 import { buildPdfHtml, buildPdfParts, fmtDate, fmtDuration, dirOf } from './pdf.js';
 import { pagedRuntime } from './paged.js';
@@ -28,6 +28,18 @@ function editable(el) {
 export async function viewDoc(ctx, el, { id, fresh }) {
   const doc = await db.getLecture(id).catch(() => null);
   if (!doc) { ctx.toast('ما لقيت هذي المحاضرة على الجهاز.', 'err'); ctx.go('home'); return; }
+  // ملازم قديمة (قبل بوابة الجودة) قد تحمل تكراراً من خلل التفريغ: تُنظّف مرة واحدة عند فتحها وتُحفظ
+  if (!doc.stats?.gate) {
+    try {
+      doc.stats = doc.stats || {};
+      const g = qualityGate(doc);
+      doc.stats.gate = { ...g, onOpen: true };
+      if (g.repeats || g.duplicates || g.cycles || g.empty) {
+        await db.saveLecture(doc).catch(() => {});
+        if (g.duplicates + g.cycles >= 3) setTimeout(() => ctx.toast('نظّفت الملزمة من التكرار الناتج عن خلل التفريغ.', 'ok'), 400);
+      }
+    } catch { /* تبقى كما هي */ }
+  }
   ctx.ribbon.set({ alpha: 0, energy: 0.2 });
 
   let saveTimer = null;

@@ -524,3 +524,78 @@ export function parseJsonLoose(text) {
   if (a >= 0 && b > a) { try { return JSON.parse(s.slice(a, b + 1)); } catch {} }
   return null;
 }
+
+// ───────────── بوابة الجودة الأخيرة ─────────────
+// فحص حتمي قبل التسليم، ويُشغَّل أيضاً عند فتح ملزمة محفوظة قديمة
+
+const textKey = (t) => normalize(stripMarkup(t)).replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+/**
+ * فحص حتمي لكل كتل الملزمة (الأصل والترجمة والنص المفرّغ) قبل التسليم:
+ * - يطوي التكرار داخل كل نص (كلمة أو عبارة أو جملة مكررة).
+ * - يحذف بنود القوائم المكررة، والفقرات/الملاحظات التي تكرر فقرة سابقة في النسخة نفسها (6 كلمات فأكثر).
+ * - يحذف الكتل الفارغة.
+ * @returns إحصاء ما أُصلح
+ */
+export function qualityGate(doc) {
+  const stat = { repeats: 0, duplicates: 0, empty: 0, cycles: 0 };
+  // في المكان نفسه حتى تبقى المراجع (الواجهة والاختبارات) صالحة
+  const inPlace = (arr) => { const kept = cleanBlockList(arr, stat); arr.length = 0; arr.push(...kept); };
+  inPlace(doc.blocks);
+  if (doc.alt?.blocks) inPlace(doc.alt.blocks);
+  if (Array.isArray(doc.transcript)) inPlace(doc.transcript);
+  if (doc.stats) doc.stats.words = doc.blocks.reduce((n, b) => n + countWords(blockText(b)), 0);
+  return stat;
+}
+
+/** مفتاح مقارنة كتلة نصية (فقرة، ملاحظة، قائمة)؛ '' للكتل التي لا تُقارن (عناوين، صور، جداول). */
+const blockKey = (b) => (b.t === 'p' || b.t === 'note' ? textKey(b.text) : b.t === 'ul' || b.t === 'ol' ? textKey(b.items.join(' | ')) : '');
+
+/**
+ * ينظّف قائمة كتل: يطوي الدورات المتتالية (فقرات تعيد نفسها في حلقة)، ويطوي التكرار داخل كل نص،
+ * ويحذف البنود والفقرات المكررة داخل القسم الواحد، والكتل الفارغة.
+ */
+export function cleanBlockList(blocks, stat = { repeats: 0, duplicates: 0, empty: 0, cycles: 0 }) {
+  const fix = (t) => {
+    const out = collapseRepeats(t);
+    if (out !== t) stat.repeats++;
+    return out;
+  };
+  const cyc = collapseCycles(blocks, blockKey);
+  stat.cycles = (stat.cycles || 0) + cyc.removed;
+  let seen = new Set(); // نطاق التكرار: القسم الواحد (## … ##)، فقائمة «أهم النقاط» يحق لها اقتباس جمل المتن
+  const kept = [];
+  for (const b of cyc.items) {
+    if (b.t === 'h' && b.level !== 3) seen = new Set();
+    if (typeof b.text === 'string') b.text = fix(b.text);
+    if (typeof b.caption === 'string') b.caption = fix(b.caption);
+    if (b.t === 'mcq') { b.q = fix(b.q); b.why = fix(b.why || ''); }
+    if (Array.isArray(b.items)) {
+      const local = new Set();
+      b.items = b.items.map(fix).filter((it) => {
+        const k = textKey(it);
+        if (!k) { stat.empty++; return false; }
+        if (k.split(' ').length >= 4 && (local.has(k) || seen.has(k))) { stat.duplicates++; return false; }
+        local.add(k);
+        return true;
+      });
+      for (const it of b.items) { const k = textKey(it); if (k.split(' ').length >= 4) seen.add(k); }
+      if (!b.items.length) { stat.empty++; continue; }
+    }
+    if (Array.isArray(b.rows)) {
+      b.head = (b.head || []).map(fix);
+      b.rows = b.rows.map((r) => r.map(fix));
+    }
+    if (b.t === 'p' || b.t === 'note') {
+      const k = textKey(b.text);
+      if (!k) { stat.empty++; continue; }
+      if (k.split(' ').length >= 6) {
+        if (seen.has(k)) { stat.duplicates++; continue; }
+        seen.add(k);
+      }
+    }
+    if (b.t === 'h' && !textKey(b.text)) { stat.empty++; continue; }
+    kept.push(b);
+  }
+  return kept;
+}
