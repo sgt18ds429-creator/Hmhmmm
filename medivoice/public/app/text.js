@@ -285,6 +285,26 @@ export function blocksToMarkup(blocks) {
   return out.join('\n\n');
 }
 
+/**
+ * يعزل المقاطع اللاتينية داخل نص عربي حتى لا ينقلب ترتيبها عند التفاف السطر: عبارة إنجليزية بين قوسين
+ * مثل «(Introduction to Chest X-ray)» أو كلمات إنجليزية متتالية. يرجع [{ latin:boolean, text }].
+ * الأقواس تدخل مع العبارة، وعلامة الترقيم في آخر الجملة تبقى خارجها.
+ */
+const LATIN_TAIL = "(?:[A-Za-z0-9'’]|[-–.](?=[A-Za-z0-9]))*";
+const LATIN_RUN = new RegExp(`\\((?=\\s*[A-Za-z])[^()\\u0600-\\u06FF]{1,140}\\)|[A-Za-z]${LATIN_TAIL}(?:[ ]+[A-Za-z0-9]${LATIN_TAIL})*`, 'g');
+export function splitLatin(text) {
+  const s = String(text || '');
+  const out = [];
+  let last = 0;
+  for (const m of s.matchAll(LATIN_RUN)) {
+    if (m.index > last) out.push({ latin: false, text: s.slice(last, m.index) });
+    out.push({ latin: true, text: m[0] });
+    last = m.index + m[0].length;
+  }
+  if (last < s.length) out.push({ latin: false, text: s.slice(last) });
+  return out;
+}
+
 /** يقسم نصاً إلى مقاطع عادية ومصطلحات: [{ term:boolean, text }] */
 export function splitInline(text) {
   const out = [];

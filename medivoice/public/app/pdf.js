@@ -4,7 +4,7 @@
 // الهوية من اللوكو: تدرّج بنفسجي → أرجواني، مربعات بزوايا مدوّرة، أعمدة الصوت، وخط El Messiri للعناوين.
 // الملزمة بلغتين: جزء بلغة المحاضرة ثم جزء مترجم (doc.alt)، وبعدهما الأسئلة والقاموس والمصادر.
 
-import { splitInline, blockText, stripMarkup, isNotes, MODE_LABEL } from './text.js';
+import { splitInline, splitLatin, blockText, stripMarkup, isNotes, MODE_LABEL } from './text.js';
 import { creditLine } from './images.js';
 import { pagedRuntime } from './paged.js';
 import { markHtml, MARK_CSS } from '../brand.js';
@@ -33,8 +33,16 @@ const arabicRatio = (s) => {
 /** اتجاه نص: المصطلحات بين [[ ]] لا تُحسب. */
 export const dirOf = (text) => (arabicRatio(String(text).replace(/\[\[[^\]]*\]\]/g, '')) >= 0.3 ? 'rtl' : 'ltr');
 
+/**
+ * نص بترميز المصطلحات إلى HTML. في النص العربي تُعزل المقاطع الإنجليزية (مثل «(Introduction to Chest X-ray)»)
+ * حتى لا تنقلب أقواسها وشرطاتها عند التفاف السطر؛ والقصيرة منها لا تنكسر بين سطرين.
+ */
 export function inlineHtml(text) {
-  return splitInline(text).map((p) => (p.term ? `<span class="t">${esc(p.text)}</span>` : esc(p.text))).join('');
+  const rtl = dirOf(text) === 'rtl';
+  const plain = (t) => (rtl
+    ? splitLatin(t).map((q) => (q.latin ? `<span class="lt${q.text.length <= 36 ? ' nw' : ''}">${esc(q.text)}</span>` : esc(q.text))).join('')
+    : esc(t));
+  return splitInline(text).map((p) => (p.term ? `<span class="t${p.text.length <= 30 ? ' nw' : ''}">${esc(p.text)}</span>` : plain(p.text))).join('');
 }
 
 /** أعمدة صوت (زخرفة من اللوكو): ارتفاعات متناظرة تشبه الموجة الصوتية */
@@ -61,6 +69,8 @@ html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 body { margin: 0; font-family: 'IBM Plex Sans Arabic', 'El Messiri', 'IBM Plex Sans', 'Noto Sans Arabic', sans-serif; font-size: 11.2pt; line-height: 1.95; color: #1d1434; background: #fff; }
 .t { font-family: 'IBM Plex Sans', 'IBM Plex Sans Arabic', sans-serif; font-weight: 600; color: #5b21b6; direction: ltr; unicode-bidi: isolate; }
 .ltr { direction: ltr; unicode-bidi: isolate; }
+.lt { direction: ltr; unicode-bidi: isolate; }
+.nw { white-space: nowrap; }
 .en { font-family: 'IBM Plex Sans', 'IBM Plex Sans Arabic', sans-serif; line-height: 1.75; }
 .en .t { color: #5b21b6; }
 ${MARK_CSS}

@@ -1,7 +1,7 @@
 // doc.js — عرض الملزمة وتعديلها: نص، جداول، مصطلحات، صور، قاموس، النص المفرّغ الأصلي، وتصدير PDF.
 
 import { h, icon, clear, sheet, confirm, fmtSize, countOf } from './ui.js';
-import { splitInline, blockText, stripMarkup, countWords, uid, fmtTime, isNotes, MODE_LABEL, qualityGate } from './text.js';
+import { splitInline, splitLatin, blockText, stripMarkup, countWords, uid, fmtTime, isNotes, MODE_LABEL, qualityGate } from './text.js';
 import { NOTE_TYPES } from './run.js';
 import { buildPdfHtml, buildPdfParts, fmtDate, fmtDuration, dirOf } from './pdf.js';
 import { pagedRuntime } from './paged.js';
@@ -11,7 +11,13 @@ import * as db from './db.js';
 
 function fill(el, text) {
   clear(el);
-  for (const part of splitInline(text)) el.append(part.term ? h('span', { class: 't' }, part.text) : part.text);
+  // في النص العربي تُعزل المقاطع الإنجليزية حتى لا تنقلب أقواسها عند التفاف السطر
+  const rtl = dirOf(text) === 'rtl';
+  for (const part of splitInline(text)) {
+    if (part.term) { el.append(h('span', { class: 't' }, part.text)); continue; }
+    if (!rtl) { el.append(part.text); continue; }
+    for (const q of splitLatin(part.text)) el.append(q.latin ? h('span', { class: q.text.length <= 36 ? 'lt nw' : 'lt' }, q.text) : q.text);
+  }
   return el;
 }
 

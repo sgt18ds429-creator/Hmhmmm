@@ -307,3 +307,7 @@
 .game-progress small { position: relative; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text-2); font-size: 0.8rem; }
 .game-canvas { display: block; width: 100%; height: min(60dvh, 560px); border-radius: 20px; background: #0d0720; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
 .game-hint { margin: 0; text-align: center; color: var(--text-3); font-size: 0.8rem; }
+
+/* مقاطع إنجليزية داخل نص عربي: معزولة الاتجاه، والقصيرة لا تنكسر بين سطرين */
+.lt { direction: ltr; unicode-bidi: isolate; }
+.lt.nw { white-space: nowrap; }
