@@ -13,7 +13,8 @@ const filler = (sentence, n) => {
   const rnd = () => { x = (x * 1103515245 + 12345) % 2147483648; return x; };
   return Array.from({ length: n }, () => {
     const len = 7 + (rnd() % 3); // 7 إلى 9 كلمات كالجمل الأصلية
-    const words = Array.from({ length: len }, () => VOCAB[rnd() % VOCAB.length]);
+    const words = [];
+    while (words.length < len) { const w = VOCAB[rnd() % VOCAB.length]; if (w !== words[words.length - 1]) words.push(w); }
     return `${sentence.split(' ')[0]} ${words.join(' ')}. `;
   }).join('');
 };
@@ -170,7 +171,7 @@ test('يكتب شرحاً مفصلاً مقسماً حسب المواضيع وي
   assert.equal(calls.section.length, 2);
   assert.equal(doc.meta.mode, 'notes');
   assert.equal(doc.meta.title, 'استرواح الصدر والانصباب الجنبي');
-  assert.equal(doc.transcript, original, 'النص المفرّغ الأصلي محفوظ');
+  assert.deepEqual(doc.transcript.map(blockText), original.map(blockText), 'النص المفرّغ الأصلي محفوظ');
   const h2 = doc.blocks.filter((b) => b.t === 'h' && b.level === 2).map((b) => b.text);
   assert.deepEqual(h2, ['استرواح الصدر [[pneumothorax]]', 'الانصباب الجنبي [[pleural effusion]]', 'أهم النقاط للمراجعة']);
   assert.ok(doc.blocks.some((b) => b.t === 'table' && b.rows.length === 2), 'الجدول محفوظ');
@@ -523,7 +524,7 @@ test('عند تجاوز الوقت المسموح تُترك الأعمال ال
 
 
 // ───────────── المراجعة النهائية، الأسئلة، السلايدات ─────────────
-import { applyReview, reviewNotes, detectSlideFigures } from '../public/app/pipeline.js';
+import { applyReview, reviewNotes, detectSlideFigures, cleanBlockList, fallbackMarkup } from '../public/app/pipeline.js';
 
 test('المراجعة النهائية تطبّق التصحيحات المطابقة فقط وتضيف الناقص تحت عنوانه', async () => {
   const blocks = parseMarkup(`## استرواح الصدر
@@ -682,5 +683,29 @@ test('حارس التكرار: قسم خرج في حلقة تكرار يُطوى
   const before = doc.blocks.length;
   const g = qualityGate(doc);
   assert.equal(doc.blocks.length, before - 1);
-  assert.equal(g.duplicates, 1);
+  assert.equal(g.duplicates + g.cycles, 1);
+});
+
+
+test('بوابة الجودة تطوي حواراً يعيد نفسه في حلقة (فقرات قصيرة متتالية)، وتبقي الحوار الطبيعي', () => {
+  const blocks = [
+    { id: uid(), t: 'h', level: 2, text: 'تاريخ التغذية' },
+    { id: uid(), t: 'p', text: 'زين شنو ترضعه؟' },
+    ...Array.from({ length: 7 }, () => [{ t: 'p', text: 'إي، كم مرة تعطيه؟' }, { t: 'p', text: 'أربعة.' }, { t: 'p', text: 'أربعة؟' }]).flat().map((b) => ({ id: uid(), ...b })),
+    { id: uid(), t: 'p', text: 'أربعة.' },
+    { id: uid(), t: 'p', text: 'زين نكمل بالوزن.' },
+  ];
+  const stat = { repeats: 0, duplicates: 0, empty: 0, cycles: 0 };
+  const out = cleanBlockList(blocks, stat);
+  assert.deepEqual(out.map((b) => b.text), ['تاريخ التغذية', 'زين شنو ترضعه؟', 'إي، كم مرة تعطيه؟', 'أربعة.', 'أربعة؟', 'أربعة.', 'زين نكمل بالوزن.']);
+  assert.equal(stat.cycles, 18);
+});
+
+test('التفريغ المنسوخ احتياطاً يُقرأ: بلا تكرار، والأسطر القصيرة تُجمع في فقرات', () => {
+  const source = ['زين شنو ترضعه؟', ...Array.from({ length: 6 }, () => ['كم مرة تعطيه؟', 'أربعة.']).flat(), 'هسه نقيس الوزن ونطلعه على الـ [[growth chart]].'].join('\n');
+  const md = fallbackMarkup({ title: 'تاريخ التغذية', part: 1 }, source);
+  const blocks = parseMarkup(md);
+  assert.equal(blocks[0].t, 'h');
+  assert.equal(blocks.filter((b) => b.t === 'p').length, 1, 'فقرة واحدة مقروءة');
+  assert.equal((md.match(/كم مرة تعطيه/g) || []).length, 1);
 });

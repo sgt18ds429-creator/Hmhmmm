@@ -3,7 +3,8 @@
 import { h, icon, clear, sheet, confirm, fmtSize, countOf } from './ui.js';
 import { splitInline, blockText, stripMarkup, countWords, uid, fmtTime, isNotes, MODE_LABEL } from './text.js';
 import { NOTE_TYPES } from './run.js';
-import { buildPdfHtml, fmtDate, fmtDuration, dirOf } from './pdf.js';
+import { buildPdfHtml, buildPdfParts, fmtDate, fmtDuration, dirOf } from './pdf.js';
+import { pagedRuntime } from './paged.js';
 import { brandAssets } from '../brand.js';
 import { findCandidates, creditLine } from './images.js';
 import * as db from './db.js';
@@ -190,15 +191,18 @@ export async function viewDoc(ctx, el, { id, fresh }) {
   // سؤال اختيار من متعدد: اضغط خياراً يظهر الصحيح والتعليل
   function mcqEl(b, grip) {
     const letters = ['a', 'b', 'c', 'd'];
-    const why = h('p', { class: 'mcq-why', hidden: true });
+    const dir = dirOf(b.q);
+    const en = dir === 'ltr';
+    const why = h('p', { class: 'mcq-why', hidden: true, dir: dirOf(b.why || b.q) });
     const opts = b.opts.map((o, i) => h('button', { type: 'button', class: 'mcq-opt', onclick: () => reveal(i) }, h('b', null, letters[i]), fill(h('span', { dir: dirOf(o) }), o)));
     function reveal(i) {
       opts.forEach((el, k) => { el.classList.toggle('right', k === b.ans); el.classList.toggle('wrong', k === i && i !== b.ans); el.disabled = true; });
-      clear(why).append(h('b', null, i === b.ans ? 'صح. ' : 'الجواب الصحيح: ' + letters[b.ans] + '. '), ...splitInline(b.why || '').map((p) => (p.term ? h('span', { class: 't' }, p.text) : p.text)));
+      const verdict = i === b.ans ? (en ? 'Correct. ' : 'صح. ') : (en ? `Correct answer: ${letters[b.ans]}. ` : `الجواب الصحيح: ${letters[b.ans]}. `);
+      clear(why).append(h('b', null, verdict), ...splitInline(b.why || '').map((p) => (p.term ? h('span', { class: 't' }, p.text) : p.text)));
       why.hidden = false;
     }
     const n = doc.blocks.filter((x) => x.t === 'mcq').indexOf(b) + 1;
-    return h('div', { class: 'blk mcq' }, grip, h('div', { class: 'mcq-q', dir: dirOf(b.q) }, h('span', { class: 'mcq-n' }, `${n}`), fill(h('span'), b.q)), h('div', { class: 'mcq-opts' }, opts), why);
+    return h('div', { class: 'blk mcq', dir }, grip, h('div', { class: 'mcq-q', dir }, h('span', { class: 'mcq-n' }, `${n}`), fill(h('span'), b.q)), h('div', { class: 'mcq-opts' }, opts), why);
   }
 
   function figEl(b, grip) {
@@ -418,13 +422,34 @@ export async function viewDoc(ctx, el, { id, fresh }) {
       h('button', { class: 'btn ghost wide', onclick: () => { s.close(); exportPdf(); } }, icon('refresh'), 'حاول مرة ثانية'));
   }
 
+  /**
+   * الطباعة من الجهاز (مجانية وبلا حد): نفس صفحات ملف الخادم بترويستها وأرقامها. المستند يُبنى في إطار
+   * مخفي بحجم حقيقي، وتقسيم الصفحات يشغّله هذا السكربت على الإطار (سياسة الأمان تمنع السكربتات داخله)،
+   * ثم تُفتح نافذة الطباعة فيختار الطالب «حفظ كـ PDF».
+   */
   async function printDoc() {
-    const frame = h('iframe', { style: { position: 'fixed', width: '0', height: '0', border: '0', opacity: '0' }, 'aria-hidden': 'true' });
-    frame.srcdoc = buildPdfHtml(doc, { brand: await brandAssets() });
+    const [images, brand] = await Promise.all([pdfImages(), brandAssets()]);
+    const { html, pagedCfg } = buildPdfParts(doc, { paged: 'external', images, brand });
+    const frame = h('iframe', { title: 'طباعة', 'aria-hidden': 'true', style: { position: 'fixed', left: '-12000px', top: '0', width: '860px', height: '1200px', border: '0', opacity: '0', pointerEvents: 'none' } });
+    const wait = h('div', { class: 'stack' }, h('p', { class: 'muted' }, 'أرتّب الصفحات للطباعة…'), h('div', { class: 'progress-line' }, h('i')));
+    let printing = false;
+    const s = sheet({ title: 'تجهيز الطباعة', body: wait, onClose: () => { if (!printing) frame.remove(); } });
     frame.onload = async () => {
-      try { await frame.contentDocument.fonts?.ready; } catch { /* تجاهل */ }
-      setTimeout(() => { frame.contentWindow.focus(); frame.contentWindow.print(); setTimeout(() => frame.remove(), 60000); }, 400);
+      const w = frame.contentWindow, d = frame.contentDocument;
+      try {
+        pagedRuntime(pagedCfg, w);
+        const t0 = Date.now();
+        while (!d.documentElement.classList.contains('mv-ready') && Date.now() - t0 < 45_000) await new Promise((r) => setTimeout(r, 150));
+      } catch { /* نطبع كما هو: قواعد ‎@page‎ تكفي */ }
+      if (!frame.isConnected) return; // أغلق الطالب النافذة
+      printing = true;
+      s.close();
+      setTimeout(() => {
+        try { w.focus(); w.print(); } catch { ctx.toast('تعذّر فتح نافذة الطباعة على هذا المتصفح.', 'err'); }
+        setTimeout(() => frame.remove(), 60_000);
+      }, 250);
     };
+    frame.srcdoc = html;
     document.body.append(frame);
   }
 

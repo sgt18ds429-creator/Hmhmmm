@@ -61,7 +61,7 @@ export function collapseRepeats(text) {
   for (let pass = 0; pass < 3; pass++) {
     const before = t;
     // الوحدة الأقصر أولاً (كسول) حتى تُطوى «إنت، إنت، إنت» إلى واحدة لا إلى اثنتين
-    t = t.replace(/(\S+(?:[ \t]+\S+){0,7}?)(?:[ \t]*[،,.؛;:!؟?-]*[ \t]+\1){2,}(?=[\s،,.؛;:!؟?]|$)/gu, '$1');
+    t = t.replace(/(?<![^\s،,.؛;:!؟?(\[])(\S+(?:[ \t]+\S+){0,7}?)(?:[ \t]*[،,.؛;:!؟?-]*[ \t]+\1){2,}(?=[\s،,.؛;:!؟?)\]]|$)/gu, '$1');
     if (t === before) break;
   }
   // جمل مكررة داخل الفقرة
@@ -84,11 +84,51 @@ export function collapseRepeats(text) {
  * يطوي التكرار في نص ترميز كامل: داخل كل سطر، ثم الأسطر/الفقرات المكررة (الأقصر من 5 كلمات تُترك كما هي).
  * يرجع { text, removed } حيث removed عدد ما حُذف من أسطر وعبارات تقريبياً.
  */
+/**
+ * يطوي الدورات المتتالية في قائمة: مجموعة من 1 إلى 8 عناصر تتكرر متتالية (حوار يعيد نفسه في حلقة، مثل
+ * «كم مرة تعطيه؟ / أربعة. / أربعة؟» عشر مرات). تُبقى المجموعة مرة واحدة. الدورة القصيرة (أقل من 8 كلمات)
+ * تحتاج 3 تكرارات حتى تُطوى، والأطول يكفيها تكراران.
+ * @param keyOf دالة مفتاح المقارنة لكل عنصر ('' = عنصر لا يُقارن، مثل سطر فارغ)
+ */
+export function collapseCycles(items, keyOf) {
+  const keys = items.map(keyOf);
+  const words = keys.map((k) => (k ? k.split(' ').length : 0));
+  const keep = items.map(() => true);
+  let removed = 0;
+  let i = 0;
+  while (i < items.length) {
+    let done = false;
+    for (let len = 1; len <= 8 && !done; len++) {
+      if (i + 2 * len > items.length) break;
+      const unit = keys.slice(i, i + len);
+      if (unit.some((k) => !k)) continue;
+      let reps = 1;
+      while (i + (reps + 1) * len <= items.length && keys.slice(i + reps * len, i + (reps + 1) * len).every((k, j) => k === unit[j])) reps++;
+      const unitWords = words.slice(i, i + len).reduce((a, b) => a + b, 0);
+      if (reps >= 3 || (reps >= 2 && unitWords >= 8)) {
+        for (let j = i + len; j < i + reps * len; j++) keep[j] = false;
+        removed += (reps - 1) * len;
+        i += reps * len;
+        done = true;
+      }
+    }
+    if (!done) i++;
+  }
+  return { items: items.filter((_, k) => keep[k]), keep, removed };
+}
+
 export function collapseMarkup(markup) {
-  const lines = String(markup || '').replace(/\r/g, '').split('\n');
+  // الأسطر الفارغة لا تفصل الدورة: نقارن الأسطر غير الفارغة، ونحذف المكرر منها فقط ويبقى الباقي كما هو
+  // (الجداول والقوائم تبقى أسطرها متصلة)
+  const rawLines = String(markup || '').replace(/\r/g, '').split('\n');
+  const idx = [];
+  rawLines.forEach((l, k) => { if (l.trim() && !/^\s*\|/.test(l)) idx.push(k); });
+  const cyc = collapseCycles(idx.map((k) => rawLines[k]), (l) => sentenceKey(l));
+  const drop = new Set(idx.filter((_, j) => !cyc.keep[j]));
+  const lines = drop.size ? rawLines.filter((_, k) => !drop.has(k)) : rawLines;
   const seen = new Set();
   const out = [];
-  let removed = 0;
+  let removed = cyc.removed;
   for (const raw of lines) {
     const line = raw.trim() ? collapseRepeats(raw) : raw;
     if (line !== raw) removed++;

@@ -186,6 +186,8 @@ const NOTES_RULES = {
 - هذا شرح مفصل وليس ملخصاً: ممنوع اختصار الأفكار أو دمجها بطريقة تُضيع تفاصيلها، وممنوع إسقاط أي نقطة علمية حتى الصغيرة أو الجانبية منها.
 - إذا وضّح المحاضر فكرة بمثال أو تشبيه أو حالة مريض فاكتبه أيضاً، لأنه يساعد على الفهم.
 - احذف فقط ما ليس علماً: التحية والكلام الإداري والمزاح والنداء على الطلبة، والتكرار الحرفي للفكرة نفسها (اكتبها مرة واحدة بأوضح وأكمل صيغة).
+- إذا كانت المحاضرة نقاشاً أو حالة سريرية بأسئلة وأجوبة بين الأستاذ والطلبة، فحوّل الحوار إلى شرح علمي منظم: المعلومة الصحيحة التي استقر عليها النقاش، وتصحيحات الأستاذ، وطريقة التفكير السريري؛ ولا تنقل الحوار سطراً بسطر.
+- التفريغ الآلي قد يكرر السطر أو المقطع نفسه مرات متتالية (خلل في التفريغ وليس كلام المحاضر): اكتب معلومته مرة واحدة فقط، ولا تكرر أي جملة في ما تكتبه.
 
 2) الصحة:
 - التفريغ آلي وفيه أخطاء سمع، خصوصاً في المصطلحات والأرقام وأسماء التراكيب. افهم المقصود من السياق ومن معرفتك الطبية واكتبه صحيحاً (مثلاً «كارديو ميجالي» تُكتب [[cardiomegaly]]).
@@ -212,6 +214,8 @@ const NOTES_RULES = {
 - These are detailed notes, not a short summary: do not compress ideas in a way that loses details, and never drop any scientific point, however small.
 - If the lecturer explained an idea with an example, analogy or patient case, include it.
 - Remove only what is not content: greetings, admin talk, jokes, calling on students, and literal repetition of the same idea (write it once, in its clearest and most complete form).
+- If the lecture is a discussion or a clinical case with questions and answers between the teacher and students, turn the dialogue into organised notes: the correct information the discussion settled on, the teacher's corrections and the clinical reasoning; do not copy the dialogue line by line.
+- An automatic transcript may repeat the same line or passage several times in a row (a transcription glitch, not the lecturer): write that information once only, and never repeat a sentence in your notes.
 
 2) Correctness:
 - The transcript is automatic and has mis-heard words, especially terms, numbers and structure names. Infer what was meant from context and your medical knowledge, and write it correctly.
@@ -239,6 +243,7 @@ const HIGH_YIELD_RULES = {
 - أبقِ: التعريفات الأساسية، التصنيفات والأنواع، الأرقام والقيم والنسب، العلامات والأعراض المميزة، الفروق بين الحالات المتشابهة، الآليات باختصار، خطوات التشخيص والعلاج الأساسية، وكل ما شدّد عليه المحاضر أو قال إنه يأتي بالامتحان.
 - احذف: الشرح المطوّل، التكرار، الأمثلة الطويلة والقصص، الكلام الإداري والمزاح، والتفاصيل التي لا تُسأل في الامتحان.
 - لا تُسقط معلومة امتحانية مهمة بحجة الاختصار، ولا تضف معلومة لم يذكرها المحاضر.
+- إذا كانت المحاضرة نقاشاً بأسئلة وأجوبة فاستخرج منها المعلومات الصحيحة التي استقر عليها النقاش، لا الحوار نفسه. والتفريغ قد يكرر السطر نفسه مرات (خلل آلي): اكتب المعلومة مرة واحدة، ولا تكرر أي نقطة.
 
 2) الصحة:
 - التفريغ آلي وفيه أخطاء سمع في المصطلحات والأرقام. افهم المقصود من السياق ومن معرفتك الطبية واكتبه صحيحاً.
@@ -262,6 +267,7 @@ const HIGH_YIELD_RULES = {
 - Keep: core definitions, classifications and types, numbers, values and percentages, distinguishing signs and symptoms, differences between similar conditions, mechanisms in brief, key diagnostic and treatment steps, and everything the lecturer stressed or said would be examined.
 - Drop: long explanations, repetition, long examples and stories, admin talk and jokes, and details that are never examined.
 - Never drop an exam-relevant fact for the sake of brevity, and never add a fact the lecturer did not mention.
+- If the lecture is a question-and-answer discussion, extract the correct facts it settled on, not the dialogue. The transcript may repeat a line several times (a transcription glitch): state each fact once and never repeat a point.
 
 2) Correctness:
 - The transcript is automatic and mis-hears terms and numbers. Infer what was meant from context and medical knowledge and write it correctly.

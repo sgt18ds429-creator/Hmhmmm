@@ -196,7 +196,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
   const playGame = () => {
     if (game || !running) return;
     ctx.ribbon.pause?.(); // الشريط المتحرك يتوقف أثناء اللعبة حتى لا يتنافسا على الرسم
-    game = openGame({ onClose: () => { game = null; ctx.ribbon.resume?.(); } });
+    game = openGame({ onClose: () => { game = null; ctx.ribbon.resume?.(); flushLive(); } });
     game.update(shown, status.textContent);
   };
   const gameBtn = h('button', { class: 'btn game-btn', onclick: playGame }, icon('play'), 'العب سباق سيارات لحد ما تجهز');
@@ -255,11 +255,18 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
     if (at < 0) return;
     [...stages.children].forEach((li, i) => { li.classList.toggle('ok', i < at); li.classList.toggle('on', i === at); });
   }
+  // أثناء اللعبة لا نرسم المعاينة (مخفية خلفها) حتى لا تنافس اللعبة على الرسم؛ تُرسم آخر حالة عند الإغلاق
+  let liveQueue = [];
   function showLive(blocks, { reset = false, keep = 14 } = {}) {
+    if (game) { if (reset) liveQueue = []; liveQueue.push({ blocks: blocks.slice(-keep), reset }); if (liveQueue.length > 6) liveQueue.splice(0, liveQueue.length - 6); return; }
     if (reset) clear(live);
     live.append(...liveNodes(blocks.slice(-keep)));
     while (live.children.length > 60) live.firstChild.remove();
     live.scrollTop = live.scrollHeight;
+  }
+  function flushLive() {
+    const q = liveQueue; liveQueue = [];
+    for (const { blocks, reset } of q) showLive(blocks, { reset });
   }
   const pending = new Map();
   let nextLive = 0, showingNotes = false, stageNow = '', imagesPicked = 0;

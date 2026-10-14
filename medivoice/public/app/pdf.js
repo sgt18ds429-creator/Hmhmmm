@@ -203,6 +203,15 @@ const L = ['a', 'b', 'c', 'd'];
  * @param opts.screen true لمعاينة الشاشة
  */
 export function buildPdfHtml(doc, opts = {}) {
+  return buildPdfParts(doc, opts).html;
+}
+
+/**
+ * مثل buildPdfHtml لكن يرجع أيضاً إعدادات تقسيم الصفحات، لمن يشغّل pagedRuntime بنفسه
+ * (الطباعة من جهاز المستخدم: opts.paged = 'external' فلا يُضمَّن السكربت).
+ * @returns {{ html: string, pagedCfg: object }}
+ */
+export function buildPdfParts(doc, opts = {}) {
   const meta = doc.meta || {};
   const title = String(meta.title || 'محاضرة');
   const notes = isNotes(meta.mode);
@@ -306,10 +315,11 @@ ${mcqParts.join('\n')}
   const header = cssStr(plainTitle).slice(0, 70);
   // الترويسة تتكرر في كل صفحة: نسخة صغيرة من اللوكو حتى لا يتضخم الملف
   const pageHead = `<header class="pg-head"><span class="pg-title" dir="${dirOf(title)}">${esc(plainTitle)}</span><span class="pg-brand" dir="rtl"><img src="${esc(brand.logoSmall || logoUrl)}" alt="">ميدي فويز</span></header><div class="pg-body"></div><footer class="pg-foot"><b class="pg-num"></b><i class="pg-total"></i></footer>`;
-  const paged = opts.paged ? `<script>(${pagedRuntime.toString()})(${scriptJson({ dir, firstPage: 2, fonts: PAGED_FONTS, pagedCss: PAGED_CSS, pageHtml: pageHead })});</script>` : '';
+  const pagedCfg = { dir, firstPage: 2, fonts: PAGED_FONTS, pagedCss: PAGED_CSS, pageHtml: pageHead };
+  const paged = opts.paged === true ? `<script>(${pagedRuntime.toString()})(${scriptJson(pagedCfg)});</script>` : '';
   const kindLabel = notes ? `${MODE_LABEL[meta.mode] || 'Notes'}${alt ? ' · AR + EN' : ''}` : 'ملزمة محاضرة';
 
-  return `<!doctype html>
+  const html = `<!doctype html>
 <html lang="${mainLang === 'en' ? 'en' : 'ar'}" dir="${dir}">
 <head>
 <meta charset="utf-8">
@@ -353,4 +363,5 @@ ${src}
 ${paged}
 </body>
 </html>`;
+  return { html, pagedCfg };
 }

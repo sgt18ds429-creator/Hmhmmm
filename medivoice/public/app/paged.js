@@ -7,15 +7,19 @@
 // فنبني الصفحات بأنفسنا: كل صفحة عنصر بقياس الورقة تماماً، ونثبّت فواصل الأسطر كما حسبها
 // المتصفح وقت القياس حتى لا يتغيّر عددها عند الطباعة.
 
-export function pagedRuntime(cfg) {
-  const d = document;
+export function pagedRuntime(cfg, win) {
+  // win: نافذة المستند المطلوب تقسيمه. على الخادم يُحقن السكربت داخل المستند نفسه (win فارغة)،
+  // وفي المتصفح تستدعيه الصفحة الأم على إطار الطباعة (سياسة الأمان تمنع السكربتات المضمّنة فيه)
+  const W = win || window;
+  const d = W.document;
+  const getComputedStyle = (el) => W.getComputedStyle(el);
   const root = d.documentElement;
   const flow = d.getElementById('flow');
   // العناصر التي تحمل نصاً يلتف على أسطر
   const TEXT = 'p, h2, h3, li, .note, figcaption, figcaption small, td, th, .endnote, .sources a';
   const MIN_KEEP = 2; // أقل عدد أسطر يبقى أسفل الصفحة
   const MIN_REST = 2; // أقل عدد أسطر ينتقل للصفحة التالية
-  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const wait = (ms) => new Promise((r) => W.setTimeout(r, ms));
 
   async function assetsReady() {
     const text = (d.body.textContent || '').slice(0, 400000);
@@ -32,7 +36,7 @@ export function pagedRuntime(cfg) {
   // نصوص العنصر نفسه، بدون نصوص العناصر النصية المتداخلة داخله (تُثبَّت لوحدها)
   function ownTexts(block) {
     const out = [];
-    const w = d.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    const w = d.createTreeWalker(block, 4 /* NodeFilter.SHOW_TEXT */);
     for (let n = w.nextNode(); n; n = w.nextNode()) if (n.parentElement.closest(TEXT) === block) out.push(n);
     return out;
   }

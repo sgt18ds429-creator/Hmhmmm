@@ -150,6 +150,40 @@ async function* copyChunks(blob, info, { targetSec, overlap, maxBytes, signal })
   }
 }
 
+/**
+ * يضغط مقطعاً إلى Opus أحادي منخفض المعدل (للكلام) قبل رفعه: نحو ربع الحجم، فيصير الرفع أسرع بكثير على
+ * بيانات الهاتف. النماذج تحوّل الصوت إلى 16kHz أحادي على أي حال، فلا تنقص دقة السمع.
+ * يرجع المقطع نفسه بلا تغيير إذا لم يدعم المتصفح الترميز أو فشل أي شيء.
+ */
+let opusOk = null; // null = لم يُجرَّب بعد، false = غير مدعوم في هذا المتصفح
+export async function compressChunk(chunk, { bitrate = 32000, signal } = {}) {
+  if (opusOk === false || !chunk?.blob || chunk.ext === 'ogg') return chunk;
+  if (chunk.blob.size < 400_000) return chunk; // صغير أصلاً
+  const input = newInput(chunk.blob);
+  try {
+    const output = new Output({ format: new OggOutputFormat(), target: new BufferTarget() });
+    const conversion = await Conversion.init({
+      input, output,
+      video: { discard: true },
+      audio: { codec: 'opus', numberOfChannels: 1, sampleRate: 16000, bitrate, forceTranscode: true },
+      showWarnings: false,
+    });
+    if (!conversion.isValid) { opusOk = false; return chunk; }
+    if (signal) signal.addEventListener('abort', () => conversion.cancel().catch(() => {}), { once: true });
+    await conversion.execute();
+    const buffer = output.target.buffer;
+    if (!buffer || buffer.byteLength < 1000 || buffer.byteLength >= chunk.blob.size * 0.8) return chunk;
+    opusOk = true;
+    return { ...chunk, blob: new Blob([buffer], { type: 'audio/ogg' }), ext: 'ogg', mime: 'audio/ogg', compressed: { from: chunk.blob.size, to: buffer.byteLength } };
+  } catch (e) {
+    if (signal?.aborted) throw new AudioError('aborted', 'أُلغيت العملية');
+    if (opusOk === null) opusOk = false; // فشل من أول مرة: لا نحاول ثانية
+    return chunk;
+  } finally {
+    input.dispose();
+  }
+}
+
 async function* transcodeChunks(blob, info, { targetSec, overlap, signal }) {
   const endOfFile = info.firstTs + info.duration;
   let index = 0;

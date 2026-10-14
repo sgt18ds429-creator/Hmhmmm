@@ -2,10 +2,10 @@
 // → لصق → فهم المحاضرة وكتابتها شرحاً مفصلاً → قاموس المصطلحات → صور توضيحية مُتحقَّق من مطابقتها.
 // لا يعتمد على المتصفح مباشرة: كل اتصال يمر عبر كائن io حتى يُختبر في Node أيضاً.
 
-import { chunkAudio, probeAudio, AudioError } from './chunker.js';
+import { chunkAudio, probeAudio, compressChunk, AudioError } from './chunker.js';
 import {
   cleanWhisper, pickCut, wordsBetween, wordsToText, splitByWords, parseMarkup, joinChunks, blocksToMarkup,
-  countWords, collectTerms, blockText, stripMarkup, parseJsonLoose, uid, langOf, termsIn, textHash, normalize, isNotes, repetitionScore, collapseMarkup, collapseRepeats,
+  countWords, collectTerms, blockText, stripMarkup, parseJsonLoose, uid, langOf, termsIn, textHash, normalize, isNotes, repetitionScore, collapseMarkup, collapseRepeats, collapseCycles,
 } from './text.js';
 import {
   whisperPrompt, audioPrompt, cleanupPrompt, glossaryPrompt, figuresPrompt, translatePrompt, translateExtrasPrompt,
@@ -96,7 +96,7 @@ export class Engine {
 
   // ── نسخ حرفي (Gemini Transcribe) ──
   /** @returns {Promise<{text:string, model:string}|null>} نص حرفي للمقطع (المصطلحات قد تأتي بحروف عربية) */
-  async transcribe(chunk, { sec = 0 } = {}) {
+  async transcribe(chunk, { sec = 0, data = null } = {}) {
     let fails = 0;
     for (let attempt = 0; attempt < 7; attempt++) {
       this.check();
@@ -108,7 +108,7 @@ export class Engine {
         continue;
       }
       const body = {
-        contents: [{ role: 'user', parts: [{ inline_data: { mime_type: MIME[chunk.ext] || chunk.mime, data: await this.io.blobToBase64(chunk.blob) } }, { text: 'Transcribe this audio verbatim, in the language spoken.' }] }],
+        contents: [{ role: 'user', parts: [{ inline_data: { mime_type: MIME[chunk.ext] || chunk.mime, data: data || await this.io.blobToBase64(chunk.blob) } }, { text: 'Transcribe this audio verbatim, in the language spoken.' }] }],
         generationConfig: { temperature: 0 },
       };
       const res = await this.io.gemini(m.id, body, { sec, signal: this.signal });
@@ -205,6 +205,7 @@ export class Engine {
       const res = await this.io.gemini(m.id, body, { sec, signal: this.signal });
       this.tally(m.id, res);
       if (res.ok && res.data) {
+        m.fails = 0;
         const cand = res.data.candidates?.[0];
         const text = (cand?.content?.parts || []).filter((p) => !p.thought && typeof p.text === 'string').map((p) => p.text).join('');
         const reason = cand?.finishReason || '';
@@ -231,9 +232,17 @@ export class Engine {
       if (res.status === 400 && /thinking/i.test(msg) && !m.plain) { m.plain = true; continue; }
       if (res.status === 404 || res.status === 400 && /not (found|supported)|no longer available/i.test(msg)) { m.dead = true; continue; }
       if (res.status === 400 || res.status === 413) return { blocked: true, reason: `bad_request: ${msg.slice(0, 120)}` };
-      if (res.status === 503 || res.status === 500) { this.gem.cool(m, 8000); if (++netFails > 6) return null; continue; }
-      if (++netFails > 4) return null;
-      await this.pause(1200 * 2 ** netFails, 'net');
+      // ضغط على النموذج (503/500) أو انقطاع: نهدّئه مدة تطول مع كل فشل وننتقل لغيره، ولا نستسلم بسرعة
+      // (في المساء تكثر 503 على النماذج المجانية، والاستسلام يعني ملزمة ناقصة)
+      if (res.status === 503 || res.status === 500 || res.status === 502 || res.status === 504 || res.status === 0) {
+        netFails++;
+        m.fails = (m.fails || 0) + 1;
+        this.gem.cool(m, Math.min(30_000, 6000 * m.fails));
+        if (netFails > 14) return null;
+        continue;
+      }
+      if (++netFails > 6) return null;
+      await this.pause(Math.min(20_000, 1200 * 2 ** netFails), 'net');
     }
     return null;
   }
@@ -292,9 +301,9 @@ export class Engine {
    * كتابة نص طويل (الشرح المفصل): أدق نماذج Gemini أولاً، ثم Groq.
    * @returns {Promise<{text, model, truncated}|{blocked:true}|null>} null = لا يوجد محرك متاح الآن
    */
-  async write({ system, user, maxTokens = 16000, groqTokens = 4000, temperature = 0.2, groq = true, thinking = null, lite = false }) {
+  async write({ system, user, maxTokens = 16000, groqTokens = 4000, temperature = 0.2, groq = true, gemini = true, thinking = null, lite = false }) {
     let blocked = null;
-    if (this.hasGemini) {
+    if (gemini && this.hasGemini) {
       // عند التأخر لا ننتظر النماذج الدقيقة إذا كانت في تهدئة: الخفيفة أسرع ولها حدود أعلى
       const r = await this.gemini({ system, parts: [{ text: user }], maxTokens, temperature, thinking, lite, strongWaitMs: lite || this.late(0.6) ? 0 : 40_000 });
       if (r && !r.blocked) return r;
@@ -341,21 +350,35 @@ async function refineChunk(engine, chunk, draft, meta, { first, last, exact, wea
   const notes = isNotes(meta.mode);
   let review = false;
 
-  // نسخ حرفي موازٍ (Gemini Transcribe): مرجع أدق من Whisper لاكتمال ما سمعه النموذج الرئيسي،
-  // وبديل أفضل من المسودة إذا تعذّر الاستماع. يعمل بالتوازي فلا يبطئ المقطع إلا قليلاً.
-  const txJob = engine.hasTx && chunk.blob.size <= GEMINI_MAX_INLINE ? engine.transcribe(chunk).catch((e) => { if (e instanceof PipelineError && FATAL.includes(e.code)) throw e; return null; }) : null;
+  // الصوت بصيغة base64 يُحسب مرة واحدة ويُشارك بين الاستماع والنسخ الحرفي
+  let b64 = null;
+  const audioData = async () => (b64 ??= await io.blobToBase64(chunk.blob));
+
+  // نسخ حرفي (Gemini Transcribe): مرجع أدق من Whisper لاكتمال ما سمعه النموذج الرئيسي، وبديل إذا تعذّر الاستماع.
+  // يبدأ بالتوازي فقط عندما لا توجد مسودة موثوقة؛ وإلا يُطلب عند الحاجة (الاستماع أقصر من المسودة بكثير)،
+  // فلا يُرفع المقطع مرتين في الحالة الغالبة
+  let txJob = null;
+  const startTx = () => {
+    if (!txJob && engine.hasTx && chunk.blob.size <= GEMINI_MAX_INLINE) {
+      txJob = audioData().then((data) => engine.transcribe(chunk, { data })).catch((e) => { if (e instanceof PipelineError && FATAL.includes(e.code)) throw e; return null; });
+    }
+    return txJob;
+  };
   const reference = async (waitMs) => {
-    if (!txJob) return null;
+    if (!startTx()) return null;
     const r = await Promise.race([txJob, io.sleep(waitMs, engine.signal).then(() => undefined)]);
     if (!r || countWords(r.text) < 30) return null;
     if (repetitionScore(r.text) > 0.3) return null; // النسخ الحرفي في حلقة تكرار: لا يصلح مرجعاً
     return { ...r, text: collapseMarkup(r.text).text };
   };
+  if (!trusted) startTx();
+  // الكلمات «الفعلية»: النص المتكرر يُحسب بقدر ما فيه من كلام غير مكرر، حتى لا يفوز الناتج الأطول بتكراره
+  const eff = (text) => countWords(text) * (1 - Math.min(1, repetitionScore(text)));
 
   // 1) Gemini يستمع للصوت
   if (engine.hasGemini && chunk.blob.size <= GEMINI_MAX_INLINE) {
     emit({ type: 'chunk', index: chunk.index, stage: 'listen' });
-    const audio = { inline_data: { mime_type: MIME[chunk.ext] || chunk.mime, data: await io.blobToBase64(chunk.blob) } };
+    const audio = { inline_data: { mime_type: MIME[chunk.ext] || chunk.mime, data: await audioData() } };
     let sec = draft === null ? chunk.audioSec : 0; // إذا لم يُحسب المقطع عند Whisper يُحسب هنا (مرة واحدة)
     let best = null, useDraft = trusted, anchor = draft, insist = false, ref = null, looped = false;
     for (let tries = 0; tries < 3; tries++) {
@@ -364,23 +387,21 @@ async function refineChunk(engine, chunk, draft, meta, { first, last, exact, wea
       const r = await engine.gemini({ system, parts: [audio, { text: user }], sec, maxTokens: 16000, thinking: 'minimal', temperature: looped ? 0.3 : 0 });
       if (!r || r.blocked) break;
       sec = 0;
-      // حلقة تكرار في الاستماع: نطويها ونعيد الاستماع مرة بدون المسودة (غالباً هي التي جرّته إليها)
+      // حلقة تكرار في الاستماع: نطويها، ونعيد الاستماع مرة بدون المسودة (غالباً هي التي جرّته إليها)
       const loop = repetitionScore(r.text);
       if (loop > 0.15) r.text = collapseMarkup(r.text).text;
-      if (loop > 0.3) {
-        review = true;
-        if (tries === 0) { useDraft = false; insist = true; looped = true; best = best || r; continue; }
-      }
+      if (!best || eff(r.text) > eff(best.text)) best = r;
+      if (loop > 0.3 && tries === 0) { review = true; useDraft = false; insist = true; looped = true; continue; }
       const words = countWords(r.text);
       if (isEmptyMarkup(r.text)) {
         // قال «لا يوجد كلام» و Whisper سمع كلاماً: محاولة ثانية بدون المسودة مع تأكيد كتابة أي كلام أو غناء
-        if (draftWords > 25 && tries === 0) { useDraft = false; insist = true; continue; }
-        if (!best) best = { ...r, text: '' };
+        if (draftWords > 25 && tries === 0) { useDraft = false; insist = true; best = null; continue; }
+        if (!best || isEmptyMarkup(best.text)) best = { ...r, text: '' };
         break;
       }
-      if (!best || words > countWords(best.text)) best = r;
-      // فحص الاكتمال: مقابل النسخ الحرفي إن وصل (الأدق)، وإلا مقابل مسودة Whisper الموثوقة
-      if (ref === null) ref = await reference(35_000);
+      // فحص الاكتمال: مقابل مسودة Whisper الموثوقة، أو النسخ الحرفي إن لم توجد مسودة (أو بدا الاستماع ناقصاً)
+      const short = trusted ? words < draftWords * 0.62 : true;
+      if (ref === null && short) ref = await reference(trusted ? 60_000 : 35_000);
       const refWords = ref ? countWords(ref.text) : trusted ? draftWords : 0;
       if (refWords < 40 || words >= refWords * (ref ? 0.78 : 0.62)) break;
       review = true;
@@ -390,6 +411,14 @@ async function refineChunk(engine, chunk, draft, meta, { first, last, exact, wea
     if (best) {
       const words = countWords(best.text);
       const refWords = ref ? countWords(ref.text) : 0;
+      // ما زال في حلقة بعد الطي والإعادة: النسخ الحرفي النظيف أفضل منه
+      if (repetitionScore(best.text) > 0.3) {
+        const clean = ref || await reference(45_000);
+        if (clean) {
+          const markup = notes ? clean.text : (await cleanupDraft(engine, clean.text, meta, first)) || clean.text;
+          return { markup, engine: 'gemini-tx', model: clean.model, review: true };
+        }
+      }
       if (ref && refWords >= 40 && words < refWords * 0.55) {
         // النموذج أسقط جزءاً كبيراً ولم تنفع الإعادة: النسخ الحرفي كامل، والكاتب يصحح مصطلحاته من السياق
         const markup = notes ? ref.text : (await cleanupDraft(engine, ref.text, meta, first)) || ref.text;
@@ -502,22 +531,29 @@ export async function runLecture({ file, meta, cfg, caps, io, emit = () => {}, s
   const sttSlot = async () => { while (sttActive >= sttLimit) await new Promise((r) => sttWaiters.push(r)); sttActive++; };
   const sttFree = () => { sttActive--; sttWaiters.shift()?.(); };
   let chain = Promise.resolve({ cutEnd: -Infinity, tail: '' });
-  const maxInFlight = 4 + engine.par;
+  // مقاطع قيد المعالجة في نفس الوقت: كل مقطع يمسك صوته في الذاكرة حتى ينتهي، فلا نكثر على الهاتف
+  const maxInFlight = 2 + engine.par;
+  let compressedBytes = 0;
 
   try {
-    for await (const chunk of chunkAudio(file, { info, targetSec: cfg.chunkSec, overlapSec: overlap, maxBytes: GEMINI_MAX_INLINE, signal })) {
+    for await (const rawChunk of chunkAudio(file, { info, targetSec: cfg.chunkSec, overlapSec: overlap, maxBytes: GEMINI_MAX_INLINE, signal })) {
       engine.check();
       if (failure) throw failure;
-      emit({ type: 'chunk', index: chunk.index, stage: 'cut', start: chunk.start, end: chunk.end, last: chunk.last });
+      emit({ type: 'chunk', index: rawChunk.index, stage: 'cut', start: rawChunk.start, end: rawChunk.end, last: rawChunk.last });
 
-      const saved = checkpoint ? await checkpoint.get(chunk.index) : null;
-      if (saved && Math.abs(saved.start - chunk.start) < 0.01) {
+      const saved = checkpoint ? await checkpoint.get(rawChunk.index) : null;
+      if (saved && Math.abs(saved.start - rawChunk.start) < 0.01) {
+        const chunk = rawChunk;
         parts[chunk.index] = saved;
         noteTerms(saved.markup);
         chain = chain.then(() => ({ cutEnd: saved.cutEnd ?? chunk.end, tail: saved.tail || '' }));
         emit({ type: 'part', index: chunk.index, part: saved, resumed: true });
         continue;
       }
+      // ضغط المقطع إلى Opus أحادي للكلام (ربع الحجم تقريباً): يُرفع ثلاث مرات (Whisper والاستماع والمرجع)،
+      // فالرفع على بيانات الهاتف يصير أسرع بكثير. إذا لم يدعمه المتصفح يبقى المقطع كما هو
+      const chunk = cfg.compress === false ? rawChunk : await compressChunk(rawChunk, { signal });
+      if (chunk.compressed) compressedBytes += chunk.compressed.from - chunk.compressed.to;
 
       // مسودة Whisper لهذا المقطع (تبدأ فوراً)
       const prompt = whisperPrompt(meta, '');
@@ -593,6 +629,8 @@ export async function runLecture({ file, meta, cfg, caps, io, emit = () => {}, s
       chunks: done.length,
       engines: done.reduce((acc, p) => { acc[p.engine] = (acc[p.engine] || 0) + 1; return acc; }, {}),
       review: done.filter((p) => p.review).map((p) => ({ start: p.start, end: p.end })),
+      savedUploadMB: Math.round(compressedBytes / 1e5) / 10,
+      listenSec: Math.round((Date.now() - engine.t0) / 1000),
     },
     source: { name: file.name || '', size: file.size },
   };
@@ -766,16 +804,31 @@ function tidySection(markup, s) {
   return md;
 }
 
-/** عند تعذّر الكتابة: يبقى تفريغ القسم كما هو تحت عنوانه حتى لا يضيع شيء. */
-function fallbackMarkup(s, source) {
-  return tidySection(source, s);
+/**
+ * عند تعذّر الكتابة: يبقى تفريغ القسم تحت عنوانه حتى لا يضيع شيء، لكن مقروءاً: بلا تكرار،
+ * والأسطر القصيرة المتتالية (حوار) تُجمع في فقرات.
+ */
+export function fallbackMarkup(s, source) {
+  const clean = collapseMarkup(source).text;
+  const out = [];
+  let buf = [];
+  const flush = () => { if (buf.length) { out.push(buf.join(' ')); buf = []; } };
+  for (const line of clean.split('\n')) {
+    const t = line.trim();
+    if (!t) { if (buf.join(' ').split(/\s+/).length >= 40) flush(); continue; }
+    if (/^(#{1,4}\s|[-*•]\s|\d+[.)]\s|>\s|\||@)/.test(t)) { flush(); out.push(t); continue; }
+    buf.push(t);
+    if (buf.join(' ').split(/\s+/).length >= 90) flush();
+  }
+  flush();
+  return tidySection(out.join('\n\n'), s);
 }
 
 async function writeSection(engine, meta, plan, s, paras, opts, depth = 0) {
-  const { lang, known, images, mode = 'notes', slides = null } = opts;
+  const { lang, known, images, mode = 'notes', slides = null, groqOnly = false } = opts;
   const words = sumWords(paras, s.from, s.to);
-  const splittable = s.to - s.from > 1 && depth < 2;
-  const lim = () => limitFor(engine, mode);
+  const splittable = s.to - s.from > 1 && depth < 3;
+  const lim = () => (groqOnly ? LIMIT.groq : limitFor(engine, mode));
   const high = mode === 'highyield';
   // نص سلايدات هذا القسم وصورها (النوع المتكامل)
   let slideText = null, slideFigs = [];
@@ -801,9 +854,18 @@ async function writeSection(engine, meta, plan, s, paras, opts, depth = 0) {
   for (let attempt = 0; attempt < 2; attempt++) {
     const { system, user } = notesSectionPrompt(meta, s, { lang, outline: plan.titles, source, words, known, images, retry, mode, slides: slideText, slideFigs });
     // قسم بحجم Gemini لا يُرسل لـ Groq كاملاً (أكبر من حده بالدقيقة)
-    const r = await engine.write({ system, user, maxTokens: lim().tokens, groqTokens: LIMIT.groq.tokens, groq: !splittable || words <= LIMIT.groq.words * 1.3 });
+    const r = await engine.write({ system, user, maxTokens: lim().tokens, groqTokens: LIMIT.groq.tokens, groq: groqOnly || !splittable || words <= LIMIT.groq.words * 1.3, gemini: !groqOnly });
     // خلصت حصة Gemini أثناء الطلب: نكمل القسم على أجزاء بحجم Groq
     if (!r && !best && tooBig()) return inPieces(splitRange(paras, s.from, s.to, lim().words));
+    // Gemini تعذّر الآن (ضغط متواصل أو حجب): نكتب القسم بأجزاء بحجم Groq بدل أن يبقى نصاً مفرّغاً
+    if ((!r || r.blocked) && !best && !groqOnly && engine.hasGroqLlm) {
+      const pieces = splitRange(paras, s.from, s.to, LIMIT.groq.words);
+      const outs = [];
+      for (let k = 0; k < pieces.length; k++) {
+        outs.push(await writeSection(engine, meta, plan, { ...s, from: pieces[k][0], to: pieces[k][1], part: s.part + k, parts: s.parts + pieces.length - 1 }, paras, { ...opts, groqOnly: true }, depth + 1));
+      }
+      return joinResults(outs);
+    }
     if (!r || r.blocked) break;
     const loop = repetitionScore(r.text);
     const text = tidySection(loop > 0.15 ? collapseMarkup(r.text).text : r.text, s);
@@ -905,7 +967,8 @@ async function keyPoints(engine, meta, blocks, lang) {
 export async function writeNotes(doc, engine, { emit = () => {}, checkpoint = null } = {}) {
   const meta = doc.meta;
   const mode = isNotes(meta.mode) ? meta.mode : 'notes';
-  const transcript = doc.transcript || doc.blocks;
+  // التفريغ يُنظّف من حلقات التكرار قبل أن يقرأه الكاتب (وإلا نسخها في الشرح)
+  const transcript = cleanBlockList((doc.transcript || doc.blocks).map((b) => ({ ...b })));
   const paras = transcriptParas(transcript);
   if (!paras.length) return false;
   const lang = langOf(paras.map((p) => p.text).join(' '));
@@ -1452,56 +1515,66 @@ const textKey = (t) => normalize(stripMarkup(t)).replace(/[^\p{L}\p{N}]+/gu, ' '
  * @returns إحصاء ما أُصلح
  */
 export function qualityGate(doc) {
-  const stat = { repeats: 0, duplicates: 0, empty: 0 };
-  const fix = (t) => {
-    const out = collapseRepeats(t);
-    if (out !== t) stat.repeats++;
-    return out;
-  };
-  const pass = (blocks) => {
-    let seen = new Set(); // نطاق التكرار: القسم الواحد (## … ##)، فقائمة «أهم النقاط» يحق لها اقتباس جمل المتن
-    const kept = [];
-    for (const b of blocks) {
-      if (b.t === 'h' && b.level !== 3) seen = new Set();
-      if (typeof b.text === 'string') b.text = fix(b.text);
-      if (typeof b.caption === 'string') b.caption = fix(b.caption);
-      if (b.t === 'mcq') { b.q = fix(b.q); b.why = fix(b.why || ''); }
-      if (Array.isArray(b.items)) {
-        const local = new Set();
-        b.items = b.items.map(fix).filter((it) => {
-          const k = textKey(it);
-          if (!k) { stat.empty++; return false; }
-          if (k.split(' ').length >= 4 && (local.has(k) || seen.has(k))) { stat.duplicates++; return false; }
-          local.add(k);
-          return true;
-        });
-        for (const it of b.items) { const k = textKey(it); if (k.split(' ').length >= 4) seen.add(k); }
-        if (!b.items.length) { stat.empty++; continue; }
-      }
-      if (Array.isArray(b.rows)) {
-        b.head = (b.head || []).map(fix);
-        b.rows = b.rows.map((r) => r.map(fix));
-      }
-      if (b.t === 'p' || b.t === 'note') {
-        const k = textKey(b.text);
-        if (!k) { stat.empty++; continue; }
-        if (k.split(' ').length >= 6) {
-          if (seen.has(k)) { stat.duplicates++; continue; }
-          seen.add(k);
-        }
-      }
-      if (b.t === 'h' && !textKey(b.text)) { stat.empty++; continue; }
-      kept.push(b);
-    }
-    return kept;
-  };
+  const stat = { repeats: 0, duplicates: 0, empty: 0, cycles: 0 };
   // في المكان نفسه حتى تبقى المراجع (الواجهة والاختبارات) صالحة
-  const inPlace = (arr) => { const kept = pass(arr); arr.length = 0; arr.push(...kept); };
+  const inPlace = (arr) => { const kept = cleanBlockList(arr, stat); arr.length = 0; arr.push(...kept); };
   inPlace(doc.blocks);
   if (doc.alt?.blocks) inPlace(doc.alt.blocks);
   if (Array.isArray(doc.transcript)) inPlace(doc.transcript);
   if (doc.stats) doc.stats.words = doc.blocks.reduce((n, b) => n + countWords(blockText(b)), 0);
   return stat;
+}
+
+/** مفتاح مقارنة كتلة نصية (فقرة، ملاحظة، قائمة)؛ '' للكتل التي لا تُقارن (عناوين، صور، جداول). */
+const blockKey = (b) => (b.t === 'p' || b.t === 'note' ? textKey(b.text) : b.t === 'ul' || b.t === 'ol' ? textKey(b.items.join(' | ')) : '');
+
+/**
+ * ينظّف قائمة كتل: يطوي الدورات المتتالية (فقرات تعيد نفسها في حلقة)، ويطوي التكرار داخل كل نص،
+ * ويحذف البنود والفقرات المكررة داخل القسم الواحد، والكتل الفارغة.
+ */
+export function cleanBlockList(blocks, stat = { repeats: 0, duplicates: 0, empty: 0, cycles: 0 }) {
+  const fix = (t) => {
+    const out = collapseRepeats(t);
+    if (out !== t) stat.repeats++;
+    return out;
+  };
+  const cyc = collapseCycles(blocks, blockKey);
+  stat.cycles = (stat.cycles || 0) + cyc.removed;
+  let seen = new Set(); // نطاق التكرار: القسم الواحد (## … ##)، فقائمة «أهم النقاط» يحق لها اقتباس جمل المتن
+  const kept = [];
+  for (const b of cyc.items) {
+    if (b.t === 'h' && b.level !== 3) seen = new Set();
+    if (typeof b.text === 'string') b.text = fix(b.text);
+    if (typeof b.caption === 'string') b.caption = fix(b.caption);
+    if (b.t === 'mcq') { b.q = fix(b.q); b.why = fix(b.why || ''); }
+    if (Array.isArray(b.items)) {
+      const local = new Set();
+      b.items = b.items.map(fix).filter((it) => {
+        const k = textKey(it);
+        if (!k) { stat.empty++; return false; }
+        if (k.split(' ').length >= 4 && (local.has(k) || seen.has(k))) { stat.duplicates++; return false; }
+        local.add(k);
+        return true;
+      });
+      for (const it of b.items) { const k = textKey(it); if (k.split(' ').length >= 4) seen.add(k); }
+      if (!b.items.length) { stat.empty++; continue; }
+    }
+    if (Array.isArray(b.rows)) {
+      b.head = (b.head || []).map(fix);
+      b.rows = b.rows.map((r) => r.map(fix));
+    }
+    if (b.t === 'p' || b.t === 'note') {
+      const k = textKey(b.text);
+      if (!k) { stat.empty++; continue; }
+      if (k.split(' ').length >= 6) {
+        if (seen.has(k)) { stat.duplicates++; continue; }
+        seen.add(k);
+      }
+    }
+    if (b.t === 'h' && !textKey(b.text)) { stat.empty++; continue; }
+    kept.push(b);
+  }
+  return kept;
 }
 
 // ───────────── النسخة الثانية: ترجمة الملزمة كاملة ─────────────
@@ -1539,15 +1612,14 @@ export function sameShape(src, out) {
 const cleanModelText = (t) => String(t || '').replace(/\r/g, '').replace(/^```[a-z]*\n?|```\s*$/gim, '').replace(/^<<<\n?|\n?>>>$/g, '').trim();
 
 /** يترجم قسماً واحداً (الكتل النصية فقط). يرجع الكتل المترجمة أو null. */
-async function translateSection(engine, blocks, { to, meta }) {
-  const text = blocks.filter((b) => TEXT_TYPES.has(b.t));
-  if (!text.length) return [];
+/** يترجم مجموعة كتل نصية متتالية بطلب واحد (محاولتان، والبنية يجب أن تبقى كما هي). */
+async function translateGroup(engine, text, { to, meta, strong = false }) {
   const markup = blocksToMarkup(text);
   let best = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     engine.check();
     const { system, user } = translatePrompt(markup, { to, meta });
-    const r = await engine.write({ system, user, maxTokens: 14000, groqTokens: 7000, thinking: 'minimal', lite: true });
+    const r = await engine.write({ system, user, maxTokens: 12000, groqTokens: 5000, thinking: 'minimal', lite: !strong });
     if (!r?.text || r.blocked) continue;
     if (repetitionScore(r.text) > 0.3 && attempt === 0) continue; // حلقة تكرار: محاولة ثانية
     const out = parseMarkup(collapseMarkup(cleanModelText(r.text)).text).filter((b) => TEXT_TYPES.has(b.t)).map((b) => ({ id: uid(), ...b }));
@@ -1560,9 +1632,38 @@ async function translateSection(engine, blocks, { to, meta }) {
   return best;
 }
 
+/** كتل متتالية في مجموعات لا تتجاوز كل منها maxWords (الكتلة الأكبر تبقى وحدها). */
+function groupByWords(blocks, maxWords) {
+  const out = [];
+  let cur = [], n = 0;
+  for (const b of blocks) {
+    const w = countWords(blockText(b));
+    if (cur.length && n + w > maxWords) { out.push(cur); cur = []; n = 0; }
+    cur.push(b); n += w;
+  }
+  if (cur.length) out.push(cur);
+  return out;
+}
+
 /**
- * يترجم شرح الملزمة إلى اللغة الأخرى (عربي ↔ إنجليزي) قسماً قسماً، أربعة أقسام معاً.
- * يرجع { to, sections } حيث sections[i] كتل القسم i مترجمة (أو null إذا تعذر).
+ * يترجم قسماً: على مجموعات صغيرة (نحو 650 كلمة) حتى تكون الطلبات سريعة ولا تنقطع، وتصلح لـ Groq إذا ضغطت Gemini.
+ * يرجع الكتل المترجمة أو null إذا تعذّرت مجموعة منها.
+ */
+async function translateSection(engine, blocks, { to, meta, strong = false }) {
+  const text = blocks.filter((b) => TEXT_TYPES.has(b.t));
+  if (!text.length) return [];
+  const out = [];
+  for (const group of groupByWords(text, 650)) {
+    const t = await translateGroup(engine, group, { to, meta, strong });
+    if (!t) return null;
+    out.push(...t);
+  }
+  return out;
+}
+
+/**
+ * يترجم شرح الملزمة إلى اللغة الأخرى (عربي ↔ إنجليزي) قسماً قسماً بالتوازي، ثم يعيد ما تعذّر بنموذج أقوى.
+ * يرجع { to, out } حيث out[i] كتل القسم i مترجمة (أو null إذا تعذر).
  */
 export async function translateBlocks(doc, engine, { emit = () => {} }) {
   const from = doc.lang || langOf(doc.blocks.map(blockText).join(' '));
@@ -1571,17 +1672,22 @@ export async function translateBlocks(doc, engine, { emit = () => {} }) {
   if (!sections.length) return null;
   emit({ type: 'stage', name: 'translate', to });
   let done = 0;
-  const out = await mapLimit(sections, engine.hasGemini ? Math.min(8, 2 + 2 * engine.par) : 2, async (sec) => {
-    if (engine.late(1.2)) return null;
+  const attempt = (strong) => async (sec) => {
     try {
-      const r = await translateSection(engine, sec, { to, meta: doc.meta });
-      emit({ type: 'translate', done: ++done, total: sections.length });
+      const r = await translateSection(engine, sec, { to, meta: doc.meta, strong });
+      if (r) emit({ type: 'translate', done: ++done, total: sections.length });
       return r;
     } catch (e) {
       if (isFatal(e)) throw e;
       return null;
     }
-  });
+  };
+  const out = await mapLimit(sections, engine.hasGemini ? Math.min(8, 2 + 2 * engine.par) : 2, async (sec) => (engine.late(1.2) ? null : attempt(false)(sec)));
+  // جولة ثانية لما تعذّر: بالنموذج الأقوى المتاح، قسماً قسماً
+  for (let i = 0; i < sections.length; i++) {
+    if (out[i] || engine.late(1.35)) continue;
+    out[i] = await attempt(true)(sections[i]);
+  }
   const ok = out.filter(Boolean).length;
   if (ok < Math.ceil(sections.length / 2)) return null; // أكثر من نصف الأقسام لم يُترجم: لا نسخة ثانية
   return { to, out };
@@ -1600,7 +1706,13 @@ export async function finishAlt(doc, engine, tr, kp, body) {
   sections.forEach((sec, i) => {
     const text = sec.filter((b) => TEXT_TYPES.has(b.t));
     let t = out[i];
-    if (!t) { partial = true; t = text.map((b) => ({ ...b, id: uid(), untranslated: true })); }
+    if (!t) {
+      // آخر احتياط: يبقى النص الأصلي مسبوقاً بتنبيه واضح بلغة النسخة، حتى لا يضيع المحتوى
+      partial = true;
+      const head = text.find((b) => b.t === 'h');
+      const note = { id: uid(), t: 'note', text: to === 'en' ? 'This section could not be translated right now; it follows in the original language.' : 'تعذّرت ترجمة هذا القسم الآن، فهو بلغته الأصلية.' };
+      t = [...(head ? [{ ...head, id: uid(), untranslated: true }] : []), note, ...text.filter((b) => b !== head).map((b) => ({ ...b, id: uid(), untranslated: true }))];
+    }
     // الصور في مواضعها النسبية داخل القسم (بعد نفس عدد الكتل النصية)
     const placed = [...t];
     let before = 0, inserted = 0;
@@ -1706,8 +1818,13 @@ export async function reviewNotes(doc, engine, { emit = () => {} } = {}) {
   if (transcript.length > budget) { transcript = transcript.slice(0, budget); condensed = true; }
   const { system, user } = reviewNotesPrompt(doc.meta, notes, transcript, { lang, mode: doc.meta.mode, condensed });
   try {
-    const r = await engine.gemini({ system, parts: [{ text: user }], json: true, maxTokens: 14000, thinking: 'low', strongWaitMs: 45_000 });
-    const parsed = r?.text ? parseJsonLoose(r.text) : null;
+    // محاولتان: النماذج الخفيفة (عند نفاد حصة الأقوى) تقطع JSON الطويل أحياناً
+    let r = null, parsed = null;
+    for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
+      r = await engine.gemini({ system, parts: [{ text: attempt ? `${user}\n\n${lang === 'en' ? 'Keep the JSON short: at most 25 fixes and 10 additions.' : 'اجعل JSON مختصراً: 25 تصحيحاً و10 إضافات كحد أقصى.'}` : user }], json: true, maxTokens: 14000, thinking: 'low', strongWaitMs: 45_000 });
+      parsed = r?.text ? parseJsonLoose(r.text) : null;
+      if (!r) break; // لا نموذج متاح الآن
+    }
     if (!parsed) { emit({ type: 'note', code: 'review_failed' }); return null; }
     const { fixes, added } = applyReview(doc.blocks, parsed);
     doc.stats.audit = { fixes, added, verdict: String(parsed.verdict || '').slice(0, 200), model: r.model };
