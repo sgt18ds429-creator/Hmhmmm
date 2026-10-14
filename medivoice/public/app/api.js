@@ -2,7 +2,21 @@
 
 const headers = { 'x-mv': '1' };
 
-async function wrap(promise) {
+/**
+ * إشارة إلغاء بحد زمني تجمع إلغاء المستخدم (signal) مع مهلة. انتهاء المهلة ليس إلغاءً: الطلب يُعامل
+ * كانقطاع شبكة فيُعاد، أما إلغاء المستخدم فيوقف كل شيء. (timedOut يميّزهما حتى في المتصفحات الأقدم)
+ */
+function withTimeout(ms, signal) {
+  const ctrl = new AbortController();
+  const tm = { signal: ctrl.signal, timedOut: false };
+  const t = setTimeout(() => { tm.timedOut = true; ctrl.abort(); }, ms);
+  const onAbort = () => ctrl.abort();
+  if (signal) { if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort, { once: true }); }
+  tm.done = () => { clearTimeout(t); signal?.removeEventListener?.('abort', onAbort); };
+  return tm;
+}
+
+async function wrap(promise, tm = null) {
   try {
     const res = await promise;
     const text = await res.text();
@@ -11,8 +25,33 @@ async function wrap(promise) {
     const ra = parseFloat(res.headers.get('retry-after'));
     return { ok: res.ok, status: res.status, data, retryAfter: Number.isFinite(ra) ? ra : (data?.retry_after ?? null) };
   } catch (e) {
+    if (tm?.timedOut) return { ok: false, status: 0, data: { error: { message: 'timeout' } }, retryAfter: null };
     if (e?.name === 'AbortError') throw e;
     return { ok: false, status: 0, data: null, retryAfter: null };
+  } finally {
+    tm?.done();
+  }
+}
+
+/** طلب JSON للخادم بمهلة (لا يعلق التحويل أبداً على اتصال متوقف). */
+function call(url, init, ms) {
+  const tm = withTimeout(ms, init.signal);
+  return wrap(fetch(url, { ...init, signal: tm.signal }), tm);
+}
+
+/** fetch بمهلة يرمي عند انتهائها خطأ عادياً (لا AbortError) حتى يُعامل كفشل وليس كإلغاء. */
+async function fetchWithin(url, init = {}, ms = 20_000) {
+  const tm = withTimeout(ms, init.signal);
+  try {
+    const res = await fetch(url, { ...init, signal: tm.signal });
+    // الجسم يُقرأ داخل المهلة نفسها
+    const blob = await res.blob();
+    return { res, blob };
+  } catch (e) {
+    if (tm.timedOut) throw new Error('timeout');
+    throw e;
+  } finally {
+    tm.done();
   }
 }
 
@@ -37,19 +76,15 @@ export function blobToBase64(blob) {
 const viaProxy = (url) => `/api/fetch?u=${encodeURIComponent(url)}`;
 
 async function fetchBlob(url, { proxy = false, signal } = {}) {
-  // المحاولة الأولى مباشرة من جهاز المستخدم، وإذا مُنعت (حدّ طلبات أو CORS) نمر عبر الخادم
+  // المحاولة الأولى مباشرة من جهاز المستخدم، وإذا مُنعت (حدّ طلبات أو CORS) أو تأخرت نمر عبر الخادم
   if (!proxy) {
     try {
-      const res = await fetch(url, { mode: 'cors', credentials: 'omit', referrerPolicy: 'no-referrer', signal });
-      if (res.ok) {
-        const blob = await res.blob();
-        if (blob.type.startsWith('image/')) return blob;
-      }
+      const { res, blob } = await fetchWithin(url, { mode: 'cors', credentials: 'omit', referrerPolicy: 'no-referrer', signal }, 15_000);
+      if (res.ok && blob.type.startsWith('image/')) return blob;
     } catch (e) { if (e?.name === 'AbortError') throw e; }
   }
-  const res = await fetch(viaProxy(url), { credentials: 'same-origin', signal });
+  const { res, blob } = await fetchWithin(viaProxy(url), { credentials: 'same-origin', signal }, 30_000);
   if (!res.ok) throw new Error(`image ${res.status}`);
-  const blob = await res.blob();
   if (!blob.type.startsWith('image/')) throw new Error('not an image');
   return blob;
 }
@@ -95,25 +130,26 @@ export function makeIO() {
       fd.append('timestamp_granularities[]', 'word');
       fd.append('timestamp_granularities[]', 'segment');
       fd.append('temperature', '0');
-      return wrap(fetch(`/api/stt?sec=${Math.round(sec)}`, { method: 'POST', headers, body: fd, credentials: 'same-origin', signal }));
+      return call(`/api/stt?sec=${Math.round(sec)}`, { method: 'POST', headers, body: fd, credentials: 'same-origin', signal }, 240_000);
     },
     groq(body, { signal } = {}) {
-      return wrap(fetch('/api/groq', { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body), credentials: 'same-origin', signal }));
+      return call('/api/groq', { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body), credentials: 'same-origin', signal }, 240_000);
     },
     gemini(model, body, { sec = 0, signal } = {}) {
-      return wrap(fetch(`/api/gemini?model=${encodeURIComponent(model)}&sec=${Math.round(sec)}`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body), credentials: 'same-origin', signal }));
+      // كتابة قسم طويل قد تأخذ دقيقتين أو ثلاثاً؛ المهلة تمنع التعليق فقط إذا توقف الاتصال
+      return call(`/api/gemini?model=${encodeURIComponent(model)}&sec=${Math.round(sec)}`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body), credentials: 'same-origin', signal }, 420_000);
     },
     net: {
       async json(url, { proxy = false } = {}) {
         if (!proxy) {
           try {
-            const res = await fetch(url, { mode: 'cors', credentials: 'omit' });
-            if (res.ok) return await res.json();
+            const { res, blob } = await fetchWithin(url, { mode: 'cors', credentials: 'omit' }, 12_000);
+            if (res.ok) return JSON.parse(await blob.text());
           } catch { /* نجرب عبر الخادم */ }
         }
-        const res = await fetch(viaProxy(url), { credentials: 'same-origin' });
+        const { res, blob } = await fetchWithin(viaProxy(url), { credentials: 'same-origin' }, 30_000);
         if (!res.ok) throw new Error(`fetch ${res.status}`);
-        return res.json();
+        return JSON.parse(await blob.text());
       },
     },
     /** يقصّ جزءاً من صورة (data URL) حسب مربع [ymin, xmin, ymax, xmax] على مقياس 0..1000، ويرجع JPEG */

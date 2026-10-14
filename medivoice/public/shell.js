@@ -119,8 +119,14 @@ export function fingerprint() {
   return { os, scr: `${s[0]}x${s[1]}@${Math.round((devicePixelRatio || 1) * 10) / 10}` };
 }
 
-export async function api(path, { method = 'GET', body, raw, headers = {}, signal } = {}) {
-  const init = { method, headers: { ...headers }, credentials: 'same-origin', signal };
+export async function api(path, { method = 'GET', body, raw, headers = {}, signal, timeoutMs = 45_000 } = {}) {
+  // مهلة: اتصال متوقف يُعامل كانقطاع (status 0) ولا يعلّق الواجهة
+  const ctrl = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, timeoutMs);
+  const onAbort = () => ctrl.abort();
+  if (signal) { if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort, { once: true }); }
+  const init = { method, headers: { ...headers }, credentials: 'same-origin', signal: ctrl.signal };
   if (method !== 'GET') init.headers['x-mv'] = '1';
   if (raw !== undefined) init.body = raw;
   else if (body !== undefined) { init.body = JSON.stringify(body); init.headers['content-type'] = 'application/json'; }
@@ -131,8 +137,11 @@ export async function api(path, { method = 'GET', body, raw, headers = {}, signa
     const ra = parseFloat(res.headers.get('retry-after'));
     return { ok: res.ok, status: res.status, data, res, retryAfter: Number.isFinite(ra) ? ra : null };
   } catch (e) {
-    if (e?.name === 'AbortError') throw e;
+    if (!timedOut && e?.name === 'AbortError') throw e;
     return { ok: false, status: 0, data: null, retryAfter: null };
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener?.('abort', onAbort);
   }
 }
 

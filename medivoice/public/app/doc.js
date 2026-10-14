@@ -399,19 +399,24 @@ export async function viewDoc(ctx, el, { id, fresh }) {
     let cancelled = false;
     const controller = new AbortController();
     const s = sheet({ title: 'تجهيز PDF', body: box, onClose: () => { cancelled = true; controller.abort(); } });
-    let blob = null, error = '';
+    let blob = null, error = '', timedOut = false;
     for (let attempt = 0; attempt < 3 && !blob && !cancelled; attempt++) {
+      // مهلة دقيقتين ونصف للطلب كله (مع تنزيل الملف): إذا علق خادم التحويل نعرض الطباعة من الجهاز
+      const slow = setTimeout(() => { timedOut = true; controller.abort(); }, 150_000);
       try {
         const res = await fetch('/api/pdf', { method: 'POST', headers: { 'x-mv': '1', 'content-type': 'text/html; charset=utf-8' }, body: html, credentials: 'same-origin', signal: controller.signal });
-        if (res.ok && (res.headers.get('content-type') || '').includes('pdf')) { blob = await res.blob(); break; }
+        if (res.ok && (res.headers.get('content-type') || '').includes('pdf')) { blob = await res.blob(); clearTimeout(slow); break; }
         const data = await res.json().catch(() => ({}));
+        clearTimeout(slow);
         error = data.error || `http_${res.status}`;
         if (error !== 'pdf_busy') break;
         stateText.textContent = 'الخادم مشغول بطلب آخر، أعيد المحاولة بعد ثوانٍ…';
         await new Promise((r) => setTimeout(r, 11000));
       } catch (e) {
-        if (e?.name === 'AbortError') return;
-        error = 'network';
+        clearTimeout(slow);
+        if (e?.name === 'AbortError' && !timedOut) return;
+        error = timedOut ? 'timeout' : 'network';
+        if (timedOut) break;
       }
     }
     if (cancelled) return;
@@ -434,7 +439,7 @@ export async function viewDoc(ctx, el, { id, fresh }) {
       : error === 'pdf_quota' ? 'خلصت حصة الخادم اليومية لتوليد PDF، وتتجدد الساعة 3 الفجر.'
       : error === 'pdf_busy' ? 'خادم التحويل مشغول الآن.'
       : error === 'too_large' ? 'الملزمة كبيرة على الخادم (صور كثيرة).'
-      : error === 'network' ? 'انقطع الاتصال.' : 'تعذّر تجهيز الملف على الخادم.';
+      : error === 'network' ? 'انقطع الاتصال.' : error === 'timeout' ? 'خادم التحويل تأخر كثيراً.' : 'تعذّر تجهيز الملف على الخادم.';
     clear(box).append(
       h('p', { class: 'muted' }, `${why} تقدر تحفظها من نافذة الطباعة: اختر «حفظ كـ PDF».`),
       h('button', { class: 'btn wide', onclick: () => { s.close(); printDoc(); } }, icon('print'), 'فتح نافذة الطباعة'),

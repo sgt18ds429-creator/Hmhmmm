@@ -1185,17 +1185,29 @@ export async function enrich(doc, engine, { io, emit = () => {} }) {
       for (let i = 0; i < found.length; i += 30) batches.push(found.slice(i, i + 30));
       const clean = (list) => (Array.isArray(list) ? list : []).filter((t) => t && typeof t.en === 'string' && typeof t.ar === 'string' && t.en.trim())
         .map((t) => ({ en: t.en.trim().slice(0, 80), ar: t.ar.trim().slice(0, 80), def: String(t.def || '').trim().slice(0, 220) }));
+      const ask = async (batch, prefer) => {
+        const { system, user } = glossaryPrompt(meta, batch);
+        const r = await engine.json({ system, user, maxTokens: 6000, prefer });
+        return clean(r?.terms);
+      };
+      const tries = [];
       const results = await mapLimit(batches, 3, async (batch) => {
-        let best = [];
-        for (let attempt = 0; attempt < 2; attempt++) {
-          const { system, user } = glossaryPrompt(meta, batch);
-          const r = await engine.json({ system, user, maxTokens: 6000, prefer: 'gemini-lite' });
-          const got = clean(r?.terms);
-          if (got.length >= batch.length * 0.6) return got;
-          if (got.length > best.length) best = got;
+        let best = await ask(batch, 'gemini-lite');
+        // ناقصة: محاولة ثانية، ثم نصفين (الدفعة الأولى فيها أهم المصطلحات، فلا نتركها تضيع)
+        if (best.length < batch.length * 0.6) {
+          const again = await ask(batch, 'gemini');
+          if (again.length > best.length) best = again;
         }
+        if (best.length < batch.length * 0.6 && batch.length > 8) {
+          const half = Math.ceil(batch.length / 2);
+          const parts = await Promise.all([ask(batch.slice(0, half), 'gemini-lite'), ask(batch.slice(half), 'gemini-lite')]);
+          const joined = parts.flat();
+          if (joined.length > best.length) best = joined;
+        }
+        tries.push(`${best.length}/${batch.length}`);
         return best;
       });
+      doc.stats.glossary = tries;
       const terms = results.flat();
       const seen = new Set();
       doc.terms = terms.filter((t) => { const k = t.en.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; })
