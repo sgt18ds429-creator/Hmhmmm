@@ -28,6 +28,26 @@ export const countWords = (s) => tokens(s).length;
 
 export const uid = () => Math.random().toString(36).slice(2, 10);
 
+/** يقسم نصاً إلى جمل بعد علامات النهاية (تبقى العلامة مع جملتها). بدون lookbehind لدعم المتصفحات الأقدم. */
+export function splitSentences(text, endChar) {
+  const s = String(text || '');
+  const out = [];
+  let start = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (!endChar.test(s[i])) continue;
+    let j = i + 1;
+    while (j < s.length && endChar.test(s[j])) j++;
+    if (j < s.length && /\s/.test(s[j])) {
+      out.push(s.slice(start, j));
+      while (j < s.length && /\s/.test(s[j])) j++;
+      start = j;
+    }
+    i = j - 1;
+  }
+  if (start < s.length) out.push(s.slice(start));
+  return out;
+}
+
 // ───────────── حارس التكرار ─────────────
 // النماذج (وWhisper) تنزلق أحياناً إلى حلقة تكرار: كلمة أو جملة تتكرر عشرات المرات. هذه الدوال تكشفها وتطويها.
 
@@ -61,11 +81,12 @@ export function collapseRepeats(text) {
   for (let pass = 0; pass < 3; pass++) {
     const before = t;
     // الوحدة الأقصر أولاً (كسول) حتى تُطوى «إنت، إنت، إنت» إلى واحدة لا إلى اثنتين
-    t = t.replace(/(?<![^\s،,.؛;:!؟?(\[])(\S+(?:[ \t]+\S+){0,7}?)(?:[ \t]*[،,.؛;:!؟?-]*[ \t]+\1){2,}(?=[\s،,.؛;:!؟?)\]]|$)/gu, '$1');
+    // بداية الوحدة: أول النص أو بعد فاصل (بدون lookbehind حتى يعمل على متصفحات iPhone الأقدم)
+    t = t.replace(/(^|[\s،,.؛;:!؟?(\[])(\S+(?:[ \t]+\S+){0,7}?)(?:[ \t]*[،,.؛;:!؟?-]*[ \t]+\2){2,}(?=[\s،,.؛;:!؟?)\]]|$)/gu, '$1$2');
     if (t === before) break;
   }
   // جمل مكررة داخل الفقرة
-  const parts = t.split(/(?<=[.!؟?])\s+/);
+  const parts = splitSentences(t, /[.!؟?]/);
   if (parts.length > 1) {
     const seen = new Set();
     const kept = [];
@@ -330,7 +351,7 @@ export function langOf(text) {
 }
 
 /** مفتاح مقارنة لمصطلح: أحرف صغيرة بلا رموز ولا جمع بسيط. */
-export const termKey = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().replace(/(?<=[a-z]{3})(es|s)$/, '');
+export const termKey = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().replace(/([a-z]{3})(?:es|s)$/, '$1');
 
 /** المصطلحات الواردة بين [[ ]] في نص (مفاتيح فريدة مع أول صيغة ظهرت). */
 export function termsIn(text) {
@@ -452,7 +473,7 @@ export const wordsToText = (words) => words.map((x) => x.w).join(' ').replace(/\
 
 /** يقسم نصاً طويلاً إلى أجزاء لا تتجاوز maxWords، ويقطع عند نهايات الجمل ما أمكن. */
 export function splitByWords(text, maxWords) {
-  const sentences = String(text).split(/(?<=[.؟?!…])\s+|\n+/).filter((s) => s.trim());
+  const sentences = String(text).split(/\n+/).flatMap((line) => splitSentences(line, /[.؟?!…]/)).filter((s) => s.trim());
   const parts = [];
   let cur = [], n = 0;
   const push = () => { if (cur.length) { parts.push(cur.join(' ')); cur = []; n = 0; } };
