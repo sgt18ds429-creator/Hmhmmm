@@ -170,14 +170,18 @@ export async function compressChunk(chunk, { bitrate = 32000, signal } = {}) {
     });
     if (!conversion.isValid) { opusOk = false; return chunk; }
     if (signal) signal.addEventListener('abort', () => conversion.cancel().catch(() => {}), { once: true });
-    await conversion.execute();
+    // حد زمني: إذا علق الترميز على متصفح ما، نلغيه ونرفع المقطع كما هو (لا يتوقف التحويل أبداً بسببه)
+    const limitMs = Math.max(40_000, (chunk.audioSec || 0) * 120);
+    let timer = null;
+    const timeout = new Promise((_, rej) => { timer = setTimeout(() => { conversion.cancel().catch(() => {}); rej(new Error('compress timeout')); }, limitMs); });
+    try { await Promise.race([conversion.execute(), timeout]); } finally { clearTimeout(timer); }
     const buffer = output.target.buffer;
     if (!buffer || buffer.byteLength < 1000 || buffer.byteLength >= chunk.blob.size * 0.8) return chunk;
     opusOk = true;
     return { ...chunk, blob: new Blob([buffer], { type: 'audio/ogg' }), ext: 'ogg', mime: 'audio/ogg', compressed: { from: chunk.blob.size, to: buffer.byteLength } };
   } catch (e) {
     if (signal?.aborted) throw new AudioError('aborted', 'أُلغيت العملية');
-    if (opusOk === null) opusOk = false; // فشل من أول مرة: لا نحاول ثانية
+    if (opusOk === null || /timeout/.test(e?.message || '')) opusOk = false; // فشل من أول مرة أو بطيء جداً: لا نحاول ثانية
     return chunk;
   } finally {
     input.dispose();
