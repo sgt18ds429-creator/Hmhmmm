@@ -426,7 +426,9 @@ export class MediVoiceStore extends DurableObject {
       this.sql.exec('UPDATE codes SET groq_enc = ?, groq_hint = ? WHERE code = ?', await this.#seal(list[0]), hintOf(list[0]), c.code.code);
     } else {
       const current = add ? parseKeys(await this.#open(c.code.gemini_enc)) : [];
-      const merged = [...new Set([...current, ...list])].slice(0, MAX_GEMINI_KEYS);
+      const all = [...new Set([...current, ...list])];
+      if (all.length > MAX_GEMINI_KEYS) return { ok: false, status: 400, error: 'too_many_keys' };
+      const merged = all;
       this.sql.exec('UPDATE codes SET gemini_enc = ?, gemini_hint = ? WHERE code = ?', await this.#seal(JSON.stringify(merged)), merged.map(hintOf).join(' · '), c.code.code);
     }
     this.#event('key_linked', { code: c.code.code, detail: provider });
@@ -692,23 +694,41 @@ const FETCH_ALLOW = [
 ];
 const fetchAllowed = (u) => u.protocol === 'https:' && !u.username && !u.port && FETCH_ALLOW.some(([host, path]) => host.test(u.hostname) && path.test(u.pathname));
 
+const FETCH_MAX_BYTES = 25 * 1024 * 1024;
+
 async function proxyFetch(request, target) {
   const ua = `MediVoice/1.0 (${new URL(request.url).origin}; medical lecture notes tool)`;
-  let up;
-  try {
-    up = await fetch(target.href, { headers: { 'user-agent': ua, 'api-user-agent': ua, accept: 'application/json, image/*' }, redirect: 'follow', signal: AbortSignal.timeout(25000) });
-  } catch {
-    return json({ error: 'upstream' }, 502);
+  let up, url = target;
+  // التحويلات تُتبع يدوياً: كل وجهة تُفحص قبل طلبها (لا يُطلب من الخادم أي نطاق خارج القائمة)
+  for (let hop = 0; hop < 4; hop++) {
+    try {
+      up = await fetch(url.href, { headers: { 'user-agent': ua, 'api-user-agent': ua, accept: 'application/json, image/*' }, redirect: 'manual', signal: AbortSignal.timeout(25000) });
+    } catch {
+      return json({ error: 'upstream' }, 502);
+    }
+    if (up.status < 300 || up.status >= 400) break;
+    let next;
+    try { next = new URL(up.headers.get('location') || '', url); } catch { return json({ error: 'upstream' }, 502); }
+    if (!fetchAllowed(next)) return json({ error: 'forbidden' }, 403);
+    url = next;
+    up = null;
   }
-  let final;
-  try { final = new URL(up.url || target.href); } catch { final = target; }
-  if (!fetchAllowed(final)) return json({ error: 'forbidden' }, 403);
-  if (!up.ok) return json({ error: 'upstream', status: up.status }, up.status === 429 ? 429 : 502);
+  if (!up) return json({ error: 'upstream' }, 502);
+  if (!up.ok) return json({ error: 'upstream' }, up.status === 429 ? 429 : 502);
   const type = (up.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
   // لا نمرر SVG أو HTML من نطاقنا إطلاقاً
   if (!/^(application\/json|image\/(jpeg|png|webp|gif))$/.test(type)) return json({ error: 'unsupported_type' }, 415);
-  if (Number(up.headers.get('content-length') || 0) > 25 * 1024 * 1024) return json({ error: 'too_large' }, 413);
-  return new Response(up.body, {
+  if (Number(up.headers.get('content-length') || 0) > FETCH_MAX_BYTES) return json({ error: 'too_large' }, 413);
+  // حد الحجم أثناء التمرير أيضاً (الرد بلا content-length)
+  let seen = 0;
+  const cap = new TransformStream({
+    transform(chunk, ctrl) {
+      seen += chunk.byteLength;
+      if (seen > FETCH_MAX_BYTES) ctrl.error(new Error('too large'));
+      else ctrl.enqueue(chunk);
+    },
+  });
+  return new Response(up.body.pipeThrough(cap), {
     headers: {
       'content-type': type, 'cache-control': 'private, max-age=3600', 'x-content-type-options': 'nosniff',
       'content-security-policy': "default-src 'none'; sandbox", 'cross-origin-resource-policy': 'same-origin',
@@ -725,39 +745,73 @@ function parseKeys(text) {
 }
 const keyCount = (hint) => (hint ? hint.split(' · ').length : 0);
 
-/** مفتاح+نموذج نفدت حصته اليومية: نتخطاه مدة حتى لا نضيع وقتاً على 429 متكررة (الذاكرة لكل Isolate فقط). */
+/**
+ * حالة المفاتيح في ذاكرة هذا الـ Isolate فقط (لا تُحفظ): مفتاح+نموذج نفدت حصته اليومية يُتخطى 20 دقيقة،
+ * ومفتاح رفضته Google (ملغى أو محذوف) يُتخطى 30 دقيقة، حتى لا يضيع الوقت على أخطاء متكررة.
+ */
 const exhausted = new Map();
+const deadKeys = new Map();
 const EXHAUST_MS = 20 * 60_000;
-const isExhausted = (key, model) => (exhausted.get(`${key.slice(-8)}|${model}`) || 0) > Date.now();
-const markExhausted = (key, model) => exhausted.set(`${key.slice(-8)}|${model}`, Date.now() + EXHAUST_MS);
-let geminiRound = 0;
+const DEAD_MS = 30 * 60_000;
+const isExhausted = (key, model) => (exhausted.get(`${key}|${model}`) || 0) > Date.now();
+const isDead = (key) => (deadKeys.get(key) || 0) > Date.now();
+function remember(map, k, ms) {
+  map.set(k, Date.now() + ms);
+  if (map.size > 4000) { const now = Date.now(); for (const [x, t] of map) if (t <= now) map.delete(x); }
+}
 
-/** يرسل طلب Gemini بمفاتيح المستخدم بالتناوب: عند نفاد حصة مفتاح (429 RESOURCE_EXHAUSTED) يجرّب المفتاح التالي. */
+/** خطأ يخص المفتاح نفسه (لا الطلب ولا النموذج): مفتاح غير صالح أو ملغى أو بلا صلاحية. */
+const keyRejected = (status, text) => status === 401
+  || (status === 400 && /API_KEY_INVALID|API key not valid|API key expired/i.test(text))
+  || (status === 403 && /PERMISSION_DENIED|API key|SERVICE_DISABLED|has not been used|suspended/i.test(text));
+
+/** يرد بخطأ JSON بصيغة Google حتى يعامله المتصفح كأي رد من المزوّد. */
+const upstreamError = (status, message) => new Response(JSON.stringify({ error: { code: status, message } }), { status, headers: { 'content-type': 'application/json' } });
+
+/**
+ * يرسل طلب Gemini بمفاتيح المستخدم بالتناوب: عند نفاد حصة مفتاح (429) أو رفضه (مفتاح ملغى) يجرّب التالي،
+ * فلا يُفشل مفتاحٌ واحد معطوب محاضرةً كاملة ما دام غيره يعمل.
+ */
 async function geminiWithKeys(keys, model, body) {
-  const order = keys.map((_, i) => keys[(i + geminiRound) % keys.length]);
-  geminiRound++;
+  const start = Math.floor(Math.random() * keys.length);
+  const order = keys.map((_, i) => keys[(i + start) % keys.length]);
+  const usable = order.filter((k) => !isDead(k));
+  const pool = usable.length ? usable : order;
+  const live = pool.filter((k) => !isExhausted(k, model));
   let last = null;
-  const live = order.filter((k) => !isExhausted(k, model));
-  for (const key of live.length ? live : order.slice(0, 1)) {
-    const up = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-      method: 'POST',
-      headers: { 'x-goog-api-key': key, 'content-type': 'application/json' },
-      body,
-    });
-    if (up.status !== 429 || keys.length === 1) return up;
-    // 429 قد تكون حصة الدقيقة (مؤقتة) أو حصة اليوم؛ في الحالتين المفتاح التالي أفضل الآن
-    last = up;
+  for (const key of live.length ? live : pool.slice(0, 1)) {
+    let up;
+    try {
+      up = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: 'POST',
+        headers: { 'x-goog-api-key': key, 'content-type': 'application/json' },
+        body,
+        signal: AbortSignal.timeout(400_000),
+      });
+    } catch {
+      return upstreamError(504, 'upstream timeout');
+    }
+    if (up.ok || keys.length === 1) return up;
+    if (up.status !== 429 && up.status !== 400 && up.status !== 401 && up.status !== 403) return up; // 5xx/404: لا يخص المفتاح
     const text = await up.clone().text().catch(() => '');
-    if (/per_day|PerDay|daily|RESOURCE_EXHAUSTED/i.test(text) && !/per_minute|PerMinute/i.test(text)) markExhausted(key, model);
+    if (up.status === 429) {
+      // 429 قد تكون حصة الدقيقة (مؤقتة) أو حصة اليوم؛ في الحالتين المفتاح التالي أفضل الآن
+      if (/per_day|PerDay|daily/i.test(text) && !/per_minute|PerMinute/i.test(text)) remember(exhausted, `${key}|${model}`, EXHAUST_MS);
+      last = up;
+      continue;
+    }
+    if (keyRejected(up.status, text)) { remember(deadKeys, key, DEAD_MS); last = up; continue; }
+    return up; // طلب غير صالح (400 عادي): المفتاح الآخر لن يغيّر شيئاً
   }
   return last;
 }
 
 async function verifyKey(provider, key) {
   try {
+    const signal = AbortSignal.timeout(15_000);
     const res = provider === 'groq'
-      ? await fetch('https://api.groq.com/openai/v1/models', { headers: { authorization: `Bearer ${key}` } })
-      : await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1', { headers: { 'x-goog-api-key': key } });
+      ? await fetch('https://api.groq.com/openai/v1/models', { headers: { authorization: `Bearer ${key}` }, signal })
+      : await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1', { headers: { 'x-goog-api-key': key }, signal });
     if (res.ok) return { ok: true };
     if (res.status === 401 || res.status === 403 || res.status === 400) return { ok: false, error: 'bad_key' };
     return { ok: false, error: 'provider_down', status: res.status };
@@ -770,11 +824,11 @@ async function listModels(auth) {
   const out = { groq: [], gemini: [] };
   const jobs = [];
   if (auth.groq) {
-    jobs.push(fetch('https://api.groq.com/openai/v1/models', { headers: { authorization: `Bearer ${auth.groq}` } })
+    jobs.push(fetch('https://api.groq.com/openai/v1/models', { headers: { authorization: `Bearer ${auth.groq}` }, signal: AbortSignal.timeout(15_000) })
       .then((r) => (r.ok ? r.json() : null)).then((d) => { if (d?.data) out.groq = d.data.filter((m) => m.active !== false).map((m) => m.id); }).catch(() => {}));
   }
   if (auth.gemini) {
-    jobs.push(fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=300', { headers: { 'x-goog-api-key': auth.gemini } })
+    jobs.push(fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=300', { headers: { 'x-goog-api-key': auth.gemini }, signal: AbortSignal.timeout(15_000) })
       .then((r) => (r.ok ? r.json() : null)).then((d) => {
         if (d?.models) out.gemini = d.models.filter((m) => (m.supportedGenerationMethods || []).includes('generateContent')).map((m) => m.name.replace(/^models\//, ''));
       }).catch(() => {}));
@@ -886,11 +940,17 @@ async function handleApi(request, env, ctx, url) {
     const auth = await db.authorize(id, { kind: 'groq', sec });
     if (!auth.ok) return json(auth, auth.status);
     if (!auth.groq) return json({ error: 'no_key', provider: 'groq' }, 412);
-    const up = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: { authorization: `Bearer ${auth.groq}`, 'content-type': request.headers.get('content-type') || '' },
-      body: request.body,
-    });
+    let up;
+    try {
+      up = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${auth.groq}`, 'content-type': request.headers.get('content-type') || '' },
+        body: request.body,
+        signal: AbortSignal.timeout(230_000),
+      });
+    } catch {
+      return relay(upstreamError(504, 'upstream timeout'));
+    }
     if (up.ok && sec > 0) ctx.waitUntil(db.logUsage(auth.code, 'audio', sec));
     return relay(up);
   }
@@ -899,11 +959,17 @@ async function handleApi(request, env, ctx, url) {
     const auth = await db.authorize(id, { kind: 'groq' });
     if (!auth.ok) return json(auth, auth.status);
     if (!auth.groq) return json({ error: 'no_key', provider: 'groq' }, 412);
-    const up = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: { authorization: `Bearer ${auth.groq}`, 'content-type': 'application/json' },
-      body: request.body,
-    });
+    let up;
+    try {
+      up = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${auth.groq}`, 'content-type': 'application/json' },
+        body: request.body,
+        signal: AbortSignal.timeout(230_000),
+      });
+    } catch {
+      return relay(upstreamError(504, 'upstream timeout'));
+    }
     return relay(up);
   }
 
@@ -936,8 +1002,10 @@ async function handleApi(request, env, ctx, url) {
     const html = await request.text();
     if (html.length > 14_000_000) return json({ error: 'too_large' }, 413);
     if (auth.wait_ms > 0) await new Promise((r) => setTimeout(r, auth.wait_ms));
-    // المستند يبني صفحاته بسكربت داخله ويعلن جاهزيته بإضافة mv-ready
-    const paged = html.lastIndexOf('mv-ready') > 0;
+    // المستند يبني صفحاته بسكربت داخله ويعلن جاهزيته بإضافة mv-ready (الواجهة تعلن ذلك بترويسة، بدل البحث
+    // في نص بحجم ميغابايتات على وقت المعالج المحدود)
+    const flag = request.headers.get('x-mv-paged');
+    const paged = flag ? flag === '1' : html.lastIndexOf('mv-ready') > 0;
     let res;
     try {
       res = await env.BROWSER.quickAction('pdf', {
@@ -948,13 +1016,18 @@ async function handleApi(request, env, ctx, url) {
           : { gotoOptions: { waitUntil: 'networkidle0', timeout: 45000 } }),
       });
     } catch (e) {
-      return json({ error: 'pdf_failed', detail: String(e?.message || e).slice(0, 200) }, 502);
+      // المتصفح فُتح واستهلك من الحصة المشتركة: تُحسب على الطالب حتى لا تُستنزف الحصة بمحاولات فاشلة متكررة
+      console.error('pdf_failed', String(e?.message || e).slice(0, 300));
+      ctx.waitUntil(db.logUsage(auth.code, 'pdf', 0));
+      return json({ error: 'pdf_failed' }, 502);
     }
     if (!res.ok) {
       const detail = (await res.text().catch(() => '')).slice(0, 300);
-      // 429 نوعان: طلب كل 10 ثوانٍ (نعيد المحاولة)، أو انتهاء دقائق المتصفح اليومية للحساب
+      console.error('pdf_status', res.status, detail);
+      // 429 نوعان: طلب كل 10 ثوانٍ (نعيد المحاولة)، أو انتهاء دقائق المتصفح اليومية للحساب. غيرها استهلك متصفحاً
+      if (res.status !== 429) ctx.waitUntil(db.logUsage(auth.code, 'pdf', 0));
       const error = res.status !== 429 ? 'pdf_failed' : /time limit|for today/i.test(detail) ? 'pdf_quota' : 'pdf_busy';
-      return json({ error, detail }, res.status === 429 ? 429 : 502);
+      return json({ error }, res.status === 429 ? 429 : 502);
     }
     ctx.waitUntil(db.logUsage(auth.code, 'pdf', 0));
     return new Response(res.body, { headers: { 'content-type': 'application/pdf', 'cache-control': 'no-store' } });
@@ -975,6 +1048,8 @@ export default {
       if (path === '/admin' || path === '/admin/') path = '/admin.html';
       const asset = ASSETS[path];
       if (!asset) return new Response('Not Found', { status: 404, headers: SECURITY_HEADERS });
+      // نسخة الجهاز من هذا الإصدار صالحة: 304 لا يكشف شيئاً، فلا داعي لفحص التفعيل (طلب أقل على قاعدة البيانات)
+      if (request.headers.get('if-none-match') === `"${BUILD}"`) return serveAsset(request, asset);
       if (asset.gated) {
         const id = await deviceId(request);
         if (!id || !(await store(env).isActive(id))) return new Response('Locked', { status: 403, headers: SECURITY_HEADERS });

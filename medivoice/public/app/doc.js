@@ -406,7 +406,7 @@ export async function viewDoc(ctx, el, { id, fresh }) {
       // مهلة دقيقتين ونصف للطلب كله (مع تنزيل الملف): إذا علق خادم التحويل نعرض الطباعة من الجهاز
       const slow = setTimeout(() => { timedOut = true; controller.abort(); }, 150_000);
       try {
-        const res = await fetch('/api/pdf', { method: 'POST', headers: { 'x-mv': '1', 'content-type': 'text/html; charset=utf-8' }, body: html, credentials: 'same-origin', signal: controller.signal });
+        const res = await fetch('/api/pdf', { method: 'POST', headers: { 'x-mv': '1', 'x-mv-paged': '1', 'content-type': 'text/html; charset=utf-8' }, body: html, credentials: 'same-origin', signal: controller.signal });
         if (res.ok && (res.headers.get('content-type') || '').includes('pdf')) { blob = await res.blob(); clearTimeout(slow); break; }
         const data = await res.json().catch(() => ({}));
         clearTimeout(slow);

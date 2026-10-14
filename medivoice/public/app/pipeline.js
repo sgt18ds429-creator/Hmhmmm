@@ -2,7 +2,7 @@
 // → لصق → فهم المحاضرة وكتابتها شرحاً مفصلاً → قاموس المصطلحات → صور توضيحية مُتحقَّق من مطابقتها.
 // لا يعتمد على المتصفح مباشرة: كل اتصال يمر عبر كائن io حتى يُختبر في Node أيضاً.
 
-import { chunkAudio, probeAudio, compressChunk, AudioError } from './chunker.js';
+import { chunkAudio, probeAudio, compressChunk, resetCompression, AudioError } from './chunker.js';
 import {
   cleanWhisper, pickCut, wordsBetween, wordsToText, splitByWords, parseMarkup, joinChunks, blocksToMarkup,
   countWords, collectTerms, blockText, stripMarkup, parseJsonLoose, uid, langOf, termsIn, textHash, normalize, isNotes, repetitionScore, collapseMarkup, collapseRepeats, collapseCycles,
@@ -561,7 +561,9 @@ export async function runLecture({ file, meta, cfg, caps, io, emit = () => {}, s
   let compressedBytes = 0;
 
   try {
-    for await (const rawChunk of chunkAudio(file, { info, targetSec: cfg.chunkSec, overlapSec: overlap, maxBytes: GEMINI_MAX_INLINE, signal })) {
+    resetCompression();
+    // الحد أقل من حد Gemini بنصف ميغابايت: غلاف الملف (m4a/ogg) يضيف فوق حجم الصوت نفسه
+    for await (const rawChunk of chunkAudio(file, { info, targetSec: cfg.chunkSec, overlapSec: overlap, maxBytes: GEMINI_MAX_INLINE - 512 * 1024, signal })) {
       engine.check();
       if (failure) throw failure;
       emit({ type: 'chunk', index: rawChunk.index, stage: 'cut', start: rawChunk.start, end: rawChunk.end, last: rawChunk.last });
@@ -1532,11 +1534,15 @@ export async function pickFigures(wanted, engine, io, emit = () => {}, { lang = 
  * @returns [{ page, box:[y1,x1,y2,x2] (0..1000), what, kind }]
  */
 export async function detectSlideFigures(engine, pages, lang = 'ar') {
-  const out = [];
-  if (!engine.hasGemini) return out;
+  if (!engine.hasGemini) return [];
+  const groups = [];
   for (let i = 0; i < pages.length; i += 30) {
     const group = pages.slice(i, i + 30).filter((p) => p.small?.base64);
-    if (!group.length) continue;
+    if (group.length) groups.push(group);
+  }
+  // دفعات الصفحات بالتوازي (كانت متتابعة، والكتابة تنتظرها كلها)
+  const found = await mapLimit(groups, Math.min(3, 1 + engine.par), async (group) => {
+    const out = [];
     const { system, user } = slideFiguresPrompt(group, { lang });
     const parts = [{ text: user }];
     for (const p of group) { parts.push({ text: `ص${p.page}` }); parts.push({ inline_data: { mime_type: p.small.mime || 'image/jpeg', data: p.small.base64 } }); }
@@ -1549,8 +1555,9 @@ export async function detectSlideFigures(engine, pages, lang = 'ar') {
       if (box[2] - box[0] < 60 || box[3] - box[1] < 60) box = [0, 0, 1000, 1000];
       out.push({ page, box, what: String(f.what || '').replace(/\s+/g, ' ').trim().slice(0, 240), kind: ['radiograph', 'diagram', 'photo', 'micrograph'].includes(f.kind) ? f.kind : 'diagram' });
     }
-  }
-  return out;
+    return out;
+  });
+  return found.flat();
 }
 
 /** يحوّل طلبات @slide في الملزمة إلى صور مقصوصة من صفحات السلايدات. */
