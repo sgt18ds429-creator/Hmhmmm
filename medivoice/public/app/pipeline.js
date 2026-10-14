@@ -176,7 +176,8 @@ export class Engine {
   /**
    * @returns {Promise<{text:string, model:string}|{blocked:true}|null>} null = لا يوجد نموذج متاح
    */
-  async gemini({ system, parts, json = false, maxTokens = 8192, sec = 0, lite = false, temperature = 0, strongWaitMs = 75_000, thinking = null }) {
+  async gemini({ system, parts, json = false, maxTokens = 8192, sec = 0, lite = false, temperature = 0, strongWaitMs = 75_000, thinking = null, patienceMs = 0 }) {
+    const started = Date.now();
     // المهام المساعدة (نص/صور) تبدأ بالنماذج الخفيفة ثم الأقدم، حتى تبقى حصة أفضل النماذج للصوت
     const order = lite
       ? [...this.gem.items.filter((x) => /lite/.test(x.id)), ...this.gem.items.filter((x) => !/lite/.test(x.id)).reverse()]
@@ -244,7 +245,8 @@ export class Engine {
         netFails++;
         m.fails = (m.fails || 0) + 1;
         this.gem.cool(m, Math.min(30_000, 6000 * m.fails));
-        if (netFails > 14) return null;
+        // patienceMs: من له بديل (Groq) لا ينتظر طويلاً
+        if (netFails > 14 || (patienceMs && Date.now() - started > patienceMs)) return null;
         continue;
       }
       if (++netFails > 6) return null;
@@ -311,7 +313,7 @@ export class Engine {
     let blocked = null;
     if (gemini && this.hasGemini) {
       // عند التأخر لا ننتظر النماذج الدقيقة إذا كانت في تهدئة: الخفيفة أسرع ولها حدود أعلى
-      const r = await this.gemini({ system, parts: [{ text: user }], maxTokens, temperature, thinking, lite, strongWaitMs: lite || this.late(0.6) ? 0 : 40_000 });
+      const r = await this.gemini({ system, parts: [{ text: user }], maxTokens, temperature, thinking, lite, strongWaitMs: lite || this.late(0.6) ? 0 : 40_000, patienceMs: this.hasGroqLlm ? 90_000 : 0 });
       if (r && !r.blocked) return r;
       if (r?.blocked) blocked = r;
     }

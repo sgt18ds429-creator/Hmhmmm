@@ -722,3 +722,27 @@ test('المراجعة تعمل بالتوازي مع الترجمة، والق�
   assert.equal(doc.stats.retranslated, 1, 'قسم واحد أعيدت ترجمته');
   assert.ok(doc.alt.blocks.some((b) => /تجمّع الهواء في المسافة الجنبية/.test(blockText(b))), 'النسخة الثانية تحمل التصحيح (الترجمة الوهمية تبقي النص)');
 });
+
+test('ضغط متواصل على Gemini (503) أثناء الكتابة: يكمل Groq القسم بأجزاء صغيرة ولا يبقى نص مفرّغ خام', async () => {
+  const { io } = makeIO();
+  const origGemini = io.gemini;
+  let sections503 = 0;
+  io.gemini = async (model, body) => {
+    const system = body.systemInstruction?.parts?.[0]?.text || '';
+    if (system.includes('شرحاً مكتوباً مفصلاً')) { sections503++; return { ok: false, status: 503, data: { error: { message: 'high demand' } } }; }
+    return origGemini(model, body);
+  };
+  const groqCalls = [];
+  io.groq = async (body) => {
+    const user = body.messages[1].content;
+    groqCalls.push(user);
+    const title = (user.match(/«([^»]+)»/) || [])[1] || 'قسم';
+    return { ok: true, status: 200, data: { choices: [{ message: { content: `## ${title}\n${filler('شرح مكتوب بمحرك Groq عن [[pneumothorax]] و [[pleural effusion]]. ', 40)}` }, finish_reason: 'stop' }] } };
+  };
+  const doc = transcriptDoc();
+  const engine = new Engine(io, { ...CAPS, groq: true, groqModels: ['openai/gpt-oss-120b'] });
+  assert.equal(await writeNotes(doc, engine), true);
+  assert.ok(sections503 > 0, 'Gemini جُرّب أولاً');
+  assert.ok(groqCalls.filter((u) => u.includes('تفريغ هذا الجزء')).length >= 2, 'Groq كتب الأقسام');
+  assert.equal(doc.stats.fallback, 0, 'لا أقسام بقيت نصاً خاماً');
+});
