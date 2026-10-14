@@ -4,8 +4,8 @@
 import { splitInline, blockText, stripMarkup, isNotes, MODE_LABEL } from './text.js';
 import { creditLine } from './images.js';
 import { pagedRuntime } from './paged.js';
+import { markHtml } from '../brand.js';
 
-export const LOGO_PATH = 'M283.5 35.7 L243.5 12.6 L150 66.6 L56.5 12.6 L16.5 35.7 L16.5 270 L46.5 287.3 L56.5 281.5 L56.5 231.8 L150 285.8 L204.5 254.3 L204.5 214.3 L150 245.8 L56.5 191.8 L56.5 58.8 L150 112.8 L243.5 58.8 L243.5 103.5 L150 157.5 L95.5 126 L95.5 166 L150 197.5 L243.5 143.5 L243.5 281.5 L253.5 287.3 L283.5 270 Z';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const cssStr = (s) => String(s ?? '').replace(/[\\"\n\r]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -54,22 +54,23 @@ const CSS = `
 @page :first { margin: 0; }
 * { box-sizing: border-box; }
 html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-body { margin: 0; font-family: 'IBM Plex Sans Arabic', 'IBM Plex Sans', 'Noto Sans Arabic', sans-serif; font-size: 11.4pt; line-height: 1.95; color: #1f1736; background: #fff; }
+body { margin: 0; font-family: 'IBM Plex Sans Arabic', 'El Messiri', 'IBM Plex Sans', 'Noto Sans Arabic', sans-serif; font-size: 11.4pt; line-height: 1.95; color: #1f1736; background: #fff; }
 .t { font-family: 'IBM Plex Sans', 'IBM Plex Sans Arabic', sans-serif; font-weight: 600; color: #5a1fd1; direction: ltr; unicode-bidi: isolate; }
 .ltr { direction: ltr; unicode-bidi: isolate; }
 
 /* ── الغلاف ── */
 .cover { position: relative; width: 210mm; height: 297mm; overflow: hidden; color: #fff; background: linear-gradient(135deg, #4d1ace 0%, #7a19c4 52%, #9a18b8 100%); break-after: page; page-break-after: always; }
 .cover .grid { position: absolute; inset: 0; background: repeating-linear-gradient(30deg, rgba(255,255,255,.055) 0 .3mm, transparent .3mm 13mm), repeating-linear-gradient(-30deg, rgba(255,255,255,.055) 0 .3mm, transparent .3mm 13mm); }
-.cover .ghost { position: absolute; width: 190mm; inset-inline-end: -58mm; bottom: -44mm; fill: rgba(255,255,255,.07); }
+.cover .ghost { position: absolute; width: 150mm; height: 150mm; inset-inline-end: -48mm; bottom: -30mm; }
 .cover .brand { position: absolute; top: 19mm; inset-inline-start: 19mm; display: flex; align-items: center; gap: 3.6mm; }
-.cover .brand svg { width: 11mm; height: 11mm; fill: #fff; }
-.cover .brand b { font-family: 'Reem Kufi', sans-serif; font-weight: 600; font-size: 17pt; line-height: 1; }
+.cover .brand .tile { width: 12mm; height: 12mm; border-radius: 3mm; background: rgba(255,255,255,.16); display: grid; place-items: center; }
+.cover .brand .tile svg { width: 9mm; height: 9mm; }
+.cover .brand b { font-family: 'El Messiri', 'IBM Plex Sans Arabic', sans-serif; font-weight: 700; font-size: 18pt; line-height: 1; }
 .cover .brand span { display: block; font-family: 'IBM Plex Sans', sans-serif; font-size: 7.5pt; letter-spacing: .2em; opacity: .75; margin-top: 1.2mm; }
 .cover .kind { position: absolute; top: 22mm; inset-inline-end: 19mm; font-size: 9.5pt; padding: 1.2mm 4.4mm; background: rgba(255,255,255,.14); clip-path: polygon(3mm 0, 100% 0, 100% calc(100% - 1.7mm), calc(100% - 3mm) 100%, 0 100%, 0 1.7mm); }
 .cover .head { position: absolute; inset-inline: 19mm; top: 84mm; }
 .cover .subject { font-size: 13pt; font-weight: 500; color: #e7dcff; margin-bottom: 5mm; }
-.cover h1 { margin: 0; font-family: 'IBM Plex Sans Arabic', 'IBM Plex Sans', sans-serif; font-weight: 700; line-height: 1.55; }
+.cover h1 { margin: 0; font-family: 'El Messiri', 'IBM Plex Sans Arabic', 'IBM Plex Sans', sans-serif; font-weight: 700; line-height: 1.5; }
 .cover h1 .t { color: #fff; font-weight: 700; }
 .cover .wave { position: absolute; inset-inline: 0; top: 186mm; width: 210mm; height: 19mm; }
 .cover .meta { position: absolute; inset-inline: 19mm; bottom: 30mm; display: grid; grid-template-columns: repeat(3, 1fr); gap: 7mm 6mm; }
@@ -80,16 +81,16 @@ body { margin: 0; font-family: 'IBM Plex Sans Arabic', 'IBM Plex Sans', 'Noto Sa
 
 /* ── المتن ── */
 main { padding: 0; }
-h2 { font-family: 'IBM Plex Sans Arabic', 'IBM Plex Sans', sans-serif; font-weight: 700; font-size: 15.5pt; line-height: 1.55; color: #4d1ace; margin: 9mm 0 3mm; break-after: avoid; page-break-after: avoid; display: flex; align-items: flex-start; gap: 3mm; }
-h2::before { content: ''; flex: none; width: 4.2mm; height: 4.8mm; margin-top: 1.85mm; background: linear-gradient(135deg, #4d1ace, #9a18b8); clip-path: polygon(0 0, 50% 28%, 100% 0, 100% 72%, 50% 100%, 0 72%); }
+h2 { font-family: 'El Messiri', 'IBM Plex Sans Arabic', 'IBM Plex Sans', sans-serif; font-weight: 700; font-size: 16pt; line-height: 1.5; color: #4d1ace; margin: 9mm 0 3mm; break-after: avoid; page-break-after: avoid; display: flex; align-items: flex-start; gap: 3mm; }
+h2::before { content: ''; flex: none; width: 4.4mm; height: 4mm; margin-top: 2.2mm; background: linear-gradient(135deg, #5433ec, #c923c1); clip-path: polygon(0 0, 50% 55%, 100% 0, 100% 45%, 50% 100%, 0 45%); }
 h2 .hx { flex: 1; min-width: 0; }
 h2 .t { color: inherit; }
 main > h2:first-child { margin-top: 0; }
-h3 { font-size: 12.6pt; font-weight: 700; color: #2a1a4d; margin: 6mm 0 2mm; break-after: avoid; page-break-after: avoid; }
+h3 { font-family: 'El Messiri', 'IBM Plex Sans Arabic', sans-serif; font-size: 13pt; font-weight: 700; color: #2a1a4d; margin: 6mm 0 2mm; break-after: avoid; page-break-after: avoid; }
 p { margin: 0 0 3.6mm; orphans: 2; widows: 2; }
 ul, ol { margin: 0 0 3.6mm; padding: 0; list-style: none; }
 li { position: relative; padding-inline-start: 6.6mm; margin-bottom: 1.6mm; break-inside: avoid; }
-ul > li::before { content: ''; position: absolute; inset-inline-start: 1mm; top: 3.1mm; width: 2.6mm; height: 2.6mm; background: #7a19c4; clip-path: polygon(0 0, 50% 30%, 100% 0, 100% 70%, 50% 100%, 0 70%); }
+ul > li::before { content: ''; position: absolute; inset-inline-start: 1mm; top: 3.2mm; width: 2.6mm; height: 2.3mm; background: #7a19c4; clip-path: polygon(0 0, 50% 55%, 100% 0, 100% 45%, 50% 100%, 0 45%); }
 ol { counter-reset: n; }
 ol > li { counter-increment: n; }
 ol > li::before { content: counter(n); position: absolute; inset-inline-start: 0; top: 1.2mm; width: 4.8mm; height: 4.8mm; border-radius: 50%; background: #f1eaff; color: #4d1ace; font: 600 8pt/4.8mm 'IBM Plex Sans', sans-serif; text-align: center; }
@@ -144,7 +145,7 @@ ul.box { margin: 2mm 0 5mm; padding: 3.4mm 5mm 1.6mm; background: #f6f1ff; borde
 .pg-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 10mm; padding-bottom: 5mm; font-size: 8.2pt; line-height: 1.5; white-space: nowrap; }
 .pg-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: #7c6ca3; font-weight: 500; }
 .pg-brand { flex: none; display: flex; align-items: center; gap: 1.7mm; color: #5a1fd1; font-weight: 600; }
-.pg-brand svg { width: 3.5mm; height: 3.5mm; fill: #5a1fd1; }
+.pg-brand svg { width: 3.6mm; height: 3.6mm; }
 .pg-body { min-height: 0; }
 .pg-body > :first-child { margin-top: 0 !important; }
 .pg-body > .section-break { break-before: auto; page-break-before: auto; }
@@ -162,7 +163,7 @@ html, body { background: #fff; }
 `;
 
 const PAGED_FONTS = [400, 500, 600, 700].map((w) => `${w} 15px "IBM Plex Sans Arabic"`)
-  .concat([400, 500, 600, 700].map((w) => `${w} 15px "IBM Plex Sans"`), ['600 15px "Reem Kufi"']);
+  .concat([400, 500, 600, 700].map((w) => `${w} 15px "IBM Plex Sans"`), ['600 15px "El Messiri"', '700 15px "El Messiri"']);
 
 // JSON آمن داخل <script>
 const scriptJson = (v) => JSON.stringify(v).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
@@ -243,10 +244,10 @@ export function buildPdfHtml(doc, opts = {}) {
 
   const wave = zigzag(1680, 72, [14, 26, 44, 60, 30, 48, 20, 38, 56, 24, 12, 34, 52, 28, 16, 42, 22, 58, 18, 36, 46, 14, 30]);
   const header = cssStr(plainTitle).slice(0, 70);
-  const brandMark = `<svg viewBox="0 0 300 300" aria-hidden="true"><path d="${LOGO_PATH}"/></svg>`;
+  const brandMark = markHtml({ bars: false });
   const paged = opts.paged ? `<script>(${pagedRuntime.toString()})(${scriptJson({
     dir, firstPage: 2, fonts: PAGED_FONTS, pagedCss: PAGED_CSS,
-    pageHtml: `<header class="pg-head"><span class="pg-title" dir="${dirOf(title)}">${esc(plainTitle)}</span><span class="pg-brand" dir="rtl">${brandMark}ميدي فويز</span></header><div class="pg-body"></div><footer class="pg-foot"><b class="pg-num"></b><i class="pg-total"></i></footer>`,
+    pageHtml: `<header class="pg-head"><span class="pg-title" dir="${dirOf(title)}">${esc(plainTitle)}</span><span class="pg-brand" dir="rtl">${markHtml({ color: '#5a1fd1', bars: false })}ميدي فويز</span></header><div class="pg-body"></div><footer class="pg-foot"><b class="pg-num"></b><i class="pg-total"></i></footer>`,
   })});</script>` : '';
 
   return `<!doctype html>
@@ -256,7 +257,7 @@ export function buildPdfHtml(doc, opts = {}) {
 <title>${esc(plainTitle)} — ميدي فويز</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=Reem+Kufi:wght@600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=El+Messiri:wght@600;700&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>${CSS}
 @page {
   @top-${dir === 'rtl' ? 'right' : 'left'} { content: "${header}"; font: 500 8.2pt 'IBM Plex Sans Arabic', sans-serif; color: #7c6ca3; vertical-align: bottom; padding-bottom: 5mm; }
@@ -270,8 +271,8 @@ ${opts.screen ? '@media screen { body { background: #2a1a4d; } .cover, main { ma
 <body>
 <section class="cover" dir="rtl">
   <div class="grid"></div>
-  <svg class="ghost" viewBox="0 0 300 300" aria-hidden="true"><path d="${LOGO_PATH}"/></svg>
-  <div class="brand">${brandMark}<div><b>ميدي فويز</b><span dir="ltr">MediVoice</span></div></div>
+  ${markHtml({ color: 'rgba(255,255,255,.08)', cls: 'ghost' })}
+  <div class="brand"><span class="tile">${brandMark}</span><div><b>ميدي فويز</b><span dir="ltr">MediVoice</span></div></div>
   <div class="kind">${notes ? `<span dir="ltr">${esc(MODE_LABEL[meta.mode] || 'Notes')}</span>` : 'ملزمة محاضرة'}</div>
   ${doc.stats?.audit ? '<div class="audit"><i></i>روجعت كاملة مقابل التسجيل قبل التسليم</div>' : ''}
   <div class="head" dir="${dirOf(title)}">

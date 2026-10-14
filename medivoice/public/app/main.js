@@ -3,7 +3,8 @@
 import { h, icon, clear, sheet, closeTopSheet, confirm, fmtHM, fmtAgo, svgEl } from './ui.js';
 import { makeIO } from './api.js';
 import * as db from './db.js';
-import { LOGO_PATH, fmtDuration } from './pdf.js';
+import { fmtDuration } from './pdf.js';
+import { markEl } from '../brand.js';
 import { viewNew, viewRun, viewRewrite, openRecorder } from './run.js';
 import { viewDoc } from './doc.js';
 
@@ -92,7 +93,7 @@ export async function start(MV, root) {
     requestAnimationFrame(paintMeter);
     return meterEl;
   }
-  const logoTile = () => h('span', { class: 'tile' }, svgEl('svg', { viewBox: '0 0 300 300' }, svgEl('path', { d: LOGO_PATH })));
+  const logoTile = () => h('span', { class: 'tile' }, markEl({ bars: false }));
 
   function setBar(kind, opts = {}) {
     clear(bar);

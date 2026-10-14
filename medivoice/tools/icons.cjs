@@ -6,7 +6,7 @@ const { chromium } = require('playwright');
 
 const pub = path.join(__dirname, '..', 'public');
 const logo = fs.readFileSync(path.join(pub, 'logo.svg'), 'utf8');
-const square = logo.replace(/rx="\d+"/, 'rx="0"'); // بلا زوايا: iOS والأيقونات القابلة للقص تقصّها بنفسها
+const square = logo.replace(/rx="\d+"/g, 'rx="0"'); // بلا زوايا: iOS والأيقونات القابلة للقص تقصّها بنفسها
 
 const ICONS = [
   ['icon-192.png', 192, logo],
@@ -16,7 +16,8 @@ const ICONS = [
 ];
 
 (async () => {
-  const browser = await chromium.launch();
+  const exe = process.env.CHROME_PATH || ['/opt/pw-browsers/chromium-1194/chrome-linux/chrome'].find((p) => fs.existsSync(p));
+  const browser = await chromium.launch(exe ? { executablePath: exe } : {});
   const page = await browser.newPage({ deviceScaleFactor: 1 });
   for (const [name, size, svg] of ICONS) {
     await page.setViewportSize({ width: size, height: size });

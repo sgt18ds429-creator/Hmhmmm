@@ -1,9 +1,9 @@
 // admin.js — لوحة تحكم ميدي فويز: الأكواد، النشاط، الإعدادات.
 // كل نص يأتي من الخادم يُدرج كنص (text node) عبر h()، ولا يُستعمل innerHTML.
 
-import { h, icon, clear, sheet, confirm, fmtHM, svgEl } from '/app/ui.js';
+import { h, icon, clear, sheet, confirm, fmtHM } from '/app/ui.js';
+import { markEl } from '/brand.js';
 
-const LOGO = 'M283.5 35.7 L243.5 12.6 L150 66.6 L56.5 12.6 L16.5 35.7 L16.5 270 L46.5 287.3 L56.5 281.5 L56.5 231.8 L150 285.8 L204.5 254.3 L204.5 214.3 L150 245.8 L56.5 191.8 L56.5 58.8 L150 112.8 L243.5 58.8 L243.5 103.5 L150 157.5 L95.5 126 L95.5 166 L150 197.5 L243.5 143.5 L243.5 281.5 L253.5 287.3 L283.5 270 Z';
 const DAY = 86400000;
 const TABS = [['codes', 'الأكواد', 'key'], ['activity', 'النشاط', 'pulse'], ['settings', 'الإعدادات', 'gear']];
 
@@ -11,7 +11,7 @@ const root = document.getElementById('adm');
 const state = { data: null, tab: 'codes', filter: 'all', query: '', loadedAt: 0 };
 
 // ───────── أدوات ─────────
-const logo = () => svgEl('svg', { viewBox: '0 0 300 300', 'aria-hidden': 'true' }, svgEl('path', { d: LOGO }));
+const logo = (bars = true) => markEl({ bars });
 
 function toast(message, kind = '') {
   const el = h('div', { class: `toast ${kind}` }, message);
@@ -167,7 +167,7 @@ function renderApp() {
   const view = h('main', { class: 'view' });
   root.append(
     h('header', { class: 'bar' },
-      h('span', { class: 'tile' }, logo()), h('span', { class: 'name' }, 'لوحة التحكم'), h('span', { class: 'grow' }),
+      h('span', { class: 'tile' }, logo(false)), h('span', { class: 'name' }, 'لوحة التحكم'), h('span', { class: 'grow' }),
       h('button', { class: 'icon-btn', 'aria-label': 'تحديث البيانات', onclick: async (e) => { e.currentTarget.disabled = true; if (await load(true)) toast('تحدّثت البيانات'); } }, icon('refresh'))),
     view,
     h('nav', { class: 'nav', 'aria-label': 'أقسام اللوحة' }, TABS.map(([id, label, ic]) =>

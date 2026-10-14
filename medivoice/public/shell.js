@@ -1,11 +1,13 @@
 // shell.js — الصفحة العامة: الافتتاحية، شريط الصوت المتحرك، شاشة القفل.
 // بعد التفعيل يُحمَّل التطبيق من /app/main.js (محمي ولا يُخدَّم لغير المفعّلين).
 
+import { markEl } from '/brand.js';
+
 const $ = (s, r = document) => r.querySelector(s);
 const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 // ───────────── شريط الصوت ─────────────
-// خط متعرج بزوايا 30° ثابتة (نفس هندسة اللوكو)، يتغير ارتفاع قممه مثل موجة صوت.
+// خط متعرج بزاوية ثابتة (ميل شيفرونات اللوكو)، يتغير ارتفاع قممه مثل موجة صوت.
 class Ribbon {
   constructor(canvas) {
     this.c = canvas;
@@ -47,7 +49,7 @@ class Ribbon {
   }
   layer(cy, amp, speed, phase, width, style) {
     const { x: g, w, t } = this;
-    const TAN = 0.57735;
+    const TAN = 0.79; // ميل شيفرونات اللوكو (نحو 38°)
     const env = (px) => {
       const a = Math.sin(px * 0.0041 + t * speed + phase);
       const b = Math.sin(px * 0.0017 - t * speed * 0.43 + phase * 2.1);
@@ -70,7 +72,7 @@ class Ribbon {
     g.beginPath();
     let first = true;
     for (const [px, py] of [...left, [w / 2, cy], ...right]) { first ? g.moveTo(px, py) : g.lineTo(px, py); first = false; }
-    g.lineWidth = width; g.lineJoin = 'miter'; g.miterLimit = 6; g.strokeStyle = style;
+    g.lineWidth = width; g.lineJoin = 'round'; g.lineCap = 'round'; g.strokeStyle = style;
     g.stroke();
   }
   draw() {
@@ -82,7 +84,7 @@ class Ribbon {
     const e = this.cur.energy * (1 + this.pulse * 0.9);
     const base = Math.min(w, 900) * 0.085 * e;
     const grad = g.createLinearGradient(0, 0, w, 0);
-    grad.addColorStop(0, '#4d1ace'); grad.addColorStop(0.5, '#8a1cc2'); grad.addColorStop(1, '#b01fb0');
+    grad.addColorStop(0, '#5433ec'); grad.addColorStop(0.5, '#8521d5'); grad.addColorStop(1, '#c923c1');
     g.globalAlpha = 0.32 * a; this.layer(cy + 10, base * 1.7, 0.32, 1.7, Math.max(10, w * 0.014), grad);
     g.globalAlpha = 0.85 * a; this.layer(cy, base, 0.5, 0, Math.max(5, w * 0.0075), grad);
     g.globalAlpha = 0.55 * a; this.layer(cy - 4, base * 0.55, 0.78, 4.2, 1.5, '#d9c8ff');
@@ -249,7 +251,9 @@ async function openApp(session, fromLock) {
 // ───────────── الإقلاع ─────────────
 (async function boot() {
   const intro = $('#intro');
-  const introDone = sleep(reduced ? 0 : 1750);
+  intro.querySelector('.intro-tile').append(markEl());
+  $('#lock .brand-tile').append(markEl());
+  const introDone = sleep(reduced ? 0 : 2300);
   const sessionReq = api(`/api/session?fp=${encodeURIComponent(JSON.stringify(fingerprint()))}`);
   MV.ribbon.set({ y: 0.5, energy: 0.2, alpha: 0 });
   const [, s] = await Promise.all([introDone, sessionReq]);
