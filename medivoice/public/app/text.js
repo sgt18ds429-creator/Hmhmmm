@@ -99,7 +99,7 @@ export function parseMarkup(raw) {
       flush();
       const fig = parseFigLine(m[1]);
       if (fig) blocks.push(fig);
-    } else if ((m = line.replace(/^[`*_\s]+/, '').match(/^(?:[-•]\s*)?@slide\b[`*_]*\s*:?\s*(\d{1,3})\s*(?:\|\s*(.*))?$/i))) {
+    } else if ((m = line.replace(/^[`*_\s]+/, '').match(/^(?:[-•]\s*)?@slide\b[`*_]*\s*:?\s*(?:ص|صفحة|page|p\.?|slide)?\s*(\d{1,3})\s*(?:\|\s*(.*))?$/i))) {
       flush();
       blocks.push({ t: 'slidereq', page: parseInt(m[1], 10), caption: fixInline(m[2] || '').slice(0, 240) });
     } else if ((m = line.match(/^\?\?\s*(.+)$/))) {

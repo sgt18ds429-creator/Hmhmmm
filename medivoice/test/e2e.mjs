@@ -77,6 +77,18 @@ console.log('blocks', await page.locator('.blk').count(), 'figs', await page.loc
 console.log('title:', await page.locator('.doc-title').innerText());
 console.log('badges:', (await page.locator('.doc-badges').innerText().catch(() => '')).replace(/\n/g, ' | '));
 console.log('time:', `${Math.round((Date.now() - t0) / 1000)}s`);
+const stats = await page.evaluate(() => new Promise((resolve) => {
+  const req = indexedDB.open('medivoice');
+  req.onsuccess = () => { const db = req.result; const all = db.transaction('lectures').objectStore('lectures').getAll(); all.onsuccess = () => { const d = all.result.sort((a, b) => b.createdAt - a.createdAt)[0]; resolve({ stats: d?.stats, slides: d?.slides ? { pages: d.slides.pages.length, figs: d.slides.figs } : null, slidereq: d?.blocks.filter((b) => b.t === 'slidereq').length, transcriptHasSlide: (d?.transcript || []).some((b) => b.t === 'slidereq') }); }; };
+  req.onerror = () => resolve(null);
+}));
+console.log('stats:', JSON.stringify(stats).slice(0, 900));
+const figs = page.locator('.blk.fig');
+for (let i = 0; i < await figs.count(); i++) {
+  await figs.nth(i).scrollIntoViewIfNeeded();
+  await figs.nth(i).screenshot({ path: path.join(shots, `07c-fig-${i + 1}.png`) });
+  console.log(`fig ${i + 1}:`, (await figs.nth(i).locator('.credit').innerText().catch(() => '')), '|', (await figs.nth(i).locator('.cap').innerText()).slice(0, 90));
+}
 if (await page.locator('.mcq-opt').count()) { await page.locator('.mcq-opt').first().click(); await page.waitForTimeout(400); await page.locator('.blk.mcq').first().screenshot({ path: path.join(shots, '07b-mcq.png') }); }
 
 step('pdf');

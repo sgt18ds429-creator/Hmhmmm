@@ -896,7 +896,7 @@ export async function writeNotes(doc, engine, { emit = () => {}, checkpoint = nu
         try { r.markup = await proofread(engine, r.markup, lang); } catch (e) { if (isFatal(e)) throw e; }
       }
       if (fresh && checkpoint && !r.fallback) await checkpoint.set(`n:s${i}`, r);
-      results[i] = { ...r, blocks: parseMarkup(r.markup).map((b) => ({ id: uid(), ...b })) };
+      results[i] = { ...r, blocks: parseMarkup(r.markup).map((b) => ({ id: uid(), ...b })), slideLines: (String(r.markup).match(/@slide/gi) || []).length };
       for (const [k, v] of termsIn(r.markup)) if (!seen.has(k)) seen.set(k, v);
       emit({ type: 'section', index: i, total, stage: 'done', done: ++done, title: s.title, markup: r.markup, fallback: !!r.fallback });
       figures?.add(results[i].blocks, s.title);
@@ -947,6 +947,7 @@ export async function writeNotes(doc, engine, { emit = () => {}, checkpoint = nu
     words: countText(blocks),
     transcriptWords: countText(transcript),
     sections: plan.titles.length,
+    slideLines: results.reduce((n, r) => n + (r.slideLines || 0), 0),
     fallback: results.filter((r) => r.fallback || r.partial).length,
     notesReview: results.filter((r) => r.review).length,
   };
@@ -997,10 +998,11 @@ export async function complete(doc, engine, { io, emit = () => {} }) {
   const mode = doc.meta.mode;
   const safe = (p) => p.catch((e) => { if (isFatal(e)) throw e; return null; });
   // نص الشرح يُقرأ الآن قبل أن تُدرج الصور. النقاط للمراجعة للشرح المفصل، والأسئلة للنقاط الامتحانية
+  // صور السلايدات أولاً (قصّ محلي سريع) حتى لا تتسابق مع استبدال الصور في enrich
+  if (doc.slides?.figs?.length) await safe(placeSlideFigures(doc, io));
   const points = mode === 'notes' || mode === 'integrated' ? safe(keyPoints(engine, doc.meta, doc.blocks, lang)) : null;
   const mcq = mode === 'highyield' ? safe((async () => { emit({ type: 'stage', name: 'mcq' }); return mcqBlocks(engine, doc.meta, doc.blocks, lang); })()) : null;
-  const slideFigs = doc.slides?.figs?.length ? safe(placeSlideFigures(doc, io)) : null;
-  const [kp, qs] = await Promise.all([points, mcq, slideFigs, enrich(doc, engine, { io, emit })]);
+  const [kp, qs] = await Promise.all([points, mcq, enrich(doc, engine, { io, emit })]);
   const extra = [...(kp || []), ...(qs || [])];
   if (extra.length) {
     doc.blocks.push(...extra);
@@ -1336,6 +1338,7 @@ export async function detectSlideFigures(engine, pages, lang = 'ar') {
 /** يحوّل طلبات @slide في الملزمة إلى صور مقصوصة من صفحات السلايدات. */
 async function placeSlideFigures(doc, io) {
   const slides = doc.slides;
+  doc.stats.slides = { pages: slides?.pages?.length || 0, figs: slides?.figs?.length || 0, requested: doc.blocks.filter((b) => b.t === 'slidereq').length, placed: 0 };
   if (!slides?.figs?.length || !io.cropImage) return;
   const usedPages = new Set();
   const byPage = new Map();
@@ -1353,6 +1356,7 @@ async function placeSlideFigures(doc, io) {
       const img = await io.cropImage(page.big, f.box);
       if (!img?.dataUrl) continue;
       usedPages.add(b.page);
+      doc.stats.slides.placed++;
       doc.blocks[i] = { id: uid(), t: 'fig', caption: b.caption || f.what, query: '', kind: f.kind, pick: { id: `slide:${b.page}`, source: 'slides', title: `سلايد ${b.page}`, license: 'من ملف المحاضرة', page: '' }, candidates: [], img };
     } catch { /* تبقى بلا صورة */ }
   }

@@ -9,9 +9,6 @@
 .gate-card form { width: 100%; display: grid; gap: 12px; margin-top: 4px; }
 .gate-card .field { text-align: start; }
 .gate-card input { text-align: center; font-family: var(--font-mono); letter-spacing: 0.04em; direction: ltr; }
-.gate-card .brand-tile .mk-bar { animation: vu 1.2s ease-in-out infinite alternate; }
-.gate-card .brand-tile .mk-bar-2 { animation-delay: 0.3s; }
-.gate-card .brand-tile .mk-bar-3 { animation-delay: 0.6s; }
 .gate-kicker { display: inline-flex; align-items: center; gap: 8px; color: var(--text-2); font-size: 0.95rem; }
 .gate-kicker .icon { width: 18px; height: 18px; color: var(--lilac); }
 .gate-msg { min-height: 1.6em; font-size: 0.92rem; color: var(--rose); }

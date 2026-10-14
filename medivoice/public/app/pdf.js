@@ -4,7 +4,7 @@
 import { splitInline, blockText, stripMarkup, isNotes, MODE_LABEL } from './text.js';
 import { creditLine } from './images.js';
 import { pagedRuntime } from './paged.js';
-import { markHtml } from '../brand.js';
+import { markHtml, MARK_CSS } from '../brand.js';
 
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -61,10 +61,11 @@ body { margin: 0; font-family: 'IBM Plex Sans Arabic', 'El Messiri', 'IBM Plex S
 /* ── الغلاف ── */
 .cover { position: relative; width: 210mm; height: 297mm; overflow: hidden; color: #fff; background: linear-gradient(135deg, #4d1ace 0%, #7a19c4 52%, #9a18b8 100%); break-after: page; page-break-after: always; }
 .cover .grid { position: absolute; inset: 0; background: repeating-linear-gradient(30deg, rgba(255,255,255,.055) 0 .3mm, transparent .3mm 13mm), repeating-linear-gradient(-30deg, rgba(255,255,255,.055) 0 .3mm, transparent .3mm 13mm); }
-.cover .ghost { position: absolute; width: 150mm; height: 150mm; inset-inline-end: -48mm; bottom: -30mm; }
+${MARK_CSS}
+.cover .ghost { position: absolute; width: 150mm; inset-inline-end: -40mm; bottom: -24mm; }
 .cover .brand { position: absolute; top: 19mm; inset-inline-start: 19mm; display: flex; align-items: center; gap: 3.6mm; }
-.cover .brand .tile { width: 12mm; height: 12mm; border-radius: 3mm; background: rgba(255,255,255,.16); display: grid; place-items: center; }
-.cover .brand .tile svg { width: 9mm; height: 9mm; }
+.cover .brand .tile { width: 13mm; height: 13mm; border-radius: 3mm; box-shadow: 0 4mm 10mm -3mm rgba(0,0,0,.45); }
+.cover .brand .tile img { display: block; width: 100%; height: 100%; border-radius: inherit; }
 .cover .brand b { font-family: 'El Messiri', 'IBM Plex Sans Arabic', sans-serif; font-weight: 700; font-size: 18pt; line-height: 1; }
 .cover .brand span { display: block; font-family: 'IBM Plex Sans', sans-serif; font-size: 7.5pt; letter-spacing: .2em; opacity: .75; margin-top: 1.2mm; }
 .cover .kind { position: absolute; top: 22mm; inset-inline-end: 19mm; font-size: 9.5pt; padding: 1.2mm 4.4mm; background: rgba(255,255,255,.14); clip-path: polygon(3mm 0, 100% 0, 100% calc(100% - 1.7mm), calc(100% - 3mm) 100%, 0 100%, 0 1.7mm); }
@@ -145,7 +146,7 @@ ul.box { margin: 2mm 0 5mm; padding: 3.4mm 5mm 1.6mm; background: #f6f1ff; borde
 .pg-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 10mm; padding-bottom: 5mm; font-size: 8.2pt; line-height: 1.5; white-space: nowrap; }
 .pg-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: #7c6ca3; font-weight: 500; }
 .pg-brand { flex: none; display: flex; align-items: center; gap: 1.7mm; color: #5a1fd1; font-weight: 600; }
-.pg-brand svg { width: 3.6mm; height: 3.6mm; }
+.pg-brand .mk { width: 3.2mm; }
 .pg-body { min-height: 0; }
 .pg-body > :first-child { margin-top: 0 !important; }
 .pg-body > .section-break { break-before: auto; page-break-before: auto; }
@@ -244,10 +245,11 @@ export function buildPdfHtml(doc, opts = {}) {
 
   const wave = zigzag(1680, 72, [14, 26, 44, 60, 30, 48, 20, 38, 56, 24, 12, 34, 52, 28, 16, 42, 22, 58, 18, 36, 46, 14, 30]);
   const header = cssStr(plainTitle).slice(0, 70);
-  const brandMark = markHtml({ bars: false });
+  const brand = opts.brand || {};
+  const logoUrl = brand.logo || '/logo.png';
   const paged = opts.paged ? `<script>(${pagedRuntime.toString()})(${scriptJson({
     dir, firstPage: 2, fonts: PAGED_FONTS, pagedCss: PAGED_CSS,
-    pageHtml: `<header class="pg-head"><span class="pg-title" dir="${dirOf(title)}">${esc(plainTitle)}</span><span class="pg-brand" dir="rtl">${markHtml({ color: '#5a1fd1', bars: false })}ميدي فويز</span></header><div class="pg-body"></div><footer class="pg-foot"><b class="pg-num"></b><i class="pg-total"></i></footer>`,
+    pageHtml: `<header class="pg-head"><span class="pg-title" dir="${dirOf(title)}">${esc(plainTitle)}</span><span class="pg-brand" dir="rtl">${markHtml({ color: '#5a1fd1', bars: false, urls: brand })}ميدي فويز</span></header><div class="pg-body"></div><footer class="pg-foot"><b class="pg-num"></b><i class="pg-total"></i></footer>`,
   })});</script>` : '';
 
   return `<!doctype html>
@@ -271,8 +273,8 @@ ${opts.screen ? '@media screen { body { background: #2a1a4d; } .cover, main { ma
 <body>
 <section class="cover" dir="rtl">
   <div class="grid"></div>
-  ${markHtml({ color: 'rgba(255,255,255,.08)', cls: 'ghost' })}
-  <div class="brand"><span class="tile">${brandMark}</span><div><b>ميدي فويز</b><span dir="ltr">MediVoice</span></div></div>
+  ${markHtml({ color: 'rgba(255,255,255,.08)', cls: 'ghost', urls: brand })}
+  <div class="brand"><span class="tile"><img src="${esc(logoUrl)}" alt=""></span><div><b>ميدي فويز</b><span dir="ltr">MediVoice</span></div></div>
   <div class="kind">${notes ? `<span dir="ltr">${esc(MODE_LABEL[meta.mode] || 'Notes')}</span>` : 'ملزمة محاضرة'}</div>
   ${doc.stats?.audit ? '<div class="audit"><i></i>روجعت كاملة مقابل التسجيل قبل التسليم</div>' : ''}
   <div class="head" dir="${dirOf(title)}">

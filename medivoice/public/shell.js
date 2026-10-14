@@ -1,7 +1,7 @@
 // shell.js — الصفحة العامة: الافتتاحية، شريط الصوت المتحرك، شاشة القفل.
 // بعد التفعيل يُحمَّل التطبيق من /app/main.js (محمي ولا يُخدَّم لغير المفعّلين).
 
-import { markEl } from '/brand.js';
+import { logoEl } from '/brand.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -251,8 +251,8 @@ async function openApp(session, fromLock) {
 // ───────────── الإقلاع ─────────────
 (async function boot() {
   const intro = $('#intro');
-  intro.querySelector('.intro-tile').append(markEl());
-  $('#lock .brand-tile').append(markEl());
+  intro.querySelector('.intro-tile').append(logoEl());
+  $('#lock .brand-tile').append(logoEl());
   const introDone = sleep(reduced ? 0 : 2300);
   const sessionReq = api(`/api/session?fp=${encodeURIComponent(JSON.stringify(fingerprint()))}`);
   MV.ribbon.set({ y: 0.5, energy: 0.2, alpha: 0 });

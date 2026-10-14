@@ -2,7 +2,7 @@
 // كل نص يأتي من الخادم يُدرج كنص (text node) عبر h()، ولا يُستعمل innerHTML.
 
 import { h, icon, clear, sheet, confirm, fmtHM } from '/app/ui.js';
-import { markEl } from '/brand.js';
+import { logoEl } from '/brand.js';
 
 const DAY = 86400000;
 const TABS = [['codes', 'الأكواد', 'key'], ['activity', 'النشاط', 'pulse'], ['settings', 'الإعدادات', 'gear']];
@@ -11,7 +11,7 @@ const root = document.getElementById('adm');
 const state = { data: null, tab: 'codes', filter: 'all', query: '', loadedAt: 0 };
 
 // ───────── أدوات ─────────
-const logo = (bars = true) => markEl({ bars });
+const logo = () => logoEl();
 
 function toast(message, kind = '') {
   const el = h('div', { class: `toast ${kind}` }, message);

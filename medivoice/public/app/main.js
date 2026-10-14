@@ -4,7 +4,7 @@ import { h, icon, clear, sheet, closeTopSheet, confirm, fmtHM, fmtAgo, svgEl } f
 import { makeIO } from './api.js';
 import * as db from './db.js';
 import { fmtDuration } from './pdf.js';
-import { markEl } from '../brand.js';
+import { logoEl } from '../brand.js';
 import { viewNew, viewRun, viewRewrite, openRecorder } from './run.js';
 import { viewDoc } from './doc.js';
 
@@ -93,7 +93,7 @@ export async function start(MV, root) {
     requestAnimationFrame(paintMeter);
     return meterEl;
   }
-  const logoTile = () => h('span', { class: 'tile' }, markEl({ bars: false }));
+  const logoTile = () => h('span', { class: 'tile' }, logoEl());
 
   function setBar(kind, opts = {}) {
     clear(bar);

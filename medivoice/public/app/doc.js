@@ -4,6 +4,7 @@ import { h, icon, clear, sheet, confirm, fmtSize, countOf } from './ui.js';
 import { splitInline, blockText, stripMarkup, countWords, uid, fmtTime, isNotes, MODE_LABEL } from './text.js';
 import { NOTE_TYPES } from './run.js';
 import { buildPdfHtml, fmtDate, fmtDuration, dirOf } from './pdf.js';
+import { brandAssets } from '../brand.js';
 import { findCandidates, creditLine } from './images.js';
 import * as db from './db.js';
 
@@ -330,7 +331,8 @@ export async function viewDoc(ctx, el, { id, fresh }) {
     document.activeElement?.blur?.();
     clearTimeout(saveTimer);
     await db.saveLecture(doc).catch(() => {});
-    const html = buildPdfHtml(doc, { paged: true, images: await pdfImages() });
+    const [images, brand] = await Promise.all([pdfImages(), brandAssets()]);
+    const html = buildPdfHtml(doc, { paged: true, images, brand });
     const stateText = h('p', { class: 'muted' }, 'أجهّز الصفحات وأرتّب الخطوط والصور…');
     const box = h('div', { class: 'stack' }, stateText, h('div', { class: 'progress-line' }, h('i')));
     let cancelled = false;
@@ -378,9 +380,9 @@ export async function viewDoc(ctx, el, { id, fresh }) {
       h('button', { class: 'btn ghost wide', onclick: () => { s.close(); exportPdf(); } }, icon('refresh'), 'حاول مرة ثانية'));
   }
 
-  function printDoc() {
+  async function printDoc() {
     const frame = h('iframe', { style: { position: 'fixed', width: '0', height: '0', border: '0', opacity: '0' }, 'aria-hidden': 'true' });
-    frame.srcdoc = buildPdfHtml(doc);
+    frame.srcdoc = buildPdfHtml(doc, { brand: await brandAssets() });
     frame.onload = async () => {
       try { await frame.contentDocument.fonts?.ready; } catch { /* تجاهل */ }
       setTimeout(() => { frame.contentWindow.focus(); frame.contentWindow.print(); setTimeout(() => frame.remove(), 60000); }, 400);

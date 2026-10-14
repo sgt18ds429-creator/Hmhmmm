@@ -1,6 +1,7 @@
 // build.mjs — يجمع الخادم وكل ملفات public/ في ملف واحد: dist/worker.js
 // node tools/build.mjs
 import { readFileSync, writeFileSync, readdirSync, statSync, mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join, relative, extname, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -30,15 +31,18 @@ const now = new Date();
 const pad = (n) => String(n).padStart(2, '0');
 const BUILD = process.env.MV_BUILD || `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}`;
 
-const entries = [];
+const entries = [], aliases = [];
+const seen = new Map(); // الملفات المتطابقة بايتاً (مثل logo.png و icon-512.png) تُضمَّن مرة واحدة
 for (const file of walk(pub)) {
   const path = '/' + relative(pub, file).split('\\').join('/');
   const type = TYPES[extname(file)];
   if (!type) throw new Error(`نوع ملف غير معروف: ${path}`);
   const binary = !type.startsWith('text/') && type !== 'image/svg+xml' && type !== 'application/manifest+json';
-  const body = binary
-    ? `bin(${JSON.stringify(readFileSync(file).toString('base64'))})`
-    : JSON.stringify(readFileSync(file, 'utf8'));
+  const raw = readFileSync(file);
+  const key = `${type}:${createHash('sha256').update(raw).digest('hex')}`;
+  if (seen.has(key)) { aliases.push(`ASSETS[${JSON.stringify(path)}] = ASSETS[${JSON.stringify(seen.get(key))}];`); continue; }
+  seen.set(key, path);
+  const body = binary ? `bin(${JSON.stringify(raw.toString('base64'))})` : JSON.stringify(raw.toString('utf8'));
   const gated = path.startsWith('/app/') && !OPEN_APP_FILES.has(path);
   entries.push(`  ${JSON.stringify(path)}: { body: ${body}, type: ${JSON.stringify(type)}, gated: ${gated}, immutable: ${binary} }`);
 }
@@ -47,11 +51,12 @@ const assets = `var BUILD = ${JSON.stringify(BUILD)};
 var bin = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 var ASSETS = {
 ${entries.join(',\n')}
-};`;
+};
+${aliases.join('\n')}`;
 
 const server = readFileSync(join(root, 'src', 'server.js'), 'utf8');
 if (!server.includes('/*__ASSETS__*/')) throw new Error('src/server.js: علامة /*__ASSETS__*/ مفقودة');
 mkdirSync(join(root, 'dist'), { recursive: true });
 const out = server.replace('/*__ASSETS__*/', () => assets);
 writeFileSync(join(root, 'dist', 'worker.js'), out);
-console.log(`dist/worker.js · build ${BUILD} · ${entries.length} ملف · ${(out.length / 1024).toFixed(0)} KB`);
+console.log(`dist/worker.js · build ${BUILD} · ${entries.length} ملف${aliases.length ? ` (+${aliases.length} مكرر)` : ''} · ${(out.length / 1024).toFixed(0)} KB`);
