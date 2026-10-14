@@ -83,20 +83,30 @@ export async function searchOpenverse(query, net, limit = 3) {
  * مرشحات لشكل واحد من كل المصادر، بدون تكرار.
  * figure = { query, alt, kind }
  */
+const GENERIC_WORDS = new Set(['vs', 'versus', 'diagram', 'illustration', 'schematic', 'clinical', 'photo', 'photograph', 'image', 'picture', 'chart', 'drawing', 'figure', 'showing', 'of', 'the', 'and', 'in', 'with', 'a', 'an', 'on', 'for', 'to', 'medical', 'anatomy', 'labeled', 'labelled']);
+/** عبارة أقصر للبحث عندما تكون عبارة الكاتب طويلة جداً: الكلمات الدالة الأولى فقط (بحث Commons يطلب كل الكلمات). */
+export function simplifyQuery(q) {
+  const words = String(q || '').toLowerCase().replace(/[^a-z0-9\s-]/g, ' ').split(/\s+/).filter((w) => w && !GENERIC_WORDS.has(w));
+  return words.slice(0, 3).join(' ');
+}
+
 export async function findCandidates(figure, net, max = 6) {
+  const simple = simplifyQuery(figure.query);
+  const useSimple = simple && simple !== figure.query.toLowerCase().trim() && simple !== (figure.alt || '').toLowerCase().trim() && figure.query.split(/\s+/).length > 3;
   const jobs = [
     searchCommons(figure.query, net, 5).catch(() => []),
     figure.alt && figure.alt !== figure.query ? searchCommons(figure.alt, net, 3).catch(() => []) : Promise.resolve([]),
     figure.kind === 'radiograph' || figure.kind === 'micrograph' ? searchOpenI(figure.query, net, { kind: figure.kind, limit: 4 }).catch(() => []) : Promise.resolve([]),
     searchOpenverse(figure.query, net, 2).catch(() => []),
+    useSimple ? searchCommons(simple, net, 3).catch(() => []) : Promise.resolve([]),
   ];
-  const [main, alt, openi, ov] = await Promise.all(jobs);
+  const [main, alt, openi, ov, simpleRes] = await Promise.all(jobs);
   const seen = new Set();
   const out = [];
-  // تداخل المصادر: Commons أولاً ثم Open-i للصور الشعاعية
+  // تداخل المصادر: Commons أولاً ثم Open-i للصور الشعاعية، والعبارة المبسطة آخراً
   const order = figure.kind === 'radiograph' || figure.kind === 'micrograph'
-    ? [main.slice(0, 2), openi.slice(0, 2), main.slice(2), alt, openi.slice(2), ov]
-    : [main, alt, ov, openi];
+    ? [main.slice(0, 2), openi.slice(0, 2), main.slice(2), alt, openi.slice(2), ov, simpleRes]
+    : [main, alt, ov, openi, simpleRes];
   for (const group of order) {
     for (const c of group) {
       const key = c.original || c.id;

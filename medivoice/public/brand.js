@@ -3,6 +3,7 @@
 // المستخرجة منه بقناع شفافية حتى تُلوَّن بـ CSS (mask-image) في العناوين والترويسات. تُولَّد بـ tools/logo.py.
 
 export const LOGO = '/logo.png';
+export const LOGO_SMALL = '/logo-96.png'; // للترويسات المتكررة (الـ PDF)
 export const MARK = '/mark.png'; // الدرع والقاعدة وأعمدة الصوت — نسبة العرض إلى الارتفاع 512:444
 export const MARK_MIC = '/mark-mic.png'; // الدرع والقاعدة فقط — 320:433
 export const MARK_RATIO = 512 / 444;
@@ -53,8 +54,8 @@ const toDataUrl = async (url) => {
  */
 export function brandAssets() {
   if (!assetsJob) {
-    assetsJob = Promise.all([LOGO, MARK, MARK_MIC].map((u) => toDataUrl(u).catch(() => new URL(u, location.href).href)))
-      .then(([logo, mark, mic]) => ({ logo, mark, mic }));
+    assetsJob = Promise.all([LOGO, LOGO_SMALL, MARK, MARK_MIC].map((u) => toDataUrl(u).catch(() => new URL(u, location.href).href)))
+      .then(([logo, logoSmall, mark, mic]) => ({ logo, logoSmall, mark, mic }));
   }
   return assetsJob;
 }

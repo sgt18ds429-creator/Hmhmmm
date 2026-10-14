@@ -304,7 +304,8 @@ ${mcqParts.join('\n')}
   ].filter(([, v]) => v);
 
   const header = cssStr(plainTitle).slice(0, 70);
-  const pageHead = `<header class="pg-head"><span class="pg-title" dir="${dirOf(title)}">${esc(plainTitle)}</span><span class="pg-brand" dir="rtl"><img src="${esc(logoUrl)}" alt="">ميدي فويز</span></header><div class="pg-body"></div><footer class="pg-foot"><b class="pg-num"></b><i class="pg-total"></i></footer>`;
+  // الترويسة تتكرر في كل صفحة: نسخة صغيرة من اللوكو حتى لا يتضخم الملف
+  const pageHead = `<header class="pg-head"><span class="pg-title" dir="${dirOf(title)}">${esc(plainTitle)}</span><span class="pg-brand" dir="rtl"><img src="${esc(brand.logoSmall || logoUrl)}" alt="">ميدي فويز</span></header><div class="pg-body"></div><footer class="pg-foot"><b class="pg-num"></b><i class="pg-total"></i></footer>`;
   const paged = opts.paged ? `<script>(${pagedRuntime.toString()})(${scriptJson({ dir, firstPage: 2, fonts: PAGED_FONTS, pagedCss: PAGED_CSS, pageHtml: pageHead })});</script>` : '';
   const kindLabel = notes ? `${MODE_LABEL[meta.mode] || 'Notes'}${alt ? ' · AR + EN' : ''}` : 'ملزمة محاضرة';
 

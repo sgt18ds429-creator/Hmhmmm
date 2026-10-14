@@ -1041,15 +1041,24 @@ export async function enrich(doc, engine, { io, emit = () => {} }) {
     if (meta.glossary === false) return;
     emit({ type: 'stage', name: 'glossary' });
     try {
-      const found = collectTerms(doc.blocks).slice(0, 90).map((t) => t.term);
-      const terms = [];
-      for (let i = 0; i < found.length; i += 45) {
-        const { system, user } = glossaryPrompt(meta, found.slice(i, i + 45));
-        const r = await engine.json({ system, user, maxTokens: 8000, prefer: 'gemini-lite' });
-        for (const t of r?.terms || []) {
-          if (t && typeof t.en === 'string' && typeof t.ar === 'string' && t.en.trim()) terms.push({ en: t.en.trim().slice(0, 80), ar: t.ar.trim().slice(0, 80), def: String(t.def || '').trim().slice(0, 220) });
+      const found = collectTerms(doc.blocks).slice(0, 120).map((t) => t.term);
+      // دفعات صغيرة متوازية؛ الدفعة الناقصة تُعاد مرة (النماذج الخفيفة تُسقط مصطلحات أحياناً)
+      const batches = [];
+      for (let i = 0; i < found.length; i += 30) batches.push(found.slice(i, i + 30));
+      const clean = (list) => (Array.isArray(list) ? list : []).filter((t) => t && typeof t.en === 'string' && typeof t.ar === 'string' && t.en.trim())
+        .map((t) => ({ en: t.en.trim().slice(0, 80), ar: t.ar.trim().slice(0, 80), def: String(t.def || '').trim().slice(0, 220) }));
+      const results = await mapLimit(batches, 3, async (batch) => {
+        let best = [];
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const { system, user } = glossaryPrompt(meta, batch);
+          const r = await engine.json({ system, user, maxTokens: 6000, prefer: 'gemini-lite' });
+          const got = clean(r?.terms);
+          if (got.length >= batch.length * 0.6) return got;
+          if (got.length > best.length) best = got;
         }
-      }
+        return best;
+      });
+      const terms = results.flat();
       const seen = new Set();
       doc.terms = terms.filter((t) => { const k = t.en.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; })
         .sort((a, b) => a.en.localeCompare(b.en, 'en', { sensitivity: 'base' }));
@@ -1273,7 +1282,7 @@ function figureQueue(engine, { lang, emit }) {
   const jobs = [];
   const waiting = [];
   let active = 0, limit = 2, total = 0, picked = 0, cancelled = false;
-  const stat = { requested: 0, candidates: 0, noCandidates: 0, rounds: 0, vision: 0, text: 0, skipped: 0, failed: 0 };
+  const stat = { requested: 0, candidates: 0, noCandidates: 0, rounds: 0, vision: 0, text: 0, skipped: 0, failed: 0, missed: [] };
   const take = async () => { while (active >= limit) await new Promise((r) => waiting.push(r)); active++; };
   const release = () => { active--; waiting.shift()?.(); };
   return {
@@ -1295,7 +1304,7 @@ function figureQueue(engine, { lang, emit }) {
         try {
           if (cancelled || engine.late(0.95)) { stat.skipped += figs.length; return; }
           const res = await pickBatch(figs, engine, engine.io, used, lang, stat);
-          res.forEach((r, i) => { if (r) { found.set(figs[i].anchor, r); emit({ type: 'images', picked: ++picked, total }); } });
+          res.forEach((r, i) => { if (r) { found.set(figs[i].anchor, r); emit({ type: 'images', picked: ++picked, total }); } else stat.missed.push(`${figs[i].kind}: ${figs[i].query}`); });
         } catch (e) {
           if (isFatal(e)) throw e;
           stat.failed += figs.length;

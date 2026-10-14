@@ -79,6 +79,7 @@ def save(img, name):
 def main():
     base = tile(1024)
     save(base.resize((512, 512), Image.LANCZOS), 'logo.png')
+    save(base.resize((96, 96), Image.LANCZOS), 'logo-96.png')  # ترويسات صفحات الـ PDF (تتكرر في كل صفحة)
     save(base.resize((192, 192), Image.LANCZOS), 'icon-192.png')
     save(base.resize((512, 512), Image.LANCZOS), 'icon-512.png')
     # الأيقونة القابلة للقصّ: اللوكو داخل المنطقة الآمنة (80%) فوق خلفية بلون المربع نفسه (مكبّر وممدّد)
