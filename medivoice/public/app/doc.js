@@ -146,7 +146,9 @@ export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
       'هذي الملزمة نص مفرّغ كما قيل. تكدر تحوّلها لشرح مفصّل ومرتب بعناوين ونقاط وجداول وصور مطابقة، بدون ما تعيد رفع التسجيل.',
       h('div', null, h('button', { class: 'mini', onclick: () => rewrite() }, icon('book'), 'حوّلها لشرح مفصّل'))));
   }
-  if (doc.stats.engines && !doc.stats.engines.gemini && (doc.stats.engines.groq || doc.stats.engines.raw)) {
+  // «دقة أقل» فقط إذا لم يسمع Gemini أي مقطع (محركات gemini و gemini+merge و gemini-tx كلها سمعه)
+  const heardByGemini = Object.keys(doc.stats.engines || {}).some((k) => k.startsWith('gemini'));
+  if (doc.stats.engines && !heardByGemini && (doc.stats.engines.groq || doc.stats.engines.raw)) {
     paper.append(h('div', { class: 'blk note' }, h('span', { class: 'tag' }, 'دقة أقل'), ctx.session?.keys?.gemini?.linked
       ? 'Gemini ما كدر يسمع هذا التسجيل هسه (خلصت حصته اليومية أو كان مشغول)، فالنص من المحرك السريع وحده ودقته أقل. أعد تحويله بعدين حتى يطلع أدق.'
       : 'هذي المحاضرة تحوّلت بدون Gemini، فراجع المصطلحات. اربطه من «حسابي» للمحاضرات الجاية.'));

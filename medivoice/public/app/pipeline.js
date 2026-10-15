@@ -1443,8 +1443,8 @@ export async function enrich(doc, engine, { io, emit = () => {} }) {
         const found = await queue.results();
         doc.blocks = doc.blocks.map((b) => (b.t === 'figreq' && found.has(b.id) ? figBlock(found.get(b.id)) : b));
         doc.stats.figures = queue.stats();
-        // صور لم تُفحص بسبب انقطاع أو ضيق وقت (لا لغياب صورة مناسبة): يُبلَّغ الطالب بدل أن تنقص بصمت
-        if (doc.stats.figures.failed + doc.stats.figures.skipped > 0 && doc.stats.figures.requested > 0) emit({ type: 'note', code: 'figures_partial' });
+        // صور لم تُفحص بسبب انقطاع (لا لغياب صورة مناسبة ولا لضيق الوقت): يُبلَّغ الطالب بدل أن تنقص بصمت
+        if (doc.stats.figures.failed > 0 && doc.stats.figures.requested > 0) emit({ type: 'note', code: 'figures_partial' });
         return;
       }
       const textWords = doc.stats?.words || doc.blocks.reduce((n, b) => n + countWords(blockText(b)), 0);
