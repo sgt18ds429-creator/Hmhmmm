@@ -1178,8 +1178,13 @@ async function handleApi(request, env, ctx, url) {
           : { gotoOptions: { waitUntil: 'networkidle0', timeout: 45000 } }),
       });
     } catch (e) {
+      const msg = String(e?.message || e).slice(0, 300);
+      console.error('pdf_failed', msg);
+      // حد الحساب اليومي أو ازدحام المتصفحات يأتي أحياناً كاستثناء لا كرد 429: نميّزه حتى يعيد المتصفح المحاولة
+      // أو يشرح للطالب، ولا يُحسب على الطالب (لم يُفتح متصفح)
+      if (/time limit|for today|daily|quota/i.test(msg)) return json({ error: 'pdf_quota' }, 429);
+      if (/too many|concurren|rate ?limit|429|busy/i.test(msg)) return json({ error: 'pdf_busy' }, 429);
       // المتصفح فُتح واستهلك من الحصة المشتركة: تُحسب على الطالب حتى لا تُستنزف الحصة بمحاولات فاشلة متكررة
-      console.error('pdf_failed', String(e?.message || e).slice(0, 300));
       ctx.waitUntil(db.logUsage(auth.code, 'pdf', 0));
       return json({ error: 'pdf_failed' }, 502);
     }

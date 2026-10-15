@@ -456,14 +456,17 @@ export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
         const data = await res.json().catch(() => ({}));
         clearTimeout(slow);
         error = data.error || `http_${res.status}`;
-        if (error !== 'pdf_busy') break;
-        stateText.textContent = 'الخادم مشغول بطلب آخر، أعيد المحاولة بعد ثوانٍ…';
-        await new Promise((r) => setTimeout(r, 11000));
+        // مشغول: نعيد حتى ثلاث مرات. فشل عابر في خادم التحويل (أو خطأ خادم): مرة ثانية واحدة بعد ثوانٍ
+        const transient = error === 'pdf_failed' || /^http_5/.test(error);
+        if (error !== 'pdf_busy' && !(transient && attempt === 0)) break;
+        stateText.textContent = error === 'pdf_busy' ? 'الخادم مشغول بطلب آخر، أعيد المحاولة بعد ثوانٍ…' : 'تعثّر خادم التحويل، أعيد المحاولة…';
+        await new Promise((r) => setTimeout(r, error === 'pdf_busy' ? 11000 : 6000));
       } catch (e) {
         clearTimeout(slow);
         if (e?.name === 'AbortError' && !timedOut) return;
         error = timedOut ? 'timeout' : 'network';
         if (timedOut) break;
+        if (attempt === 0) { stateText.textContent = 'انقطع الاتصال، أعيد المحاولة…'; await new Promise((r) => setTimeout(r, 5000)); }
       }
     }
     if (cancelled) return;
