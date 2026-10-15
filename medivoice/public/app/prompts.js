@@ -669,3 +669,23 @@ ${JSON.stringify({ questions })}
 Output: {"questions":[{"q":"...","options":["...","...","...","..."],"why":"..."}]}`;
   return { system, user };
 }
+
+/** مراجعة أسئلة الاختيار من متعدد مقابل الملزمة: سؤال يخالفها (موضع أو رقم أو جواب) يُصحَّح أو يُحذف. */
+export function mcqCheckPrompt(notes, questions) {
+  const system = 'You are a meticulous medical exam reviewer. You check each multiple-choice question strictly against the lecture notes and correct or reject any question that contradicts them. Answer in JSON only.';
+  const user = `The lecture notes (they may be in Arabic):
+<<<
+${notes}
+>>>
+
+The questions (answer = index 0-3 of the correct option):
+${JSON.stringify(questions.map((q, i) => ({ n: i + 1, q: q.q, options: q.opts, answer: q.ans, why: q.why })))}
+
+Check every question against the notes:
+1. Every fact in the stem and in the correct option agrees with the notes (locations such as right/left quadrant, numbers, causes, signs).
+2. The marked answer is the correct one according to the notes, and exactly one option is correct.
+3. It is answerable from the notes.
+For each question return {"n": number, "ok": true} when it passes. When it fails, return {"n": number, "ok": false, "fixed": {"q": "...", "options": ["...","...","...","..."], "answer": 0, "why": "..."}} with a corrected version in English that follows the notes, or {"n": number, "ok": false, "drop": true} when it cannot be fixed. Keep medical terms in [[ ]].
+Output: {"checks":[{"n":1,"ok":true}]}`;
+  return { system, user };
+}

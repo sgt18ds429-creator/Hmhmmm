@@ -945,3 +945,30 @@ test('أسئلة MCQ بالإنجليزية حصراً: إذا كتبها الن
     assert.deepEqual(qs.map((q) => q.ans), arabic.questions.map((q) => q.answer));
   }
 });
+
+test('أسئلة MCQ تُراجَع مقابل الملزمة: المخالف يُصحَّح أو يُحذف', async () => {
+  const { io } = makeIO();
+  const orig = io.gemini;
+  let checked = 0;
+  io.gemini = async (model, body) => {
+    const system = body.systemInstruction?.parts?.[0]?.text || '';
+    if (/exam reviewer/.test(system)) {
+      checked++;
+      return gemResponse(JSON.stringify({ checks: [
+        { n: 1, ok: false, fixed: { q: 'Which sign indicates [[pneumothorax]] correctly?', options: ['Visceral pleural line', 'Kerley B lines', 'Air bronchogram', 'Meniscus sign'], answer: 0, why: 'Per the notes.' } },
+        { n: 2, ok: false, drop: true },
+        { n: 3, ok: true },
+      ] }));
+    }
+    return orig(model, body);
+  };
+  const doc = transcriptDoc({ mode: 'highyield' });
+  const engine = new Engine(io, CAPS);
+  assert.equal(await writeNotes(doc, engine), true);
+  await complete(doc, engine, { io });
+  const qs = doc.blocks.filter((b) => b.t === 'mcq');
+  assert.equal(checked, 1);
+  assert.equal(qs.length, 7, 'سؤال حُذف');
+  assert.equal(qs[0].q, 'Which sign indicates [[pneumothorax]] correctly?');
+  assert.equal(qs[0].ans, 0);
+});

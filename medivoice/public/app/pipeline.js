@@ -11,7 +11,7 @@ import {
 import {
   whisperPrompt, audioPrompt, cleanupPrompt, glossaryPrompt, figuresPrompt, translatePrompt, translateExtrasPrompt,
   notesPlanPrompt, notesSectionPrompt, reviewPrompt, proofreadPrompt, figureTextPickPrompt,
-  reviewNotesPrompt, mcqPrompt, mcqTranslatePrompt, figuresBatchPrompt, slideFiguresPrompt,
+  reviewNotesPrompt, mcqPrompt, mcqTranslatePrompt, mcqCheckPrompt, figuresBatchPrompt, slideFiguresPrompt,
 } from './prompts.js';
 import { findCandidates } from './images.js';
 
@@ -1982,6 +1982,31 @@ export async function reviewNotes(doc, engine, { emit = () => {} } = {}) {
 
 // ───────────── أسئلة الاختيار من متعدد ─────────────
 
+/** مراجعة الأسئلة مقابل الملزمة بطلب واحد. إذا تعذّرت المراجعة تبقى الأسئلة كما هي. */
+async function checkMcqs(engine, notes, qs, inLang) {
+  let parsed = null;
+  try {
+    parsed = await engine.json({ ...mcqCheckPrompt(notes, qs), maxTokens: 9000, groqTokens: 4000, prefer: 'gemini' });
+  } catch (e) {
+    if (isFatal(e)) throw e;
+  }
+  const checks = Array.isArray(parsed?.checks) ? parsed.checks : null;
+  if (!checks) return qs;
+  const verdict = new Map(checks.map((c) => [parseInt(c?.n, 10), c]));
+  const out = [];
+  qs.forEach((q, i) => {
+    const c = verdict.get(i + 1);
+    if (!c || c.ok !== false) { out.push(q); return; }
+    if (c.drop) return;
+    const f = c.fixed;
+    const opts = (Array.isArray(f?.options) ? f.options : []).map(squash).filter(Boolean);
+    const ans = parseInt(f?.answer, 10);
+    const fixed = { q: squash(f?.q), opts, ans, why: squash(f?.why) };
+    if (fixed.q && opts.length === 4 && ans >= 0 && ans < 4 && inLang(fixed)) out.push(fixed);
+  });
+  return out;
+}
+
 /** أسئلة MCQ من الملزمة (للنوع High-Yield): يرجع كتلاً تُلحق بآخر الملزمة، أو null. */
 async function mcqBlocks(engine, meta, blocks, lang) {
   const text = blocksToMarkup(blocks.filter((b) => !['fig', 'figreq', 'slidereq', 'mcq'].includes(b.t)));
@@ -2012,6 +2037,9 @@ async function mcqBlocks(engine, meta, blocks, lang) {
     }
   }
   qs = qs.filter(inLang);
+  if (qs.length < 3) return null;
+  // كل سؤال يُراجَع مقابل الملزمة: سؤال يخالفها (موضع أو رقم أو مفتاح إجابة) يُصحَّح أو يُحذف
+  qs = await checkMcqs(engine, text.slice(0, 160_000), qs, inLang);
   if (qs.length < 3) return null;
   return [
     { id: uid(), t: 'h', level: 2, text: lang === 'en' ? 'Self-assessment MCQs' : 'أسئلة اختيار من متعدد للمراجعة' },
