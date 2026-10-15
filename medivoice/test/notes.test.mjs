@@ -1280,3 +1280,14 @@ test('استماع Gemini أسقط ربع الكلام: يُدمج مع النس
   assert.equal(r2.engine, 'gemini-tx');
   assert.ok(countWords(r2.markup) >= countWords(full) * 0.95, 'الكلام كله موجود');
 });
+
+
+test('طلب تجاوز 100 ثانية (524 من Cloudflare): النموذج البطيء يُهدّأ ويكمل غيره فوراً بدل إعادته مرتين', async () => {
+  const calls = [];
+  const io = { sleep: async () => {}, async gemini(model) { calls.push(model); return model === 'gemini-slow' ? { ok: false, status: 524, data: null } : { ok: true, status: 200, data: { candidates: [{ content: { parts: [{ text: 'تم' }] }, finishReason: 'STOP' }] } }; } };
+  const engine = new Engine(io, { gemini: true, groq: false, geminiModels: ['gemini-slow', 'gemini-fast', 'gemini-x-lite'], groqModels: [], sttModels: [] });
+  const r = await engine.gemini({ system: 's', parts: [] });
+  assert.equal(r.text, 'تم');
+  assert.deepEqual(calls, ['gemini-slow', 'gemini-fast'], 'محاولة واحدة على البطيء ثم التالي');
+  assert.ok(engine.gem.items[0].until > Date.now(), 'البطيء في تهدئة');
+});

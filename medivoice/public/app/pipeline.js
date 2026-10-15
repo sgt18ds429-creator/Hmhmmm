@@ -172,7 +172,7 @@ export class Engine {
         continue;
       }
       if (res.status === 404 || res.status === 400 || res.status === 413) { m.dead = true; continue; }
-      if (res.status === 503 || res.status === 500 || res.status === 0) { if (++fails > 3) return null; await this.pause(2500 * fails, 'net'); continue; }
+      if ([500, 502, 503, 504, 520, 522, 524, 0].includes(res.status)) { if (++fails > 3) return null; await this.pause(2500 * fails, 'net'); continue; }
       if (++fails > 3) return null;
     }
     return null;
@@ -265,7 +265,8 @@ export class Engine {
       const res = await this.io.gemini(m.id, body, { sec, signal: this.signal });
       this.tally(m.id, res);
       const netDown = res.status === 0; // انقطاع الشبكة (لا يخص النموذج): لا نهدّئه ولا نعدّه ضغطاً
-      const overloaded = [500, 502, 503, 504].includes(res.status);
+      // 520–524 من Cloudflare: الطلب تجاوز 100 ثانية عند Google (نموذج بطيء الآن): يُهدّأ ويُجرَّب غيره كالضغط
+      const overloaded = [500, 502, 503, 504, 520, 521, 522, 523, 524].includes(res.status);
       if (!isLite) {
         if (overloaded) { if (!this.strong5xx) this.strongFailSince = this.now(); this.strong5xx++; } else if (res.ok) this.strong5xx = 0;
       }
