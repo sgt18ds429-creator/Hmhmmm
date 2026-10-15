@@ -258,7 +258,8 @@ export function buildPdfParts(doc, opts = {}) {
       } else if (b.t === 'p') {
         parts.push(`<p${cls} dir="${dirOf(b.text)}">${inlineHtml(b.text)}</p>`);
       } else if (b.t === 'ul' || b.t === 'ol') {
-        parts.push(`<${b.t}${b.box ? ` class="box${en ? ' en' : ''}"` : cls} dir="${dirOf(b.items.join(' '))}">${b.items.map((i) => `<li>${inlineHtml(i)}</li>`).join('')}</${b.t}>`);
+        const from = b.t === 'ol' && b.start > 1 ? ` style="counter-reset:n ${b.start - 1}"` : '';
+        parts.push(`<${b.t}${b.box ? ` class="box${en ? ' en' : ''}"` : cls}${from} dir="${dirOf(b.items.join(' '))}">${b.items.map((i) => `<li>${inlineHtml(i)}</li>`).join('')}</${b.t}>`);
       } else if (b.t === 'table' && b.rows?.length) {
         const cols = b.head.length;
         const row = (cells, tag) => `<tr>${Array.from({ length: cols }, (_, c) => `<${tag} dir="${dirOf(cells[c] || '')}">${inlineHtml(cells[c] || '')}</${tag}>`).join('')}</tr>`;

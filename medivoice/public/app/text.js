@@ -359,7 +359,15 @@ export function parseMarkup(raw) {
       const last = blocks[blocks.length - 1];
       const kind = ordered ? 'ol' : 'ul';
       if (last?.t === kind && last._open) last.items.push(fixInline(m[1]));
-      else blocks.push({ t: kind, items: [fixInline(m[1])], _open: true });
+      else {
+        const b = { t: kind, items: [fixInline(m[1])], _open: true };
+        // قائمة مرقمة تقطعها فقرة ثم تكمل (2. 3. …): يبقى ترقيمها متصلاً
+        if (ordered) {
+          const n = parseInt(line.match(/^[\d٠-٩]+/)[0].replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d))), 10);
+          if (n > 1) b.start = n;
+        }
+        blocks.push(b);
+      }
       continue;
     } else {
       para.push(line);
@@ -381,7 +389,7 @@ export function blocksToMarkup(blocks) {
     else if (b.t === 'p') out.push(b.text);
     else if (b.t === 'note') out.push(`> ${b.text}`);
     else if (b.t === 'ul') out.push(b.items.map((i) => `- ${i}`).join('\n'));
-    else if (b.t === 'ol') out.push(b.items.map((i, n) => `${n + 1}. ${i}`).join('\n'));
+    else if (b.t === 'ol') out.push(b.items.map((i, n) => `${(b.start || 1) + n}. ${i}`).join('\n'));
     else if (b.t === 'table') out.push([row(b.head), row(b.head.map(() => '---')), ...b.rows.map(row)].join('\n'));
     else if (b.t === 'figreq') out.push(`@fig: ${b.kind} | ${b.query} | ${b.alt || ''} | ${b.show || ''} | ${b.caption || ''}`);
     else if (b.t === 'slidereq') out.push(`@slide: ${b.page} | ${b.caption || ''}`);

@@ -876,3 +876,24 @@ test('ضغط متواصل (503) على النماذج الدقيقة: ينزل �
   assert.equal(r?.model, 'gemini-x-lite');
   assert.ok(seen.filter((m) => !/lite/.test(m)).length >= 3);
 });
+
+test('المراجعة لا تضيف كلام المحاضر بلهجته ولا ما هو موجود أصلاً، وتضيف الناقص فعلاً', () => {
+  const blocks = parseMarkup(`## انسداد الأمعاء الغليظة
+- التواء الأعور [[cecal volvulus]]: يتوسع الأعور [[dilated cecum]] وينتقل نحو الربع العلوي الأيسر [[left upper quadrant]].
+- يكون فيها القولون متوسعاً.
+
+## الخلاصة
+- نقرأ الصورة بطريقة مرتبة.`).map((b) => ({ id: uid(), ...b }));
+  const r = applyReview(blocks, {
+    fixes: [{ find: 'يكون فيها القولون متوسعاً', replace: 'يكون فيها القولون متوسعاً بس هسة أكثر المراكز ما تطلبه' }],
+    missing: [
+      { after: 'انسداد الأمعاء الغليظة', add: 'وعندنا الـ [[cecal volvulus]] والـ [[dilated cecum]] يروح للـ [[left upper quadrant]].' },
+      { after: 'الخلاصة', add: 'والمحاضرة الجاية راح تكون عن الـ [[barium studies]] فراجعوا الأناتومي.' },
+      { after: 'انسداد الأمعاء الغليظة', add: '> متلازمة أوجيلفي [[Ogilvie syndrome]] توسع في القولون دون سبب ميكانيكي.' },
+    ],
+  }, { lang: 'ar' });
+  assert.deepEqual(r, { fixes: 0, added: 1 });
+  const text = blocks.map(blockText).join('\n');
+  assert.match(text, /Ogilvie syndrome/);
+  assert.ok(!/هسة|يروح للـ|الجاية/.test(text), text);
+});

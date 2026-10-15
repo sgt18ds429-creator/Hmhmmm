@@ -16,6 +16,7 @@ const { browser, context, page } = await launch({ mobile: true });
 await context.addInitScript(() => { window.print = () => { window.__printed = (window.__printed || 0) + 1; }; });
 await context.addCookies([{ name: cookie.split('=')[0], value: cookie.split('=')[1], domain: new URL(BASE).hostname, path: '/' }]);
 page.on('pageerror', (e) => console.log('[pageerror]', e.message));
+page.on('requestfailed', (r) => console.log('[requestfailed]', r.url().slice(0, 100), r.failure()?.errorText));
 await page.goto(BASE + '/');
 await page.waitForSelector('.view', { timeout: 20000 });
 await page.evaluate(async (d) => { const db = await import('/app/db.js'); d.id = 'print-1'; d.createdAt = Date.now(); await db.saveLecture(d); }, doc);
@@ -26,6 +27,8 @@ await page.waitForSelector('.paper', { timeout: 20000 });
 await page.locator('.docbar-actions .icon-btn').click();
 await page.locator('.menu button', { hasText: 'طباعة' }).click();
 const t0 = Date.now();
+// الصفحات تُرتّب ثم يظهر زر يفتح نافذة الطباعة (iPhone يمنع فتحها تلقائياً بعد انتظار)
+await page.locator('.sheet.open button', { hasText: 'فتح نافذة الطباعة' }).click({ timeout: 90_000 });
 let res = null;
 while (Date.now() - t0 < 90_000) {
   await page.waitForTimeout(500);

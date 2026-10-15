@@ -220,7 +220,7 @@ export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
     if (b.t === 'h') node = h('div', { class: `blk ${b.level === 3 ? 'h3' : 'h2'}` }, grip, textNode(b, null));
     else if (b.t === 'p') node = h('div', { class: 'blk p' }, grip, textNode(b, null));
     else if (b.t === 'note') node = h('div', { class: 'blk note' }, grip, h('span', { class: 'tag' }, 'مهم'), textNode(b, null));
-    else if (b.t === 'ul' || b.t === 'ol') node = h('div', { class: b.box ? 'blk box' : 'blk' }, grip, h(b.t, { dir: dirOf(b.items.join(' ')) }, b.items.map((_, i) => h('li', null, textNode(b, i)))));
+    else if (b.t === 'ul' || b.t === 'ol') node = h('div', { class: b.box ? 'blk box' : 'blk' }, grip, h(b.t, { dir: dirOf(b.items.join(' ')), style: b.t === 'ol' && b.start > 1 ? { counterReset: `n ${b.start - 1}` } : null }, b.items.map((_, i) => h('li', null, textNode(b, i)))));
     else if (b.t === 'table') {
       node = h('div', { class: 'blk tbl-wrap' }, grip, h('div', { class: 'tbl-scroll' }, h('table', { class: 'tbl', dir: dirOf(blockText(b)) },
         h('thead', null, h('tr', null, b.head.map((_, c) => h('th', null, cellNode(b, -1, c))))),

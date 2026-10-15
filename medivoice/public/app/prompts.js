@@ -429,6 +429,7 @@ Review the notes against the transcript and report:
 2. "missing": information the lecturer clearly explained that is absent from the notes${high ? ' and is exam-relevant' : ''}. Each: "after" = the exact text of an existing heading (## or ###) that the information belongs under, and "add" = the lines to append at the end of that heading's part, in the notes' own markup (bullets, paragraphs, > for stressed facts, terms in [[ ]]). Do not add what is already there, and do not invent anything.
 3. "verdict": one short sentence on the overall quality.
 
+Write every replacement and addition in the notes' own language and style (clear formal prose, terms in [[ ]]); never copy the lecturer's spoken wording, dialect or filler. Before adding, check the whole notes: if the information is already there in other words or in another part, do not add it.
 Report at most 40 fixes and 15 additions. If the notes are correct and complete, return empty lists.
 Output: {"fixes":[{"find":"...","replace":"..."}],"missing":[{"after":"...","add":"..."}],"verdict":"..."}`
     : `${metaLine(meta)}
@@ -448,6 +449,7 @@ ${notes}
 2. "missing": معلومات شرحها المحاضر بوضوح وغير موجودة في الملزمة${high ? ' وهي مهمة للامتحان' : ''}. لكل واحدة: "after" = النص الحرفي لعنوان موجود (## أو ###) تنتمي إليه المعلومة، و "add" = الأسطر التي تُضاف في آخر ذلك الجزء، بترميز الملزمة نفسه (نقاط - أو فقرات، و > لما شدّد عليه المحاضر، والمصطلحات بين [[ ]]). لا تضف ما هو موجود أصلاً، ولا تخترع شيئاً.
 3. "verdict": جملة قصيرة عن جودة الملزمة عموماً.
 
+اكتب كل تصحيح وإضافة بأسلوب الملزمة نفسه: عربية فصحى واضحة والمصطلحات بالإنجليزية بين [[ ]]، ولا تنسخ كلام المحاضر بلهجته العامية أو حشوه أبداً. وقبل أي إضافة افحص الملزمة كلها: إذا كانت المعلومة موجودة بصياغة أخرى أو في جزء آخر فلا تضفها.
 أبلغ عن 40 تصحيحاً و 15 إضافة على الأكثر. إذا كانت الملزمة صحيحة وكاملة فأرجع القوائم فارغة.
 أخرج: {"fixes":[{"find":"...","replace":"..."}],"missing":[{"after":"...","add":"..."}],"verdict":"..."}`;
   return { system, user };

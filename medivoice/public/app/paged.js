@@ -194,7 +194,8 @@ export function pagedRuntime(cfg, win) {
     if (piece !== items[i]) { part = piece; i += 1; } // البند نفسه انقسم: بدايته تبقى
     if (i === 0) return list;
     const rest = list.cloneNode(false);
-    if (list.nodeName === 'OL') rest.style.counterReset = `n ${i}`;
+    // القائمة قد تبدأ من رقم غير 1 (تكملة قائمة قطعتها فقرة): التكملة على الصفحة التالية تتبعها
+    if (list.nodeName === 'OL') rest.style.counterReset = `n ${(parseInt(String(list.style.counterReset || '').split(' ')[1], 10) || 0) + i}`;
     if (part) rest.append(part);
     rest.append(...items.slice(i));
     if (!rest.firstChild) return null;

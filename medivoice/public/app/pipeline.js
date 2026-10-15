@@ -5,7 +5,7 @@
 import { chunkAudio, probeAudio, compressChunk, resetCompression, AudioError } from './chunker.js';
 import {
   cleanWhisper, pickCut, wordsBetween, wordsToText, splitByWords, parseMarkup, joinChunks, blocksToMarkup,
-  countWords, collectTerms, blockText, stripMarkup, parseJsonLoose, uid, langOf, termsIn, textHash, normalize, isNotes, repetitionScore, collapseMarkup, collapseRepeats, collapseCycles,
+  countWords, tokens, collectTerms, blockText, stripMarkup, parseJsonLoose, uid, langOf, termsIn, textHash, normalize, isNotes, repetitionScore, collapseMarkup, collapseRepeats, collapseCycles,
   qualityGate, cleanBlockList,
 } from './text.js';
 import {
@@ -210,7 +210,11 @@ export class Engine {
       const isLite = /lite/.test(m.id);
       const generationConfig = { temperature, maxOutputTokens: maxTokens };
       if (json) generationConfig.responseMimeType = 'application/json';
-      if (!m.plain && /^gemini-3/.test(m.id)) generationConfig.thinkingConfig = { thinkingLevel: thinking || (isLite ? 'minimal' : 'low') };
+      if (!m.plain && /^gemini-3/.test(m.id)) {
+        let level = thinking || (isLite ? 'minimal' : 'low');
+        if (level === 'minimal' && m.noMinimal) level = 'low'; // نماذج لا تقبل «minimal»: أقرب مستوى سريع
+        generationConfig.thinkingConfig = { thinkingLevel: level };
+      }
       const body = { contents: [{ role: 'user', parts }], generationConfig, safetySettings: SAFETY };
       if (system) body.systemInstruction = { parts: [{ text: system }] };
       const res = await this.io.gemini(m.id, body, { sec, signal: this.signal });
@@ -242,7 +246,11 @@ export class Engine {
       if (res.status === 400 && /API key not valid|API_KEY_INVALID/i.test(msg) || res.status === 401 || res.status === 403 && /key|permission/i.test(msg)) {
         throw new PipelineError('key_gemini', 'gemini key rejected');
       }
-      if (res.status === 400 && /thinking/i.test(msg) && !m.plain) { m.plain = true; continue; }
+      if (res.status === 400 && /thinking/i.test(msg) && !m.plain) {
+        // «MINIMAL is not supported»: نعيد بمستوى low (بدون إعداد التفكير يفكّر النموذج طويلاً ويبطئ)
+        if (/minimal/i.test(msg) && !m.noMinimal) m.noMinimal = true; else m.plain = true;
+        continue;
+      }
       if (res.status === 404 || res.status === 400 && /not (found|supported)|no longer available/i.test(msg)) { m.dead = true; continue; }
       if (res.status === 400 || res.status === 413) return { blocked: true, reason: `bad_request: ${msg.slice(0, 120)}` };
       // ضغط على النموذج (503/500) أو انقطاع: نهدّئه مدة تطول مع كل فشل وننتقل لغيره، ولا نستسلم بسرعة
@@ -1182,7 +1190,7 @@ export async function complete(doc, engine, { io, emit = () => {}, review = fals
   // تصحيحات المراجعة تصل أيضاً للنقاط وللأسئلة التي كُتبت من الشرح قبل تصحيحه
   if (rev?.parsed) {
     const extraBefore = [...(kp || []), ...(qs && !mcqAfterReview ? qs : [])];
-    if (extraBefore.length) applyReview(extraBefore, rev.parsed, { additions: false });
+    if (extraBefore.length) applyReview(extraBefore, rev.parsed, { additions: false, lang });
   }
   doc.blocks = doc.blocks.filter((b) => b.t !== 'slidereq'); // طلبات سلايدات بلا صورة
   const body = doc.blocks.slice(); // متن الشرح بصوره، قبل النقاط والأسئلة
@@ -1470,15 +1478,32 @@ function figureQueue(engine, { lang, emit }) {
   const jobs = [];
   const waiting = [];
   let active = 0, limit = 1 + engine.par, total = 0, picked = 0, cancelled = false;
-  const stat = { requested: 0, candidates: 0, noCandidates: 0, rounds: 0, vision: 0, text: 0, skipped: 0, failed: 0, missed: [] };
+  const stat = { requested: 0, candidates: 0, noCandidates: 0, rounds: 0, vision: 0, text: 0, skipped: 0, failed: 0, similar: 0, missed: [] };
   const take = async () => { while (active >= limit) await new Promise((r) => waiting.push(r)); active++; };
+  // طلبات صور متشابهة في أقسام مختلفة (نفس الصورة الشعاعية مرتين): تُطلب مرة واحدة
+  const asked = [];
+  const similar = (f) => {
+    const t = new Set(tokens(`${f.query} ${f.alt || ''}`));
+    if (!t.size) return false;
+    for (const prev of asked) {
+      let both = 0;
+      for (const w of t) if (prev.has(w)) both++;
+      if (both / (t.size + prev.size - both) >= 0.6) return true;
+    }
+    asked.push(t);
+    return false;
+  };
   const release = () => { active--; waiting.shift()?.(); };
   return {
     stats: () => ({ ...stat, picked }),
     add(blocks, section) {
       const words = blocks.reduce((n, b) => n + countWords(blockText(b)), 0);
       const cap = Math.min(4, Math.max(1, Math.round(words / 250)));
-      const reqs = blocks.map((b, i) => [b, i]).filter(([b]) => b.t === 'figreq').slice(0, cap);
+      const reqs = blocks.map((b, i) => [b, i]).filter(([b]) => b.t === 'figreq').slice(0, cap).filter(([b]) => {
+        if (!similar(b)) return true;
+        stat.similar++;
+        return false;
+      });
       if (!reqs.length) return;
       const figs = reqs.map(([b, i]) => {
         const f = { anchor: b.id, replace: true, query: b.query, alt: b.alt, kind: b.kind, show: b.show, caption: b.caption, ...contextBefore(blocks, i) };
@@ -1865,6 +1890,16 @@ function replaceInBlock(b, find, replace, all, dry = false) {
   return n;
 }
 
+/**
+ * كلمات عامية واضحة (عراقية خصوصاً): الملزمة بالفصحى، والمراجِع (خاصة النموذج الخفيف) ينسخ أحياناً كلام المحاضر
+ * بلهجته في الإضافات والتصحيحات، فتُرفض تلك.
+ */
+const DIALECT = /(?:^|[\s،,.؛:()«»"'\-])(?:هسة|هسه|هسا|هاي|هذوله|شلون|شنو|ليش|وين|ماكو|اكو|أكو|نسوي|يسوي|تسوي|تنطي|ينطي|انطي|حجينا|نحجي|يحجي|تحجي|يكدر|نكدر|تكدر|ميكدر|كلش|اهواي|هواية|الجاية|هيج|هيچ|اكلك|أكلك|يجيكم|يجي|تجي|نجي|خلي|خلّي|خلينا|فاحفظوها|احفظوها)(?=$|[\s،,.؛:()«»"'\-])/;
+const dialectIn = (text, lang) => lang !== 'en' && DIALECT.test(stripMarkup(text));
+
+/** كلمات المقارنة: مطبّعة وبلا سوابق عربية شائعة (و، ال، بال…) حتى تُقارن الصيغ المختلفة للكلمة نفسها */
+const stemsOf = (text) => tokens(text).map((t) => (/^[a-z0-9]/.test(t) ? t : t.replace(/^(و|ف)?(بال|لل|ال|ب|ل|ك)?/, ''))).filter((t) => t.length >= 3);
+
 /** تصحيح إملاء مصطلح أو اسم (لا أرقام، 4 كلمات أو أقل): يوحَّد في كل المواضع. غيره يُطبَّق على موضعه الوحيد فقط. */
 const termFix = (find, replace) => {
   const bare = (t) => t.replace(/\[\[|\]\]/g, '');
@@ -1877,12 +1912,13 @@ const termFix = (find, replace) => {
  * @param opts.additions false = التصحيحات فقط (للنقاط والأسئلة)
  * @returns { fixes, added }
  */
-export function applyReview(blocks, parsed, { additions = true } = {}) {
+export function applyReview(blocks, parsed, { additions = true, lang = 'ar' } = {}) {
   let fixes = 0, added = 0;
   for (const fx of Array.isArray(parsed?.fixes) ? parsed.fixes.slice(0, 40) : []) {
     const find = squash(fx?.find), replace = squash(fx?.replace);
     if (!find || find === replace || countWords(find) < 2) continue;
     if (replace.length > Math.max(find.length * 3, find.length + 300)) continue; // ليس تصحيحاً بل إعادة كتابة
+    if (dialectIn(replace, lang) && !dialectIn(find, lang)) continue; // التصحيح يُدخل عامية على الفصحى
     const all = termFix(find, replace);
     let total = 0;
     for (const b of blocks) total += replaceInBlock(b, find, replace, true, true);
@@ -1901,6 +1937,17 @@ export function applyReview(blocks, parsed, { additions = true } = {}) {
     const level = blocks[at].level || 2;
     let end = at + 1;
     while (end < blocks.length && !(blocks[end].t === 'h' && (blocks[end].level || 2) <= level)) end++;
+    const addText = extra.map(blockText).join(' ');
+    if (dialectIn(addText, lang)) continue; // كلام المحاضر بلهجته، لا شرح مكتوب
+    // موجودة أصلاً بصياغة أخرى في القسم (كل مصطلحاتها مذكورة وأغلب كلماتها): ليست ناقصة
+    const secText = blocks.slice(at, end).map(blockText).join(' ');
+    const have = new Set(stemsOf(secText));
+    const words = stemsOf(addText);
+    const overlap = words.length ? words.filter((w) => have.has(w)).length / words.length : 1;
+    const addTerms = [...termsIn(addText).keys()];
+    const secTerms = termsIn(secText);
+    const knownTerms = addTerms.length > 0 && addTerms.every((k) => secTerms.has(k));
+    if ((knownTerms && overlap >= 0.4) || overlap >= 0.75) continue;
     blocks.splice(end, 0, ...extra.map((b) => ({ id: uid(), ...b })));
     added++;
   }
@@ -1929,7 +1976,7 @@ export async function reviewNotes(doc, engine, { emit = () => {} } = {}) {
       if (!r) break; // لا نموذج متاح الآن
     }
     if (!parsed) { emit({ type: 'note', code: 'review_failed' }); return null; }
-    const { fixes, added } = applyReview(doc.blocks, parsed);
+    const { fixes, added } = applyReview(doc.blocks, parsed, { lang });
     doc.stats.audit = { fixes, added, verdict: String(parsed.verdict || '').slice(0, 200), model: r.model };
     doc.stats.words = doc.blocks.reduce((n, b) => n + countWords(blockText(b)), 0);
     emit({ type: 'reviewed', fixes, added });
