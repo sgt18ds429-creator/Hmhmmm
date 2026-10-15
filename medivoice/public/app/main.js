@@ -229,13 +229,19 @@ export async function start(MV, root) {
       box.append(row);
     }
     const run = await db.getPref('active-run');
-    if (run?.job && !run.recId && (await db.countParts(run.job).catch(() => 0)) > 0) {
+    if (run?.job && !run.recId) {
+      const src = run.meta ? await db.getSource(run.job).catch(() => null) : null;
+      const parts = await db.countParts(run.job).catch(() => 0);
+      if (!src?.file && !parts) return;
       const row = h('div', { class: 'banner info' }, icon('info'),
-        h('span', null, `تحويل «${run.name || 'التسجيل'}» توقف قبل ما يكمل. اختر نفس الملف ويكمل من مكانه.`),
-        h('button', { class: 'btn small', onclick: pickFile }, 'اختر الملف'),
+        h('span', null, src?.file ? `تحويل «${run.name || 'التسجيل'}» توقف قبل ما يكمل.` : `تحويل «${run.name || 'التسجيل'}» توقف قبل ما يكمل. اختر نفس الملف ويكمل من مكانه.`),
+        src?.file
+          ? h('button', { class: 'btn small', onclick: () => go('run', { file: src.file, meta: run.meta, pdfFile: src.pdf || null }) }, 'أكمل')
+          : h('button', { class: 'btn small', onclick: pickFile }, 'اختر الملف'),
         h('button', { class: 'icon-btn', 'aria-label': 'تجاهل', onclick: async () => {
           await db.setPref('active-run', null);
           await db.clearParts(run.job).catch(() => {});
+          await db.clearSource(run.job).catch(() => {});
           row.remove();
         } }, icon('close')));
       box.append(row);
@@ -364,4 +370,25 @@ export async function start(MV, root) {
   const fresh = !ctx.session.keys.groq.linked && !ctx.session.keys.gemini.linked;
   await go(fresh ? 'link' : 'home');
   if (!fresh) loadCaps().catch(() => {});
+  if (!fresh) resumeInterrupted().catch(() => {});
+
+  /**
+   * تحويل كان يعمل قبل دقائق وانقطع لأن الهاتف أغلق الصفحة أو أعاد تحميلها (يحصل بعد الخروج الطويل من
+   * الموقع): يكمل وحده من مكانه بنفس الملف والإعدادات. مرتين على الأكثر لنفس التحويل، وليس ما أوقفه
+   * الطالب أو انتهى بخطأ (هذا يظهر في الرئيسية بزر «أكمل»).
+   */
+  async function resumeInterrupted() {
+    const run = await db.getPref('active-run');
+    if (!run?.job || !run.meta || run.failed || run.stopped || run.saveFailed || (run.resumes || 0) >= 2) return;
+    if (Date.now() - (run.at || 0) > 30 * 60_000) return;
+    // ما زال يعمل في نافذة أخرى (التطبيق المثبت والمتصفح يتشاركان التخزين): لا نسخة ثانية
+    const busy = await navigator.locks?.query?.().then((q) => (q.held || []).some((l) => l.name === `mv-run:${run.job}`)).catch(() => false);
+    if (busy) return;
+    const stored = await db.getSource(run.job).catch(() => null);
+    const src = run.recId ? { file: await db.getRecording(run.recId).catch(() => null), pdf: stored?.pdf || null } : stored;
+    if (!src?.file || ctx.view !== 'home') return;
+    if (run.meta.mode === 'integrated' && !src.pdf) return; // بلا السلايدات لا تكون ملزمة متكاملة
+    ctx.toast('أكمل تحويل محاضرتك من مكانه.', 'ok');
+    go('run', { file: src.file, meta: run.meta, pdfFile: src.pdf || null, recId: run.recId || null, resumes: (run.resumes || 0) + 1 });
+  }
 }

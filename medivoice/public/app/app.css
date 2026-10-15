@@ -307,7 +307,37 @@
 .game-progress i { position: absolute; inset-block: 0; inset-inline-start: 0; width: 0; background: linear-gradient(90deg, rgba(84, 51, 236, 0.55), rgba(201, 35, 193, 0.55)); transition: width 0.8s var(--ease); }
 .game-progress b { position: relative; font-size: 0.95rem; color: var(--text); }
 .game-progress small { position: relative; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text-2); font-size: 0.8rem; }
-.game-canvas { display: block; width: 100%; height: min(56vh, 560px); height: min(60dvh, 560px); border-radius: 20px; background: #0d0720; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+.race { position: relative; height: min(56vh, 560px); height: min(60dvh, 560px); border-radius: 20px; overflow: hidden; background: #0d0720; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; cursor: pointer; }
+.race .game-canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
+.race-hud { position: absolute; inset: 0 0 auto; display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 12px 14px; pointer-events: none; }
+.race-meta { display: grid; gap: 5px; justify-items: start; }
+.race-meta small { font-size: 0.78rem; color: var(--text-2); }
+.race-score { text-align: end; }
+.race-score b { display: block; font-family: var(--font-latin); font-size: 1.85rem; font-weight: 700; line-height: 1; color: #fff; text-shadow: 0 2px 14px rgba(201, 35, 193, 0.7); }
+.race-score small { font-size: 0.7rem; color: var(--text-3); }
+.race-combo { font-family: var(--font-display); font-size: 0.95rem; font-weight: 700; color: var(--lilac); }
+.race-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.race-chip { padding: 1px 9px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; background: rgba(10, 6, 24, 0.6); box-shadow: inset 0 0 0 1px currentColor; }
+.race-chip.shield { color: #7cc8ff; }
+.race-chip.magnet { color: var(--amber); }
+.race-chip.nitro { color: var(--rose); }
+.race-card { position: absolute; inset-inline: 18px; top: 50%; transform: translateY(-50%); display: grid; gap: 8px; justify-items: center; padding: 20px 18px 18px; border-radius: 22px; text-align: center; background: rgba(10, 6, 24, 0.84); box-shadow: 0 0 0 1px var(--line-2), 0 24px 60px -24px rgba(133, 33, 213, 0.9); pointer-events: none; }
+.race-card[hidden] { display: none; }
+.race-card h3 { font-size: 1.55rem; color: var(--text); }
+.race-card[data-mode='over'] h3 { color: var(--rose); }
+.race-card[data-mode='finished'] h3 { color: var(--mint); }
+.race-card p { margin: 0; color: var(--text-2); font-size: 0.92rem; }
+.race-card .race-result b { font-family: var(--font-latin); font-size: 1.25rem; color: var(--text); }
+.race-card .race-record { color: var(--amber); font-weight: 700; }
+.race-powers { display: grid; gap: 4px; margin: 2px 0 4px; padding: 0; list-style: none; color: var(--text-2); font-size: 0.85rem; }
+.race-powers li { display: flex; align-items: center; gap: 8px; }
+.race-powers i { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.race-powers .shield i { background: #7cc8ff; box-shadow: 0 0 8px #7cc8ff; }
+.race-powers .magnet i { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+.race-powers .nitro i { background: var(--rose); box-shadow: 0 0 8px var(--rose); }
+.race-cta { margin-top: 4px; padding: 8px 20px; border-radius: 999px; background: var(--grad); color: #fff; font-family: var(--font-display); font-weight: 700; box-shadow: var(--glow); animation: race-cta 1.8s ease-in-out infinite; }
+@keyframes race-cta { 50% { transform: scale(1.05); } }
+@media (prefers-reduced-motion: reduce) { .race-cta { animation: none; } }
 .game-hint { margin: 0; text-align: center; color: var(--text-3); font-size: 0.8rem; }
 
 /* مقاطع إنجليزية داخل نص عربي: معزولة الاتجاه، والقصيرة لا تنكسر بين سطرين */

@@ -198,7 +198,9 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
   ctx.setBar('sub', { title });
   const controller = new AbortController();
   let running = true, waitTimer = null;
-  const t0 = Date.now();
+  // الوقت المعروض وقت العمل الفعلي: ما قضاه الطالب خارج الموقع لا يُحسب
+  const clock = () => (ctx.io.activeNow ? ctx.io.activeNow() : Date.now());
+  const t0 = clock();
 
   const pct = h('span', null, '0');
   const status = h('p', { class: 'run-status' }, 'أقرأ الملف…');
@@ -212,7 +214,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
   const playGame = () => {
     if (game || !running) return;
     ctx.ribbon.pause?.(); // الشريط المتحرك يتوقف أثناء اللعبة حتى لا يتنافسا على الرسم
-    game = openGame({ onClose: () => { game = null; ctx.ribbon.resume?.(); flushLive(); } });
+    game = openGame({ build: ctx.session.build, onClose: () => { game = null; ctx.ribbon.resume?.(); flushLive(); } });
     game.update(shown, status.textContent);
   };
   const gameBtn = h('button', { class: 'btn game-btn', onclick: playGame }, icon('play'), 'العب سباق سيارات لحد ما تجهز');
@@ -233,12 +235,13 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
   addEventListener('beforeunload', beforeUnload);
   // الشاشة تبقى مضاءة (وإلا قفل الهاتف يوقف التحويل)، حتى على iPhone الأقدم والتطبيق المثبت
   const release = keepAwake();
-  // الجوال يوقف الصفحات التي في الخلفية، فيتوقف التحويل أو يبطأ كثيراً
+  // الجوال يوقف الصفحات التي في الخلفية: يتوقف التحويل مؤقتاً، والطلبات التي انقطعت تُعاد عند الرجوع
+  // فيكمل من نفس المكان بدون أي نقص
   let hiddenAt = 0;
   const onVisible = () => {
     if (document.hidden) { hiddenAt = Date.now(); return; }
     if (!running) return;
-    if (hiddenAt && Date.now() - hiddenAt > 10_000) ctx.toast('خلّي الصفحة قدّامك لحد ما يخلص: إذا طلعت منها يتوقف التحويل أو يبطأ.');
+    if (hiddenAt && Date.now() - hiddenAt > 10_000) ctx.toast('رجعت، أكمل من نفس المكان.');
     hiddenAt = 0;
   };
   document.addEventListener('visibilitychange', onVisible);
@@ -246,7 +249,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
   const writing = { start: new Map(), done: 0, total: 0 };
   const tick = setInterval(() => {
     if (!running) return;
-    if (!waitTimer) sub.textContent = `${fmtTime((Date.now() - t0) / 1000)} · خلّي الصفحة مفتوحة وقدّامك`;
+    if (!waitTimer) sub.textContent = `${fmtTime((clock() - t0) / 1000)} · تقدر تطلع وترجع، يكمل من نفس المكان`;
     game?.update(shown, status.textContent);
     if (writing.start.size && writing.total) {
       let partial = 0;
@@ -477,21 +480,36 @@ function slimSlides(doc) {
   if (doc.slides?.pages) doc.slides = { pages: doc.slides.pages.map((p) => ({ page: p.page, text: p.text })), figs: doc.slides.figs || [] };
 }
 
-export function viewRun(ctx, el, { file, meta, info, pdfFile = null, recId = null }) {
+export function viewRun(ctx, el, { file, meta, info, pdfFile = null, recId = null, resumes = 0 }) {
   const notes = isNotes(meta.mode);
   const cfg = { chunkSec: ctx.session.config.chunkSec, overlapSec: ctx.session.config.overlapSec };
   const job = hash([file.name, file.size, file.lastModified, meta.speech, meta.style, cfg.chunkSec].join('|'));
+  // أثر التحويل الجاري: إذا أغلق الهاتف الصفحة أو أعاد تحميلها (يحصل بعد الخروج الطويل منها) يكمل من مكانه
+  // عند فتح الموقع، بنفس الملف والإعدادات. failed/stopped: انتهى بخطأ أو أوقفه الطالب (لا يُستأنف وحده)
+  const trace = { job, name: file.name || '', size: file.size, mode: meta.mode, recId, meta, resumes, at: Date.now() };
+  let ended = false; // بعد العلامة الأخيرة (اكتمل/أوقف/فشل) لا تمسحها نبضة متأخرة
+  const mark = (extra = {}) => db.setPref('active-run', { ...trace, ...extra, at: Date.now() }).catch(() => {});
+  const finalMark = (extra) => { ended = true; return mark(extra); };
   const screen = runScreen(ctx, el, {
     title: 'جارِ التحويل',
     stages: stagesFor(notes ? meta.mode : 'transcript'),
     weights: notes ? { transcribe: 0.55, write: 0.28 } : { transcribe: 0.86, write: 0 },
     retry: () => ctx.go('run', { file, meta, info, pdfFile, recId }, { replace: true }),
   });
+  // نبضة كل 20 ثانية مع التقدم: آخر وقت كان فيه التحويل يعمل
+  let beatAt = Date.now();
+  const emit = (e) => { if (!ended && Date.now() - beatAt > 20_000) { beatAt = Date.now(); mark(); } screen.emit(e); };
+
+  // قفل باسم التحويل طوال عمله: الاستئناف التلقائي في نافذة أخرى لا يبدأ نسخة ثانية منه
+  let unlock = null;
+  try { navigator.locks?.request?.(`mv-run:${job}`, () => new Promise((r) => { unlock = r; })).catch(() => {}); } catch { /* غير مدعوم */ }
 
   (async () => {
     try {
-      // أثر للتحويل الجاري: إذا انقطع (أُغلقت الصفحة أو أُعيد تشغيل الهاتف) تظهر في الرئيسية دعوة لإكماله
-      db.setPref('active-run', { job, name: file.name || '', size: file.size, mode: meta.mode, at: Date.now(), recId }).catch(() => {});
+      const prev = await db.getPref('active-run');
+      if (prev?.job && prev.job !== job) db.clearSource(prev.job).catch(() => {}); // نسخة تحويل سابق لم يكتمل: لم تعد تلزم
+      mark();
+      keepSource(job, recId ? null : file, pdfFile); // التسجيل المباشر محفوظ أصلاً، فيُحفظ معه PDF السلايدات فقط
       const caps = ctx.caps || await ctx.loadCaps();
       let slides = null;
       if (meta.mode === 'integrated' && pdfFile) {
@@ -509,25 +527,48 @@ export function viewRun(ctx, el, { file, meta, info, pdfFile = null, recId = nul
       const resumed = await db.countParts(job).catch(() => 0);
       if (resumed) ctx.toast(`أكمل من حيث توقفنا: ${resumed} مقطع جاهز.`);
       const doc = await runLecture({
-        file, meta, cfg, caps, io: ctx.io, emit: screen.emit, signal: screen.signal, slides,
+        file, meta, cfg, caps, io: ctx.io, emit, signal: screen.signal, slides,
         checkpoint: { get: (i) => db.getPart(job, i).catch(() => null), set: (i, p) => db.setPart(job, i, p).catch(() => {}) },
       });
-      if (screen.stopped) return; // أوقفه الطالب: لا يُحفظ ولا يأخذ الشاشة (الأجزاء المكتملة تبقى للاستئناف)
+      if (screen.stopped) { finalMark({ stopped: true }); return; } // أوقفه الطالب: لا يُحفظ (الأجزاء المكتملة تبقى للاستئناف)
       doc.partial = false;
       slimSlides(doc);
       slimFigures(doc);
-      const saved = await saveFinal(doc);
+      let saved = await saveFinal(doc);
+      // المساحة امتلأت: نسخة التسجيل لم تعد تلزم بعد اكتمال الملزمة، تُحذف ونحاول مرة ثانية
+      if (!saved) { await db.clearSource(job).catch(() => {}); saved = await saveFinal(doc); }
       if (saved) {
+        ended = true;
         await db.clearParts(job).catch(() => {});
+        db.clearSource(job).catch(() => {});
         db.setPref('active-run', null).catch(() => {});
         if (recId) db.deleteRecording(recId).catch(() => {});
-      }
+      } else finalMark({ saveFailed: true }); // الملزمة في الذاكرة لتنزيلها؛ لا يُعاد التحويل وحده عند فتح الموقع
       ctx.api('/api/done', { method: 'POST', body: {} }).then(() => ctx.refreshSession()).catch(() => {});
       screen.finish(doc, { mem: saved ? null : doc });
     } catch (e) {
+      finalMark(e?.name === 'AbortError' || e?.code === 'aborted' ? { stopped: true } : { failed: true });
       screen.failWith(e);
+    } finally {
+      unlock?.();
     }
   })();
+}
+
+/**
+ * نسخة من ملف التسجيل (و PDF السلايدات) للاستئناف بعد إعادة تحميل الصفحة، فقط إذا اتسعت لها مساحة الجهاز
+ * بوضوح (حتى لا تزاحم حفظ الملزمة نفسها)؛ وإلا يُطلب اختيار الملف عند الإكمال كما كان.
+ */
+async function keepSource(job, file, pdf) {
+  const size = (file?.size || 0) + (pdf?.size || 0);
+  if (!size) return;
+  let room = 200e6;
+  try {
+    const e = await navigator.storage?.estimate?.();
+    if (e?.quota) room = Math.min(400e6, (e.quota - (e.usage || 0)) * 0.4);
+  } catch { /* تقدير غير متاح */ }
+  if (size > room) return;
+  await db.saveSource(job, { file, pdf }).catch(() => {});
 }
 
 /** كتابة شرح مفصل لمحاضرة محفوظة (بدون إعادة الاستماع للتسجيل). تُحفظ كملزمة جديدة ويبقى الأصل. */

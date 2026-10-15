@@ -6,11 +6,11 @@ import { chunkAudio, probeAudio, compressChunk, resetCompression, AudioError } f
 import {
   cleanWhisper, pickCut, wordsBetween, wordsToText, splitByWords, parseMarkup, joinChunks, blocksToMarkup,
   countWords, tokens, collectTerms, blockText, stripMarkup, parseJsonLoose, uid, langOf, termsIn, textHash, normalize, isNotes, repetitionScore, collapseMarkup, collapseRepeats, collapseCycles,
-  qualityGate, cleanBlockList, bracketTerms,
+  qualityGate, cleanBlockList, bracketTerms, trimHeading, dialectLines,
 } from './text.js';
 import {
   whisperPrompt, audioPrompt, cleanupPrompt, glossaryPrompt, figuresPrompt, translatePrompt, translateExtrasPrompt,
-  notesPlanPrompt, notesSectionPrompt, reviewPrompt, proofreadPrompt, figureTextPickPrompt,
+  notesPlanPrompt, notesSectionPrompt, reviewPrompt, proofreadPrompt, figureTextPickPrompt, formalizePrompt,
   reviewNotesPrompt, mcqPrompt, mcqTranslatePrompt, mcqCheckPrompt, figuresBatchPrompt, slideFiguresPrompt,
 } from './prompts.js';
 import { findCandidates } from './images.js';
@@ -60,7 +60,9 @@ export class Engine {
   constructor(io, caps, emit = () => {}, signal) {
     this.io = io; this.caps = caps; this.emit = emit; this.signal = signal;
     // الوقت المسموح للمهمة كلها: محاضرة ساعة أو أقل تجهز خلال 9 دقائق. عند التأخر تُترك الأعمال الإضافية
-    this.t0 = Date.now();
+    // ساعة العمل الفعلي: بدون الوقت الذي قضاه الطالب خارج الموقع (الهاتف يوقف الصفحة حينها)
+    this.now = () => (typeof io.activeNow === 'function' ? io.activeNow() : Date.now());
+    this.t0 = this.now();
     this.budgetMs = 9 * 60_000;
     this.stt = new Lanes(caps.groq ? caps.sttModels : []);
     this.llm = new Lanes(caps.groq ? caps.groqModels : []);
@@ -87,7 +89,9 @@ export class Engine {
   check() { if (this.signal?.aborted) throw new PipelineError('aborted', 'aborted'); }
 
   /** هل استُهلك هذا الجزء من الوقت المسموح؟ */
-  late(fraction) { return Date.now() - this.t0 > this.budgetMs * fraction; }
+  late(fraction) { return this.now() - this.t0 > this.budgetMs * fraction; }
+  /** ما بقي من الوقت المسموح (قد يكون سالباً) */
+  remaining() { return this.budgetMs - (this.now() - this.t0); }
 
   async pause(ms, what) {
     if (ms > 4000) this.emit({ type: 'wait', seconds: Math.ceil(ms / 1000), what });
@@ -190,7 +194,7 @@ export class Engine {
    * @returns {Promise<{text:string, model:string}|{blocked:true}|null>} null = لا يوجد نموذج متاح
    */
   async gemini({ system, parts, json = false, maxTokens = 8192, sec = 0, lite = false, temperature = 0, strongWaitMs = 75_000, thinking = null, patienceMs = 0 }) {
-    const started = Date.now();
+    const started = this.now();
     // المهام المساعدة (نص/صور) تبدأ بالنماذج الخفيفة ثم الأقدم، حتى تبقى حصة أفضل النماذج للصوت
     const order = lite
       ? [...this.gem.items.filter((x) => /lite/.test(x.id)), ...this.gem.items.filter((x) => !/lite/.test(x.id)).reverse()]
@@ -272,7 +276,7 @@ export class Engine {
         netFails++;
         m.fails = (m.fails || 0) + 1;
         this.gem.cool(m, Math.min(30_000, 6000 * m.fails));
-        if (netFails > 40 || Date.now() - started > patience) return null;
+        if (netFails > 40 || this.now() - started > patience) return null;
         continue;
       }
       if (++netFails > 6) return null;
@@ -360,7 +364,7 @@ export class Engine {
     if (gemini && this.hasGemini) {
       // عند التأخر لا ننتظر النماذج الدقيقة إذا كانت في تهدئة: الخفيفة أسرع ولها حدود أعلى.
       // من له بديل (Groq) لا ينتظر ضغط Google طويلاً؛ ومن لا بديل له يصبر حتى 4 دقائق
-      const r = await this.gemini({ system, parts: [{ text: user }], maxTokens, temperature, thinking, lite, strongWaitMs: lite || this.late(0.6) ? 0 : 40_000, patienceMs: patienceMs ?? (this.hasGroqLlm ? 90_000 : 240_000) });
+      const r = await this.gemini({ system, parts: [{ text: user }], maxTokens, temperature, thinking, lite, strongWaitMs: lite || this.late(0.5) ? 0 : 40_000, patienceMs: patienceMs ?? (this.hasGroqLlm ? 90_000 : 240_000) });
       if (r && !r.blocked) return r;
       if (r?.blocked) blocked = r;
     }
@@ -441,7 +445,10 @@ async function refineChunk(engine, chunk, draft, meta, { first, last, exact, wea
       const { system, user } = audioPrompt(meta, { draft: useDraft ? anchor : '', first, last, exact: exact && useDraft && anchor === draft, insist, known });
       // بعد حلقة تكرار نعيد بحرارة خفيفة: الحرارة صفر هي التي تُبقي النموذج في الحلقة
       // مع مسودة Whisper موثوقة لا ننتظر ضغط Google أكثر من دقيقتين ونصف (المسودة المنقّحة بديل)
-      const r = await engine.gemini({ system, parts: [audio, { text: user }], sec, maxTokens: 16000, thinking: 'minimal', temperature: looped ? 0.3 : 0, patienceMs: trusted ? 150_000 : 300_000 });
+      // مع مرور الوقت يقل انتظار النماذج الدقيقة وصبر الضغط (المسودة الموثوقة بديل جاهز؛ بدونها يبقى الصبر أطول)
+      const hurry = engine.late(0.3);
+      const r = await engine.gemini({ system, parts: [audio, { text: user }], sec, maxTokens: 16000, thinking: 'minimal', temperature: looped ? 0.3 : 0,
+        strongWaitMs: hurry ? 12_000 : 75_000, patienceMs: trusted ? (hurry ? 60_000 : 150_000) : (hurry ? 150_000 : 300_000) });
       if (r?.blocked) blockedListen = true;
       if (!r || r.blocked) break;
       sec = 0;
@@ -577,7 +584,10 @@ export async function runLecture({ file, meta, cfg, caps, io, emit = () => {}, s
   const dual = caps.groq; // Whisper متاح: نستخدم التداخل والقطع عند السكتات
   const overlap = dual ? cfg.overlapSec : 0.5;
   const total = Math.max(1, Math.ceil((info.duration - 20) / cfg.chunkSec));
-  engine.budgetMs = Math.max(9 * 60_000, info.duration * 150); // نحو 15% من مدة التسجيل، و 9 دقائق على الأقل
+  // الهدف: الملزمة جاهزة خلال 8 دقائق من العمل الفعلي. الميزانية 7.5 دقيقة لمحاضرة حتى ساعة ونصف، وتزيد
+  // 4 دقائق لكل ساعة بعدها (الاستماع لا يُختصر). مع اقترابها: انتظار أقل للنماذج الدقيقة وتوازٍ أكثر،
+  // ثم تُترك الإضافات (التدقيق الإملائي، جولة صور ثانية، المراجعة الأخيرة) ولا يُترك شيء من المحتوى
+  engine.budgetMs = BUDGET_MS + Math.max(0, info.duration - 5400) * (4 * 60_000 / 3600);
   emit({ type: 'plan', duration: info.duration, chunks: total, info });
   emit({ type: 'stage', name: 'transcribe' });
 
@@ -599,14 +609,18 @@ export async function runLecture({ file, meta, cfg, caps, io, emit = () => {}, s
   const sttSlot = async () => { while (sttActive >= sttLimit) await new Promise((r) => sttWaiters.push(r)); sttActive++; };
   const sttFree = () => { sttActive--; sttWaiters.shift()?.(); };
   let chain = Promise.resolve({ cutEnd: -Infinity, tail: '' });
-  // مقاطع قيد المعالجة في نفس الوقت: كل مقطع يمسك صوته في الذاكرة حتى ينتهي، فلا نكثر على الهاتف
+  // مقاطع قيد المعالجة في نفس الوقت: كل مقطع يمسك صوته في الذاكرة حتى ينتهي. المقطع المضغوط (نحو 2MB)
+  // يسمح بمقطع إضافي؛ غير المضغوط (حتى 12MB على المتصفحات القديمة) يبقى على الحد الأقل حتى لا تمتلئ ذاكرة الهاتف
   const maxInFlight = 2 + engine.par;
+  let inFlightLimit = maxInFlight;
   let compressedBytes = 0;
 
   try {
     resetCompression();
     // الحد أقل من حد Gemini بنصف ميغابايت: غلاف الملف (m4a/ogg) يضيف فوق حجم الصوت نفسه
-    for await (const rawChunk of chunkAudio(file, { info, targetSec: cfg.chunkSec, overlapSec: overlap, maxBytes: GEMINI_MAX_INLINE - 512 * 1024, signal })) {
+    // cfg.chunks: مقاطع مقطوعة مسبقاً (لأدوات القياس في Node فقط)
+    const source = cfg.chunks || chunkAudio(file, { info, targetSec: cfg.chunkSec, overlapSec: overlap, maxBytes: GEMINI_MAX_INLINE - 512 * 1024, signal });
+    for await (const rawChunk of source) {
       engine.check();
       if (failure) throw failure;
       emit({ type: 'chunk', index: rawChunk.index, stage: 'cut', start: rawChunk.start, end: rawChunk.end, last: rawChunk.last });
@@ -624,6 +638,7 @@ export async function runLecture({ file, meta, cfg, caps, io, emit = () => {}, s
       // فالرفع على بيانات الهاتف يصير أسرع بكثير. إذا لم يدعمه المتصفح يبقى المقطع كما هو
       const chunk = cfg.compress === false ? rawChunk : await compressChunk(rawChunk, { signal });
       if (chunk.compressed) compressedBytes += chunk.compressed.from - chunk.compressed.to;
+      inFlightLimit = chunk.blob.size <= 4.5 * 1024 * 1024 ? maxInFlight + 1 : maxInFlight;
 
       // مسودة Whisper لهذا المقطع (تبدأ فوراً). السياق المكتوب بلغة المحاضرة حتى لا يُضلّل الكشف
       let prompt = '';
@@ -678,7 +693,7 @@ export async function runLecture({ file, meta, cfg, caps, io, emit = () => {}, s
       // أكثر من الحد وهو ينتظر مسودته: ذاكرة أقل على الهاتف وطلبات متزامنة أقل (أخطاء 429 أقل)
       const life = chain.then(() => task, () => {}).catch(() => {}).finally(() => running.delete(life));
       running.add(life);
-      while (running.size >= maxInFlight) await Promise.race(running);
+      while (running.size >= inFlightLimit) await Promise.race(running);
       if (failure) throw failure;
     }
     await chain;
@@ -707,7 +722,7 @@ export async function runLecture({ file, meta, cfg, caps, io, emit = () => {}, s
       engines: done.reduce((acc, p) => { acc[p.engine] = (acc[p.engine] || 0) + 1; return acc; }, {}),
       review: done.filter((p) => p.review).map((p) => ({ start: p.start, end: p.end })),
       savedUploadMB: Math.round(compressedBytes / 1e5) / 10,
-      listenSec: Math.round((Date.now() - engine.t0) / 1000),
+      listenSec: Math.round((engine.now() - engine.t0) / 1000),
     },
     source: { name: file.name || '', size: file.size },
   };
@@ -731,7 +746,7 @@ export async function runLecture({ file, meta, cfg, caps, io, emit = () => {}, s
 export async function rewriteLecture({ doc, caps, io, emit = () => {}, signal, checkpoint = null, mode = 'notes' }) {
   if (!caps.groq && !caps.gemini) throw new PipelineError('no_engine', 'link a key first');
   const engine = new Engine(io, caps, emit, signal);
-  engine.budgetMs = 8 * 60_000; // بدون استماع: الكتابة والصور فقط
+  engine.budgetMs = 6 * 60_000; // بدون استماع: الكتابة والصور فقط
   const transcript = (doc.transcript || doc.blocks).filter((b) => !['fig', 'figreq', 'slidereq', 'mcq'].includes(b.t)).map((b) => ({ ...b, items: b.items ? [...b.items] : undefined }));
   const copy = {
     ...doc,
@@ -759,10 +774,11 @@ export async function rewriteLecture({ doc, caps, io, emit = () => {}, signal, c
 
 // حجم القسم الواحد بكلمات التفريغ، وحد الكتابة بالرموز: Gemini يسع أقساماً طويلة، وحدود Groq المجانية أضيق
 const LIMIT = { gemini: { words: 1500, tokens: 16000 }, groq: { words: 520, tokens: 4000 } };
+const BUDGET_MS = 7.5 * 60_000;
 const limitFor = (engine, mode) => (engine.hasGemini ? (mode === 'highyield' ? { words: 2400, tokens: 12000 } : LIMIT.gemini) : LIMIT.groq);
 const isFatal = (e) => e instanceof PipelineError && FATAL.includes(e.code);
 
-const cleanTitle = (t) => stripMarkup(String(t || '')).replace(/\[\[|\]\]/g, '').replace(/^#+\s*/, '').replace(/[:：]+$/, '').replace(/\s+/g, ' ').trim().slice(0, 140);
+const cleanTitle = (t) => trimHeading(stripMarkup(String(t || '')).replace(/\[\[|\]\]/g, '').replace(/^#+\s*/, '').replace(/[:：]+$/, '').replace(/\s+/g, ' ').trim()).slice(0, 140);
 const sectionLabel = (i, lang) => (lang === 'en' ? `Part ${i + 1}` : `القسم ${i + 1}`);
 const sumWords = (paras, from, to) => { let n = 0; for (let i = from; i < to; i++) n += paras[i].words; return n; };
 
@@ -869,7 +885,7 @@ function tidySection(markup, s) {
     const m = line.match(/^\s*(#{1,4})\s+(.*)$/);
     if (!m) { out.push(line); continue; }
     // المصطلحات بين [[ ]] تبقى في العناوين حتى يُعزل اتجاهها عند العرض
-    const text = m[2].replace(/\*\*/g, '').replace(/[:：]+$/, '').replace(/\s+/g, ' ').trim();
+    const text = trimHeading(m[2].replace(/\*\*/g, '').replace(/[:：]+$/, '').replace(/\s+/g, ' ').trim());
     if (!cleanTitle(text)) continue;
     const isTop = m[1].length <= 2;
     if (isTop && !seenTop && s.part === 1 && !out.some((l) => l.trim())) { seenTop = true; out.push(`## ${text}`); continue; }
@@ -1017,6 +1033,38 @@ async function proofread(engine, markup, lang) {
   return sameContent(markup, out) ? out : markup;
 }
 
+/**
+ * يعيد صياغة الأسطر العامية فقط بالفصحى (طلب صغير بالنموذج الخفيف أو Groq). يُقبل السطر الجديد إذا خلا من العامية
+ * وأبقى كل مصطلحاته [[ ]] وترميز أوله (> أو - أو 1.) وطوله قريب؛ وإلا يبقى السطر كما هو.
+ */
+async function formalize(engine, markup) {
+  const bad = dialectLines(markup);
+  if (!bad.length || engine.late(1) || (!engine.hasGemini && !engine.hasGroqLlm)) return markup;
+  const { system, user } = formalizePrompt(bad.map((b) => b.line));
+  // طلب صغير بمهلة قصيرة: لا يؤخر الملزمة (إذا تعذّر الآن يبقى السطر كما هو)
+  let r = engine.hasGemini ? await engine.gemini({ system, parts: [{ text: user }], json: true, maxTokens: 3000, lite: true, strongWaitMs: 0, patienceMs: 30_000 }) : null;
+  if ((!r?.text || r.blocked) && engine.hasGroqLlm) r = await engine.groq({ system, user, json: true, maxTokens: 2500, maxWaitMs: 15_000 });
+  const parsed = r?.text ? parseJsonLoose(r.text) : null;
+  // كل سطر برقمه: نقص سطر من الرد لا يزحزح الباقي إلى غير أماكنها
+  const byN = new Map();
+  for (const x of Array.isArray(parsed?.lines) ? parsed.lines : []) {
+    const n = parseInt(x?.n, 10);
+    if (n >= 1 && typeof x?.text === 'string') byN.set(n, x.text);
+  }
+  const lines = String(markup).split('\n');
+  bad.forEach((b, k) => {
+    const next = String(byN.get(k + 1) || '').replace(/\s+/g, ' ').trim();
+    if (!next || dialectLines(next).length) return;
+    const lead = (b.line.match(/^\s*(>|[-*•]|\d+[.)])\s/) || [])[1] || '';
+    const bodyText = next.replace(/^\s*(>|[-*•]|\d+[.)])\s*/, '');
+    const body = lead ? `${lead} ${bodyText}` : bodyText;
+    const termsOk = [...termsIn(b.line).keys()].every((t) => termsIn(body).has(t));
+    const ratio = countWords(body) / Math.max(1, countWords(b.line));
+    if (termsOk && ratio > 0.45 && ratio < 1.9) lines[b.i] = body;
+  });
+  return lines.join('\n');
+}
+
 function joinResults(outs) {
   return {
     markup: outs.map((o) => o.markup).join('\n\n'),
@@ -1093,6 +1141,10 @@ export async function writeNotes(doc, engine, { emit = () => {}, checkpoint = nu
       if (fresh && !r.fallback && !engine.late(0.9)) {
         try { r.markup = await proofread(engine, r.markup, lang); } catch (e) { if (isFatal(e)) throw e; }
       }
+      // كلام المحاضر بلهجته أو خطابه للطلبة («انتبهوا»، «فاحفظوها») بقي في الشرح: تُعاد صياغة تلك الأسطر وحدها بالفصحى
+      if (fresh && !r.fallback && lang !== 'en') {
+        try { r.markup = await formalize(engine, r.markup); } catch (e) { if (isFatal(e)) throw e; }
+      }
       if (fresh && checkpoint && !r.fallback) await checkpoint.set(`n:s${i}`, r);
       results[i] = { ...r, blocks: parseMarkup(r.markup).map((b) => ({ id: uid(), ...b })), slideLines: (String(r.markup).match(/@slide/gi) || []).length };
       for (const [k, v] of termsIn(r.markup)) if (!seen.has(k)) seen.set(k, v);
@@ -1119,8 +1171,10 @@ export async function writeNotes(doc, engine, { emit = () => {}, checkpoint = nu
       }
     }
   };
-  // كل قسم طلب طويل (دقيقة تقريباً)، فنكتب عدة أقسام معاً، دون تجاوز حد الطلبات بالدقيقة. حدود Groq أضيق
-  await Promise.all(Array.from({ length: engine.hasGemini ? Math.min(8, 2 + 2 * engine.par) : 2 }, worker));
+  // كل قسم طلب طويل (دقيقة تقريباً)، فنكتب عدة أقسام معاً (6 بمفتاح واحد: محاضرة ساعة بجولتين بدل ثلاث)؛
+  // ما يتجاوز حد نموذج بالدقيقة ينتقل للنموذج التالي، ولكل نموذج حده. حدود Groq أضيق
+  // محاضرة طويلة (أكثر من 12 قسماً): كاتبان إضافيان حتى تبقى ضمن الوقت
+  await Promise.all(Array.from({ length: engine.hasGemini ? Math.min(8, (total > 12 ? 6 : 4) + 2 * engine.par) : 2 }, worker));
   await Promise.all(finishing);
   figures?.writingDone();
   if (failure) { figures?.cancel(); throw failure; }
@@ -1236,7 +1290,7 @@ export async function complete(doc, engine, { io, emit = () => {}, review = fals
   emit({ type: 'stage', name: 'gate' });
   doc.stats.gate = qualityGate(doc);
   doc.stats.models = engine.modelStats;
-  doc.stats.elapsedSec = Math.round((Date.now() - engine.t0) / 1000);
+  doc.stats.elapsedSec = Math.round((engine.now() - engine.t0) / 1000);
   return doc;
 }
 
@@ -1264,12 +1318,12 @@ export async function enrich(doc, engine, { io, emit = () => {} }) {
       const tries = [];
       const results = await mapLimit(batches, 3, async (batch) => {
         let best = await ask(batch, 'gemini-lite');
-        // ناقصة: محاولة ثانية، ثم نصفين (الدفعة الأولى فيها أهم المصطلحات، فلا نتركها تضيع)
-        if (best.length < batch.length * 0.6) {
+        // ناقصة: محاولة ثانية، ثم نصفين (الدفعة الأولى فيها أهم المصطلحات، فلا نتركها تضيع). عند ضيق الوقت يكفي ما وصل
+        if (best.length < batch.length * 0.6 && !engine.late(0.95)) {
           const again = await ask(batch, 'gemini');
           if (again.length > best.length) best = again;
         }
-        if (best.length < batch.length * 0.6 && batch.length > 8) {
+        if (best.length < batch.length * 0.6 && batch.length > 8 && !engine.late(0.95)) {
           const half = Math.ceil(batch.length / 2);
           const parts = await Promise.all([ask(batch.slice(0, half), 'gemini-lite'), ask(batch.slice(half), 'gemini-lite')]);
           const joined = parts.flat();
@@ -1766,7 +1820,7 @@ export async function translateBlocks(doc, engine, { emit = () => {} }) {
   const run = (strong) => async (g) => {
     // المحرك مضغوط بلا انقطاع (3 أجزاء متتالية فشلت) أو تجاوزنا ضعف الوقت المسموح: لا نبدأ أجزاء جديدة،
     // فتبقى بلغتها مع تنبيه بدل أن تنتظر الملزمة كلها ساعة
-    if (tripped || engine.late(2)) return;
+    if (tripped || engine.late(1.25)) return;
     try {
       g.out = await translateGroup(engine, g.src, { to, meta: doc.meta, strong });
     } catch (e) {
@@ -1776,7 +1830,9 @@ export async function translateBlocks(doc, engine, { emit = () => {} }) {
     if (g.out) { streak = 0; emit({ type: 'translate', to, done: ++done, total: all.length }); }
     else if (++streak >= 3) tripped = true;
   };
-  await mapLimit(all, engine.hasGemini ? Math.min(8, 2 + 2 * engine.par) : 2, run(false));
+  // متأخرون: أجزاء أكثر بالتوازي (Groq يأخذ ما لا تتسع له حدود Gemini بالدقيقة)
+  const boost = engine.late(0.7) && engine.hasGroqLlm ? 2 : 0;
+  await mapLimit(all, (engine.hasGemini ? Math.min(8, 2 + 2 * engine.par) : 2) + boost, run(false));
   // جولة ثانية لما تعذّر: بالنموذج الأقوى المتاح، بالتوازي (كانت قسماً قسماً)
   const failed = all.filter((g) => !g.out);
   if (failed.length && !tripped) await mapLimit(failed, 3, run(true));
@@ -1871,7 +1927,12 @@ export async function finishAlt(doc, engine, tr, kp, body) {
   // أهم النقاط للمراجعة
   if (kp.length) {
     const t = await translateSection(engine, kp, { to, meta: doc.meta }).catch((e) => { if (isFatal(e)) throw e; return null; });
-    if (t) { for (const b of t) if (b.items && !b.rows) b.box = true; blocks.push(...t); }
+    if (t) {
+      for (const b of t) if (b.items && !b.rows) b.box = true;
+      const head = t.find((b) => b.t === 'h');
+      if (head) head.text = to === 'en' ? 'Key points for review' : 'أهم النقاط للمراجعة'; // ثابت: لا يبقى بلغة الأصل
+      blocks.push(...t);
+    }
   }
   // العنوان وتعليقات الصور دفعة واحدة. إذا جاء عنوان الملزمة بغير لغتها (إنجليزي لمحاضرة عربية) نترجمه
   // إلى لغتها ويصير الأصلي عنوان النسخة الأخرى
@@ -1994,7 +2055,7 @@ export function applyReview(blocks, parsed, { additions = true, lang = 'ar' } = 
 /** مراجعة الملزمة كاملة مقابل التفريغ بأقوى نموذج، وتطبيق التصحيحات. اختيارية: فشلها لا يُفشل الملزمة. */
 export async function reviewNotes(doc, engine, { emit = () => {} } = {}) {
   if (!engine.hasGemini || !doc.transcript?.length) return null;
-  if (engine.late(1.5)) { emit({ type: 'note', code: 'review_skipped' }); return null; }
+  if (engine.late(0.9)) { emit({ type: 'note', code: 'review_skipped' }); return null; }
   emit({ type: 'stage', name: 'review' });
   const lang = doc.lang || langOf(doc.blocks.map(blockText).join(' '));
   const textBlocks = (list) => list.filter((b) => !['fig', 'figreq', 'slidereq'].includes(b.t));

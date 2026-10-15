@@ -416,7 +416,14 @@ export class MediVoiceStore extends DurableObject {
     return out;
   }
 
-  logUsage(code, kind, sec = 0) {
+  logUsage(code, kind, sec = 0, req = '') {
+    // طلب أُعيد بعد ضياع رده (الطالب طلع من الموقع أثناءه): ثوانيه حُسبت مرة، فلا تُحسب ثانية
+    if (req) {
+      this.seenReq ??= new Map();
+      if (this.seenReq.has(req)) return;
+      this.seenReq.set(req, Date.now());
+      if (this.seenReq.size > 5000) { const old = Date.now() - 3600_000; for (const [k, t] of this.seenReq) if (t < old) this.seenReq.delete(k); }
+    }
     const now = Date.now();
     this.sql.exec('INSERT INTO usage (code, ts, kind, sec) VALUES (?, ?, ?, ?)', code, now, kind, sec);
     if (kind === 'audio') this.sql.exec('UPDATE codes SET total_sec = total_sec + ?, last_active = ? WHERE code = ?', sec, now, code);
@@ -829,6 +836,9 @@ async function geminiWithKeys(keys, model, body) {
   return minute || last;
 }
 
+/** معرّف الطلب من المتصفح (ثابت عبر إعادته)، مقيّد الطول والحروف */
+const reqTag = (request) => (request.headers.get('x-mv-req') || '').replace(/[^a-z0-9]/gi, '').slice(0, 32);
+
 /** نفس رد Google عند نفاد الحصة اليومية للنموذج (المتصفح يميّزه من quotaId فيترك النموذج لباقي المحاضرة). */
 const dayLimitError = (model) => new Response(JSON.stringify({ error: {
   code: 429, status: 'RESOURCE_EXHAUSTED', message: `Daily quota exhausted for ${model} on every linked key.`,
@@ -1041,7 +1051,7 @@ async function handleApi(request, env, ctx, url) {
     // الجسم يُقرأ مرة (نحو 2MB) حتى يُعاد إرساله بمفتاح آخر إذا بلغ الأول حده
     const body = auth.groqKeys.length > 1 ? await request.arrayBuffer() : request.body;
     const up = await groqWithKeys(auth.groqKeys, 'https://api.groq.com/openai/v1/audio/transcriptions', request.headers.get('content-type') || '', body, url.searchParams.get('m') || '');
-    if (up.ok && sec > 0) ctx.waitUntil(db.logUsage(auth.code, 'audio', sec));
+    if (up.ok && sec > 0) ctx.waitUntil(db.logUsage(auth.code, 'audio', sec, reqTag(request)));
     return relay(up);
   }
 
@@ -1060,7 +1070,7 @@ async function handleApi(request, env, ctx, url) {
     if (!auth.ok) return json(auth, auth.status);
     if (!auth.geminiKeys?.length) return json({ error: 'no_key', provider: 'gemini' }, 412);
     const up = await geminiWithKeys(auth.geminiKeys, model, await request.arrayBuffer());
-    if (up.ok && sec > 0) ctx.waitUntil(db.logUsage(auth.code, 'audio', sec));
+    if (up.ok && sec > 0) ctx.waitUntil(db.logUsage(auth.code, 'audio', sec, reqTag(request)));
     return relay(up);
   }
 

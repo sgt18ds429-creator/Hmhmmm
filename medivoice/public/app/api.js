@@ -2,6 +2,47 @@
 
 const headers = { 'x-mv': '1' };
 
+// ───────────── الطالب يطلع من الموقع ويرجع ─────────────
+// الهاتف يوقف الصفحة التي في الخلفية (iPhone فوراً تقريباً) فتنقطع طلباتها. نحسب الوقت الذي قضاه خارجها
+// (لا يُحسب من وقت التحويل ولا يُعتبر بطئاً)، والطلب الذي انقطع بسبب الخروج يُعاد كما هو عند الرجوع،
+// فلا يرى المحرك فشلاً ولا ينزل لنموذج أضعف ولا يترك قسماً.
+// الحساب بساعة الجدار (Date.now): performance.now يتوقف أثناء نوم الهاتف على iPhone، فكان نوم 9 دقائق يُحسب عملاً
+let hiddenAt = 0, awayTotal = 0, lastBeat = 0;
+let wakers = [];
+const hasDoc = typeof document !== 'undefined';
+const isHidden = () => hasDoc && document.hidden;
+if (hasDoc) {
+  if (document.hidden) hiddenAt = Date.now();
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { if (!hiddenAt) hiddenAt = Date.now(); return; }
+    if (hiddenAt) { awayTotal += Math.max(0, Date.now() - hiddenAt); hiddenAt = 0; }
+    lastBeat = Date.now();
+    const w = wakers; wakers = []; for (const f of w) f();
+  });
+  // تجميد بلا إشعار (قفل الشاشة أو نظام يوقف المتصفح): فجوة طويلة بين نبضتين والصفحة ظاهرة
+  lastBeat = Date.now();
+  setInterval(() => {
+    const t = Date.now();
+    const gap = t - lastBeat;
+    if (!document.hidden && !hiddenAt && gap > 5000) awayTotal += gap - 1000;
+    lastBeat = t;
+  }, 1000);
+}
+/** مجموع الوقت خارج الصفحة (ميلي ثانية) */
+export const awayMs = () => awayTotal + (hiddenAt ? Math.max(0, Date.now() - hiddenAt) : 0);
+/** الوقت الفعلي للعمل: الساعة بدون الوقت الذي قضاه الطالب خارج الموقع */
+export const activeNow = () => Date.now() - awayMs();
+const whenVisible = (signal) => (isHidden() ? new Promise((resolve, reject) => {
+  const done = () => { signal?.removeEventListener?.('abort', stop); resolve(); };
+  const stop = () => { wakers = wakers.filter((f) => f !== done); reject(new DOMException('aborted', 'AbortError')); };
+  if (signal?.aborted) return stop();
+  wakers.push(done);
+  signal?.addEventListener?.('abort', stop, { once: true });
+}) : Promise.resolve());
+
+/** معرّف طلب ثابت عبر إعاداته: الخادم لا يحسب ثواني الصوت مرتين إذا أعيد الطلب بعد ضياع رده */
+const reqId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+
 /**
  * إشارة إلغاء بحد زمني تجمع إلغاء المستخدم (signal) مع مهلة. انتهاء المهلة ليس إلغاءً: الطلب يُعامل
  * كانقطاع شبكة فيُعاد، أما إلغاء المستخدم فيوقف كل شيء. (timedOut يميّزهما حتى في المتصفحات الأقدم)
@@ -33,10 +74,20 @@ async function wrap(promise, tm = null) {
   }
 }
 
-/** طلب JSON للخادم بمهلة (لا يعلق التحويل أبداً على اتصال متوقف). */
-function call(url, init, ms) {
-  const tm = withTimeout(ms, init.signal);
-  return wrap(fetch(url, { ...init, signal: tm.signal }), tm);
+/**
+ * طلب JSON للخادم بمهلة (لا يعلق التحويل أبداً على اتصال متوقف). إذا انقطع لأن الطالب طلع من الموقع
+ * أثناءه، يُنتظر رجوعه ثم يُعاد الطلب نفسه (حتى 4 مرات) بدل أن يُحسب فشلاً.
+ */
+async function call(url, init, ms) {
+  for (let round = 0; ; round++) {
+    const away0 = awayMs();
+    const tm = withTimeout(ms, init.signal);
+    const res = await wrap(fetch(url, { ...init, signal: tm.signal }), tm);
+    const left = isHidden() || awayMs() - away0 > 400;
+    if (res.status !== 0 || !left || round >= 4 || init.signal?.aborted) return res;
+    await whenVisible(init.signal);
+    await sleep(700, init.signal);
+  }
 }
 
 /** fetch بمهلة يرمي عند انتهائها خطأ عادياً (لا AbortError) حتى يُعامل كفشل وليس كإلغاء. */
@@ -119,6 +170,7 @@ async function toJpeg(blob, maxSide, quality) {
 export function makeIO() {
   return {
     sleep,
+    activeNow,
     blobToBase64,
     stt({ blob, filename, model, language, prompt }, { sec = 0, signal } = {}) {
       const fd = new FormData();
@@ -130,14 +182,14 @@ export function makeIO() {
       fd.append('timestamp_granularities[]', 'word');
       fd.append('timestamp_granularities[]', 'segment');
       fd.append('temperature', '0');
-      return call(`/api/stt?sec=${Math.round(sec)}&m=${encodeURIComponent(model)}`, { method: 'POST', headers, body: fd, credentials: 'same-origin', signal }, 240_000);
+      return call(`/api/stt?sec=${Math.round(sec)}&m=${encodeURIComponent(model)}`, { method: 'POST', headers: { ...headers, 'x-mv-req': reqId() }, body: fd, credentials: 'same-origin', signal }, 240_000);
     },
     groq(body, { signal } = {}) {
       return call(`/api/groq?m=${encodeURIComponent(body?.model || '')}`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body), credentials: 'same-origin', signal }, 240_000);
     },
     gemini(model, body, { sec = 0, signal } = {}) {
       // كتابة قسم طويل قد تأخذ دقيقتين أو ثلاثاً؛ المهلة تمنع التعليق فقط إذا توقف الاتصال
-      return call(`/api/gemini?model=${encodeURIComponent(model)}&sec=${Math.round(sec)}`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body), credentials: 'same-origin', signal }, 420_000);
+      return call(`/api/gemini?model=${encodeURIComponent(model)}&sec=${Math.round(sec)}`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json', 'x-mv-req': reqId() }, body: JSON.stringify(body), credentials: 'same-origin', signal }, 420_000);
     },
     net: {
       async json(url, { proxy = false } = {}) {

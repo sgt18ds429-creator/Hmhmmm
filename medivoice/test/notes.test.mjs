@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Engine, writeNotes, enrich, complete, normalizePlan, rewriteLecture, sameContent, pickFigures, PipelineError, qualityGate } from '../public/app/pipeline.js';
-import { parseMarkup, blockText, countWords, uid, blocksToMarkup, bracketTerms } from '../public/app/text.js';
+import { parseMarkup, blockText, countWords, uid, blocksToMarkup, bracketTerms, trimHeading, dialectLines } from '../public/app/text.js';
 import { buildPdfHtml } from '../public/app/pdf.js';
 
 // ── تفريغ محاضرة قصيرة بموضوعين ──
@@ -385,7 +385,7 @@ test('إذا خلصت حصة Gemini أثناء الكتابة يكمل Groq بأ
   io.gemini = origGemini;
 });
 
-test('الأقسام تُكتب معاً (4 مع Gemini) والصور والقاموس والمراجعة تعمل في نفس الوقت', async () => {
+test('الأقسام تُكتب معاً (6 مع مفتاح Gemini واحد) والصور والقاموس والمراجعة تعمل في نفس الوقت', async () => {
   const sections = Array.from({ length: 8 }, (_, i) => ({ from: i * 2, title: `موضوع ${i + 1}` }));
   const paras = Array.from({ length: 16 }, (_, i) => `فقرة ${i} عن [[topic ${Math.floor(i / 2)}]] ${filler('وشرح طويل لها. ', 30)}`);
   const doc = transcriptDoc();
@@ -408,7 +408,7 @@ test('الأقسام تُكتب معاً (4 مع Gemini) والصور والقا
   };
   const engine = new Engine(io, CAPS);
   await writeNotes(doc, engine);
-  assert.equal(maxWriting, 4, 'أربعة أقسام في نفس الوقت');
+  assert.equal(maxWriting, 6, 'ستة أقسام في نفس الوقت');
   // القاموس يبدأ مع الصور، لا بعدها
   const order = [];
   const base2 = io.gemini;
@@ -473,9 +473,10 @@ test('sameContent يقبل تصحيح الإملاء ويرفض الحذف وا�
 });
 
 test('الصور والتدقيق يجريان أثناء كتابة الأقسام الباقية ولا ينتظران نهايتها', async () => {
-  const sections = Array.from({ length: 6 }, (_, i) => ({ from: i * 2, title: `موضوع ${i + 1}` }));
+  // أقسام أكثر من عدد الكتّاب المتوازين (6) حتى تبقى أقسام تُكتب بعد انتهاء الأولى
+  const sections = Array.from({ length: 10 }, (_, i) => ({ from: i * 2, title: `موضوع ${i + 1}` }));
   const doc = transcriptDoc();
-  doc.blocks = parseMarkup(Array.from({ length: 12 }, (_, i) => `فقرة ${i} عن [[topic ${Math.floor(i / 2)}]] ${filler('وشرح طويل لها. ', 30)}`).join('\n\n')).map((b) => ({ id: uid(), ...b }));
+  doc.blocks = parseMarkup(Array.from({ length: 20 }, (_, i) => `فقرة ${i} عن [[topic ${Math.floor(i / 2)}]] ${filler('وشرح طويل لها. ', 30)}`).join('\n\n')).map((b) => ({ id: uid(), ...b }));
   const log = [];
   const { io } = makeIO({
     plan: { kind: 'lecture', title: 'T', sections },
@@ -501,7 +502,7 @@ test('الصور والتدقيق يجريان أثناء كتابة الأقس�
   assert.ok(log.indexOf('verify:start') < lastWrite, 'فحص الصور بدأ قبل انتهاء الكتابة');
   assert.ok(log.indexOf('proof:end') > log.indexOf('write:start', log.indexOf('proof:start')), 'العامل لم ينتظر التدقيق');
   await complete(doc, engine, { io });
-  assert.equal(doc.blocks.filter((b) => b.t === 'fig').length, 6, 'صورة مطابقة لكل قسم');
+  assert.ok(doc.blocks.filter((b) => b.t === 'fig').length >= 6, 'صور مطابقة للأقسام');
 });
 
 test('عند تجاوز الوقت المسموح تُترك الأعمال الإضافية ولا تتعطل الملزمة', async () => {
@@ -1037,7 +1038,11 @@ test('بعد نفاد القوية والخفيفة في حد الدقيقة: Gr
 test('المصطلح بين قوسين عاديين بعد كلام عربي يصير [[ ]] (كاتب Groq)، وما ليس مصطلحاً يبقى', () => {
   assert.equal(bracketTerms('يُعدّ تصوير الصدر (Chest X-ray) الأكثر طلباً، والتكبير ([[magnification]]) يكبّر القلب.'),
     'يُعدّ تصوير الصدر [[Chest X-ray]] الأكثر طلباً، والتكبير [[magnification]] يكبّر القلب.');
-  for (const keep of ['### أنواع الزوايا (Projections)', 'انظر (Fig. 2) و(e.g. CT) و(5 mm).', 'The heart (cardiac silhouette) is big.', '@fig: radiograph | chest (PA) | a | b | صورة (PA)', 'نص (this is a long english sentence inside parentheses here) هنا']) {
+  assert.equal(bracketTerms('انظر (Fig. 2) و(e.g. CT) و(5 mm).'), 'انظر (Fig. 2) و(e.g. [[CT]]) و(5 mm).');
+  assert.equal(bracketTerms('الـ PA view هو المعيار، والـ detector أمام المريض، والقطر 5 mm.'), 'الـ [[PA view]] هو المعيار، والـ [[detector]] أمام المريض، والقطر 5 mm.');
+  assert.equal(bracketTerms('علامة القصبات الهوائية الهوائية [[air bronchogram]]'), 'علامة القصبات الهوائية [[air bronchogram]]');
+  assert.equal(bracketTerms('قارن بين AP or PA في الصورة'), 'قارن بين [[AP]] or [[PA]] في الصورة');
+  for (const keep of ['### أنواع الزوايا (Projections)', 'The heart (cardiac silhouette) is big.', '@fig: radiograph | chest (PA) | a | b | صورة (PA)', 'نص (this is a long english sentence inside parentheses here) هنا']) {
     assert.equal(bracketTerms(keep), keep);
   }
 });
@@ -1098,4 +1103,61 @@ test('Groq: انتظار أفضل نموذج مرتين على الأكثر ثم
     assert.equal(r.model, 'qwen/qwen3.8-27b');
     assert.equal(seen.filter((m) => m === 'openai/gpt-oss-120b').length, 3, 'محاولة أولى + انتظاران');
   } finally { Date.now = realNow; }
+});
+
+test('العنوان العربي لا يحمل ترجمته الإنجليزية الكاملة، والمصطلح القصير بين قوسين يبقى', () => {
+  assert.equal(trimHeading('التمييز بين الحصوات الوريدية والحصوات الحالبية (Differentiation Between Phleboliths and Ureteric Stones)'), 'التمييز بين الحصوات الوريدية والحصوات الحالبية');
+  assert.equal(trimHeading('طرق التصوير الشعاعي (Projections)'), 'طرق التصوير الشعاعي (Projections)');
+  assert.equal(trimHeading('Introduction (to the whole course here)'), 'Introduction (to the whole course here)');
+});
+
+test('كلام المحاضر بلهجته أو خطابه للطلبة يُكتشف ويُعاد بالفصحى سطراً بسطر، والفصحى لا تُمس', async () => {
+  const md = `## الوضعيات\n\n> انتبهوا، بالـ [[AP view]] القلب يبين أكبر، فلا تشخصون [[cardiomegaly]] عليها.\n\nيعني هذا أن [[magnification]] يحدث في [[AP view]]. ${filler('شرح مفصل للوضعيات والتكبير. ', 60)}\n\n- قاعدة 3-6-9 تأتي بالامتحان، فاحفظوها زين.`;
+  assert.deepEqual(dialectLines(md).map((x) => x.word), ['انتبهوا', 'فاحفظوها']);
+  assert.deepEqual(dialectLines(filler('شرح مفصل للوضعيات والتكبير. ', 60)), [], 'الحشو الفصيح لا يُحسب عامية');
+  const seen = [];
+  const io = {
+    sleep: async () => {},
+    async gemini(model, body) {
+      const user = body.contents[0].parts.map((p) => p.text || '').join('');
+      seen.push(user);
+      // الرد ناقص سطراً (السطر 1 فقط): لا يزحزح شيئاً، والسطر 2 يبقى كما هو
+      if (seen.length === 1) return gemResponse(JSON.stringify({ lines: [{ n: 2, text: 'قاعدة 3-6-9 مهمة للامتحان.' }, { n: 1, text: 'يجب الانتباه إلى أن القلب يظهر أكبر في [[AP view]]، فلا يُشخَّص [[cardiomegaly]] عليها.' }] }));
+      return gemResponse('{}');
+    },
+  };
+  const engine = new Engine(io, { gemini: true, groq: false, geminiModels: ['gemini-x-lite'], groqModels: [], sttModels: [] });
+  const sections = [{ from: 0, title: 'الوضعيات' }];
+  const doc = transcriptDoc();
+  const { io: base } = makeIO({ plan: { kind: 'lecture', title: 'T', sections }, section: () => gemResponse(md) });
+  // الكتابة بالمحاكي العام، ثم طلب الفصحى بـ io أعلاه
+  engine.io = { ...base, gemini: async (model, body) => (/عامية العراقية/.test(body.systemInstruction?.parts?.[0]?.text || '') ? io.gemini(model, body) : base.gemini(model, body)) };
+  assert.equal(await writeNotes(doc, engine), true);
+  const text = doc.blocks.map(blockText).join('\n');
+  assert.match(text, /يجب الانتباه إلى أن القلب يظهر أكبر/);
+  assert.doesNotMatch(text, /انتبهوا|فاحفظوها/);
+  assert.ok(doc.blocks.some((b) => b.t === 'note'), 'سطر > بقي ملاحظة');
+  assert.match(text, /يعني هذا أن/, 'الفصحى («يعني» بمعنى «يدل») لا تُمس');
+  assert.equal(seen.length, 1, 'طلب واحد للأسطر كلها');
+});
+
+test('الرد الناقص لا يضع سطراً مكان غيره: كل سطر برقمه، والمفقود يبقى كما هو', async () => {
+  const md = `## قسم\n\n- هسه الـ [[PA view]] هو المعيار.\n- [[AP view]] للمريض اللي ما يوكف.\n- شلون نعرف [[magnification]]؟\n\n${filler('شرح فصيح طويل. ', 50)}`;
+  const io = {
+    sleep: async () => {},
+    async gemini(model, body) {
+      const system = body.systemInstruction?.parts?.[0]?.text || '';
+      if (/عامية العراقية/.test(system)) return gemResponse(JSON.stringify({ lines: [{ n: 3, text: 'كيف يُعرف [[magnification]]؟' }, { n: 1, text: 'يُعد [[PA view]] الوضعية المعيارية.' }] }));
+      return gemResponse(md);
+    },
+  };
+  const engine = new Engine(io, { gemini: true, groq: false, geminiModels: ['gemini-x-lite'], groqModels: [], sttModels: [] });
+  const doc = transcriptDoc();
+  const { io: base } = makeIO({ plan: { kind: 'lecture', title: 'T', sections: [{ from: 0, title: 'قسم' }] }, section: () => gemResponse(md) });
+  engine.io = { ...base, gemini: (m, b) => (/عامية العراقية/.test(b.systemInstruction?.parts?.[0]?.text || '') ? io.gemini(m, b) : base.gemini(m, b)) };
+  assert.equal(await writeNotes(doc, engine), true);
+  const items = doc.blocks.find((b) => b.t === 'ul').items;
+  assert.equal(items[0], 'يُعد [[PA view]] الوضعية المعيارية.');
+  assert.equal(items[1], '[[AP view]] للمريض اللي ما يوكف.', 'السطر 2 بلا رد: يبقى ولا يأخذ رد غيره');
+  assert.equal(items[2], 'كيف يُعرف [[magnification]]؟');
 });

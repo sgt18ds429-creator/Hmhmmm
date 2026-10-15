@@ -98,6 +98,18 @@ export async function countParts(job) {
   // مقاطع الصوت فقط (مفاتيحها أرقام)؛ خطة الشرح وأقسامه محفوظة بمفاتيح n:…
   return keys.filter((k) => String(k).startsWith(`${job}:`) && /^\d+$/.test(String(k).slice(job.length + 1))).length;
 }
+// ملف التسجيل نفسه (ومعه PDF السلايدات) لتحويل لم يكتمل: إذا أغلق الهاتف الصفحة أو أعاد تحميلها، يكمل
+// التحويل من مكانه بدون أن يختار الطالب الملف من جديد. يُحذف عند اكتمال الملزمة (أو بعد أسبوع)
+export async function saveSource(job, { file, pdf = null }) {
+  await tx(['parts'], 'readwrite', (t) => { t.objectStore('parts').put({ file, pdf, _at: Date.now() }, `src:${job}`); });
+}
+export async function getSource(job) {
+  return (await read('parts', (st) => st.get(`src:${job}`))) || null;
+}
+export async function clearSource(job) {
+  await tx(['parts'], 'readwrite', (t) => { t.objectStore('parts').delete(`src:${job}`); });
+}
+
 /** يحذف نقاط استئناف أقدم من أسبوع. */
 export async function prune() {
   const db = await open();

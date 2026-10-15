@@ -493,22 +493,82 @@ export function termsIn(text) {
   return out;
 }
 
+const AR_LETTER = /[؀-ۿ]/;
+// كلمات إنجليزية ليست مصطلحات: أدوات ووحدات قياس وكلمات عادية
+const NOT_TERM = /^(?:e\.?g|i\.?e|etc|fig|figure|table|slide|page|see|vs|and|or|of|the|a|an|in|on|at|to|with|mm|cm|ml|mg|kg|g|m|s|sec|min|hr|hz|khz|mhz|years?|days?|hours?|weeks?|months?|ok|yes|no)$/i;
+// كلمة أولى تعني أن ما بعدها إشارة لا مصطلح: (see Fig. 3)، (Slide 5)، (Table 2)
+const REF_WORD = /^(?:fig|figure|table|slide|slides|page|pages|see|ref|chapter|lecture)$/i;
+
+/** المصطلح الإنجليزي المكشوف في جزء عربي من السطر يصير [[ ]]؛ الجملة الإنجليزية الطويلة (6 كلمات فأكثر) تبقى كما هي. */
+function wrapBare(seg) {
+  return seg.replace(/[A-Za-z][A-Za-z0-9'’+\-\/]*(?:[ \t]+[A-Za-z0-9][A-Za-z0-9'’+\-\/]*)*/g, (run, at, str) => {
+    const words = run.trim().split(/\s+/);
+    if (words.length > 5 || /https?|www|@/i.test(run)) return run;
+    // جزء من رمز أطول: رقم أو حرف أو نقطة قبله (3rd، 99mTc، 18F-FDG، radiopaedia.org) أو امتداد نطاق بعده
+    const before = str[at - 1] || '', after = str.slice(at + run.length, at + run.length + 2);
+    if (/[0-9A-Za-z.\/@:_\-]/.test(before) || /^[./@][0-9A-Za-z]/.test(after)) return run;
+    if (after[0] === '.' && /^[a-z]{1,2}$/.test(run)) return run; // e.g. / i.e.
+    if (REF_WORD.test(words[0]) || /^[a-z]{1,3}\/[a-z]{1,3}$/i.test(run)) return run; // إشارة لشكل أو صفحة، أو وحدة (mg/kg)
+    return run.split(/(\s+(?:and|or|vs\.?|versus)\s+)/i).map((p, j) => {
+      if (j % 2) return p;
+      const t = p.trim();
+      if (!t || t.length < 2 || NOT_TERM.test(t) || /^[\d.]+$/.test(t)) return p;
+      return p.replace(t, `[[${t}]]`);
+    }).join('');
+  });
+}
+
 /**
- * كاتب لم يلتزم بترميز المصطلحات (يكتب «المنصف (mediastinum)» بدل [[mediastinum]]، وهذا يحصل مع نماذج Groq):
- * المصطلح الإنجليزي بين قوسين عاديين بعد كلام عربي يصير [[ ]]، فيدخل القاموس ويُعزل اتجاهه في السطر العربي.
- * العناوين وأسطر الصور والأسئلة تبقى كما هي، وكذلك ما ليس مصطلحاً (Fig. 2، e.g. …، الجمل الطويلة).
+ * ترتيب نص ملزمة عربية كتبه نموذج لم يلتزم تماماً بالتعليمات (يحصل مع النماذج الخفيفة ونماذج Groq):
+ * - المصطلح الإنجليزي بين قوسين عاديين، أو مكشوفاً بلا أقواس، داخل الكلام العربي يصير [[ ]] (للقاموس ولعزل اتجاهه)؛
+ * - الكلمة المعرّفة المكررة خطأً مرتين متتاليتين («الهوائية الهوائية») تبقى مرة واحدة، والتكرار المقصود («خطوة خطوة») يبقى.
+ * العناوين وأسطر الصور والأسئلة، والأسطر الإنجليزية كلها (جملة قالها المحاضر بالإنجليزية) تبقى كما هي.
  */
 export function bracketTerms(markup) {
   return String(markup || '').split('\n').map((line) => {
-    if (/^\s*(#{1,4}\s|@|\?\?|[a-d]\)\s|=\s)/.test(line)) return line;
-    return line
+    if (/^\s*(#{1,4}\s|@|[-*•]\s*@|\?\?|[a-d]\)\s|=\s)/.test(line)) return line;
+    if (!AR_LETTER.test(line)) return line;
+    const out = line
       .replace(/\(\s*(\[\[[^\[\]]+\]\])\s*\)/g, '$1')
       .replace(/\(([A-Za-z][A-Za-z0-9 .\-\/'+]{0,58}[A-Za-z0-9.+])\)/g, (m, t, at, str) => {
-        if (!/[\u0600-\u06FF]/.test(str.slice(Math.max(0, at - 40), at))) return m; // ليس بعد كلام عربي
-        if (t.split(/\s+/).length > 6 || /^(e\.?g|i\.?e|etc|fig|figure|table|slide|page|see|p)\b/i.test(t) || /^[\d\s.]+$/.test(t)) return m;
+        if (!AR_LETTER.test(str.slice(Math.max(0, at - 40), at))) return m; // ليس بعد كلام عربي
+        if (/[0-9A-Za-z]/.test(str[at - 1] || '')) return m; // جزء من رمز
+        if (t.split(/\s+/).length > 6 || /^(e\.?g|i\.?e|etc|fig|figure|table|slide|slides|page|see|p)\b/i.test(t) || /^[\d\s.]+$/.test(t)) return m;
         return `[[${t.trim()}]]`;
-      });
+      })
+      .split(/(\[\[[^\[\]]*\]\])/).map((seg, i) => (i % 2 ? seg : wrapBare(seg))).join('');
+    return out.replace(/(^|[\s(«])(ال[؀-ۿ]{2,})\s+\2(?=$|[\s،.؛:!؟)»])/g, '$1$2');
   }).join('\n');
+}
+
+/**
+ * عنوان عربي ألحق به نموذج ترجمته الإنجليزية كاملة بين قوسين («... (Differentiation Between Phleboliths and Ureteric
+ * Stones)»): الملزمة لها نسخة إنجليزية كاملة، فتُحذف الترجمة الطويلة ويبقى المصطلح القصير (حتى 3 كلمات).
+ * إذا كان الجزء العربي عاماً قصيراً («المتلازمة (Superior Vena Cava Syndrome)») فالإنجليزي هو المعنى ويبقى.
+ */
+export function trimHeading(text) {
+  const t = String(text || '');
+  return t.replace(/\s*\(([^()]*[A-Za-z][^()]*)\)\s*$/, (m, inner) => {
+    const rest = t.slice(0, t.length - m.length);
+    if (!AR_LETTER.test(rest) || AR_LETTER.test(inner) || rest.trim().split(/\s+/).length < 3) return m;
+    return inner.trim().split(/\s+/).length >= 4 || inner.length > 34 ? '' : m;
+  });
+}
+
+// لهجة المحاضر العامية أو خطابه المباشر للطلبة (لا يُكتب في الملزمة): كلمات لا ترد في الفصحى بهذه الصيغة.
+// لا تدخل كلمات لها معنى فصيح: «تكدر» الوعي، «مال» بمعنى انحنى، «راح» بمعنى أخذ، «نبدي» من أبدى، «هواية»، «خلي»
+const DIALECT = /(?:^|[\s،.؛:(«>\-])(هسه|هسة|شلون|شنو|اكو|ماكو|كلش|هاي|هذولة|هذول|ليش|شكد|شوكت|يوكف|بيه|بيها|اللي|شي|انتبهوا|احفظوها|فاحفظوها|احفظوا|ركزوا|تذكروا|تشخصون|تشوفون|نسويه|[؀-ۿ]*[چگ][؀-ۿ]*)(?=$|[\s،.؛:!؟)»])/;
+
+/** أسطر الملزمة العربية التي فيها كلام عامي أو خطاب للطلبة: [{ i, line, word }] (بلا العناوين والجداول وأسطر الصور) */
+export function dialectLines(markup) {
+  const out = [];
+  String(markup || '').split('\n').forEach((line, i) => {
+    if (!line.trim() || /^\s*(#{1,4}\s|@|\||[-*•]\s*@)/.test(line)) return;
+    const plain = line.replace(/\[\[[^\]]*\]\]/g, ' ');
+    const m = plain.match(DIALECT);
+    if (m) out.push({ i, line, word: m[1] });
+  });
+  return out;
 }
 
 /** بصمة قصيرة لنص (لمعرفة إن تغيّر بين محاولة وأخرى). */
