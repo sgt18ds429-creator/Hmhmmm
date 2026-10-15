@@ -70,3 +70,60 @@ export function nodeIO({ groqKey, geminiKey, log = () => {} }) {
     },
   };
 }
+
+/**
+ * يحاكي نفاد الحصة اليومية (لاختبار أن التحويل يكمل بغيرها ولا يتوقف):
+ *   rules: «strong@3,whisper@1,groq@0» — بعد N طلبات لنماذج الفئة يرد كل طلب بخطأ 429 كما يرسله المزوّد.
+ *   الفئات: strong (Gemini غير الخفيفة) · lite · tx (النسخ الحرفي) · gemini (كلها) · whisper · groq (النصية) · أو اسم نموذج.
+ */
+export function withQuota(io, rules, log = () => {}) {
+  const list = String(rules || '').split(',').filter(Boolean).map((x) => { const [what, n] = x.split('@'); return { what, after: Number(n) || 0, used: 0 }; });
+  if (!list.length) return io;
+  const kindOf = (provider, model) => {
+    if (provider === 'stt') return 'whisper';
+    if (provider === 'groq') return 'groq';
+    if (/transcribe/.test(model)) return 'tx';
+    return /lite/.test(model) ? 'lite' : 'strong';
+  };
+  const hit = (provider, model) => {
+    const kind = kindOf(provider, model);
+    for (const r of list) {
+      if (r.what === model || r.what === kind || (r.what === 'gemini' && provider === 'gemini')) {
+        if (r.used >= r.after) return true;
+        r.used++;
+      }
+    }
+    return false;
+  };
+  const geminiDay = (model) => ({
+    ok: false, status: 429, retryAfter: null,
+    data: { error: { code: 429, status: 'RESOURCE_EXHAUSTED',
+      message: `You exceeded your current quota, please check your plan and billing details. * Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: ${model}\nPlease retry in 37.6s.`,
+      details: [
+        { '@type': 'type.googleapis.com/google.rpc.QuotaFailure', violations: [{ quotaMetric: 'generativelanguage.googleapis.com/generate_content_free_tier_requests', quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', quotaDimensions: { location: 'global', model }, quotaValue: '20' }] },
+        { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '37s' },
+      ] } },
+  });
+  const groqDay = (model, audio) => ({
+    ok: false, status: 429, retryAfter: audio ? 7400 : 1296,
+    data: { error: { code: 'rate_limit_exceeded', type: audio ? 'seconds' : 'tokens',
+      message: audio
+        ? `Rate limit reached for model \`${model}\` in organization \`org_sim\` service tier \`on_demand\` on seconds of audio per day (ASD): Limit 28800, Used 28700, Requested 480. Please try again in 2h3m20s.`
+        : `Rate limit reached for model \`${model}\` in organization \`org_sim\` service tier \`on_demand\` on tokens per day (TPD): Limit 200000, Used 199500, Requested 3000. Please try again in 21m36s.` } },
+  });
+  return {
+    ...io,
+    stt(req, opts) {
+      if (hit('stt', req.model)) { log(`quota✗ stt ${req.model}`); return Promise.resolve(groqDay(req.model, true)); }
+      return io.stt(req, opts);
+    },
+    groq(body, opts) {
+      if (hit('groq', body.model)) { log(`quota✗ groq ${body.model}`); return Promise.resolve(groqDay(body.model, false)); }
+      return io.groq(body, opts);
+    },
+    gemini(model, body, opts) {
+      if (hit('gemini', model)) { log(`quota✗ gemini ${model}`); return Promise.resolve(geminiDay(model)); }
+      return io.gemini(model, body, opts);
+    },
+  };
+}

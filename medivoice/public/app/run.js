@@ -128,9 +128,10 @@ export function viewNew(ctx, el, { file, recId = null }) {
 
   probeAudio(file).then((i) => {
     info = i;
-    const left = Math.max(0, ctx.session.usage.limit_sec - ctx.session.usage.used_sec);
+    const u = ctx.session.usage;
+    const left = Math.max(0, u.limit_sec - u.used_sec);
     fileMeta.textContent = `${fmtSize(file.size)} · ${fmtDuration(i.duration)}${i.hasVideo ? ' · فيديو (يُؤخذ الصوت فقط)' : ''}`;
-    if (i.duration > left + 30) {
+    if (u.limit_sec && i.duration > left + 30) { // 0 = بلا حد يومي
       warn.append(h('div', { class: 'banner' }, icon('warn'), h('span', null, `مدة التسجيل ${fmtHM(i.duration)} ورصيدك المتبقي اليوم ${fmtHM(left)}. يتحوّل اللي يكفيه الرصيد ويتوقف، وتكمل الباقي بعدين من نفس الملف.`)));
     }
     paintStart();
@@ -158,9 +159,9 @@ export function viewNew(ctx, el, { file, recId = null }) {
 const ERRORS = {
   key_groq: ['مفتاح Groq ما يشتغل', 'ممكن انحذف أو انتهى. اربطه من جديد.', 'link'],
   key_gemini: ['مفتاح Gemini ما يشتغل', 'ممكن انحذف أو انتهى. اربطه من جديد.', 'link'],
-  no_engine: ['ماكو محرك متاح الآن', 'وصلت حدود اليوم عند المحركات المربوطة، أو ما مربوط أي مفتاح. اربط المفتاح الثاني أو جرّب بعدين.', 'link'],
-  daily_limit: ['خلص رصيد اليوم', 'المقاطع المكتملة محفوظة. ارجع ارفع نفس الملف بعدين ويكمل من مكانه.', 'home'],
-  rate_limit: ['وصلت حد Groq للصوت', 'المقاطع المكتملة محفوظة. جرّب بعد شوية بنفس الملف ويكمل من مكانه.', 'retry'],
+  no_engine: ['خلصت حصة اليوم بمفاتيحك', 'المقاطع المكتملة محفوظة. أضف مفتاح من حساب ثاني (Gemini أو Groq) وارفع نفس الملف ويكمل من مكانه، أو جرّب بعدين.', 'link'],
+  daily_limit: ['خلص رصيد اليوم', 'المقاطع المكتملة محفوظة. ارجع ارفع نفس الملف بعدين ويكمل من مكانه، أو اطلب ساعات أكثر من المسؤول.', 'support'],
+  rate_limit: ['وصلت حد Groq للصوت', 'المقاطع المكتملة محفوظة. أضف مفتاح Groq من حساب ثاني، أو جرّب بعد شوية بنفس الملف ويكمل من مكانه.', 'retry+link'],
   locked: ['توقف الكود', 'الكود موقوف أو انتهت مدته. راجع المسؤول.', 'reload'],
   audio: ['مشكلة بالملف', 'ما قدرت أقرأ الصوت من هذا الملف. جرّب صيغة ثانية.', 'home'],
   empty: ['ماكو كلام بالتسجيل', 'ما لقيت كلام واضح. تأكد إنه تسجيل محاضرة وصوته مسموع.', 'home'],
@@ -371,6 +372,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
       else if (e.code === 'notes_failed') ctx.toast('ما كدرت أكتب الشرح هسه، فبقت الملزمة نصاً مفرّغاً. تقدر تحوّلها لشرح بعدين من خيارات الملزمة.', 'err');
       else if (e.code === 'translate_failed') ctx.toast('ما كدرت أكتب النسخة الثانية (الترجمة) هسه لأن المحرك مضغوط. الملزمة جاهزة بلغتها، وتقدر تعيد كتابتها بعدين.', 'err');
       else if (e.code === 'translate_partial') ctx.toast('أجزاء قليلة من النسخة الثانية بقت بلغتها الأصلية لأن ترجمتها ما اكتملت، ومعلَّمة بملاحظة.');
+      else if (e.code === 'gemini_out') ctx.toast('خلصت حصة Gemini اليوم بمفاتيحك، فأكمل بـ Groq (دقة المصطلحات أقل). لحصة جديدة أضف مفتاح Gemini من حساب Google ثاني.', 'err');
     } else if (e.type === 'images') {
       // الصور تُفحص أثناء الكتابة أيضاً: لا نغطي حالة الكتابة، ونعرض العدد فقط
       if (e.picked) imagesPicked = Math.max(imagesPicked, e.picked);
@@ -409,9 +411,12 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
     let msg = message;
     if (code === 'daily_limit' && extra.retryAfter) msg += ` يتجدد الرصيد تدريجياً خلال ${fmtHM(extra.retryAfter)} ساعة.`;
     const actions = [];
-    if (action === 'link') actions.push(h('button', { class: 'btn', onclick: () => ctx.go('link', {}, { replace: true }) }, 'ربط المفاتيح'));
-    if (action === 'retry') actions.push(h('button', { class: 'btn', onclick: retry }, 'أكمل التحويل'));
-    if (action === 'reload') actions.push(h('button', { class: 'btn', onclick: () => location.reload() }, 'تحديث'));
+    const want = action.split('+');
+    const sup = ctx.session.support;
+    if (want.includes('retry')) actions.push(h('button', { class: 'btn', onclick: retry }, 'أكمل التحويل'));
+    if (want.includes('link')) actions.push(h('button', { class: want[0] === 'link' ? 'btn' : 'btn ghost', onclick: () => ctx.go('link', {}, { replace: true }) }, want[0] === 'link' ? 'ربط المفاتيح' : 'إضافة مفتاح'));
+    if (want.includes('reload')) actions.push(h('button', { class: 'btn', onclick: () => location.reload() }, 'تحديث'));
+    if (want.includes('support') && sup?.url) actions.push(h('a', { class: 'btn', href: sup.url, target: '_blank', rel: 'noopener' }, icon('external'), 'اطلب ساعات أكثر'));
     actions.push(h('button', { class: 'btn ghost', onclick: () => history.back() }, 'رجوع'));
     clear(body).append(h('div', { class: 'result' }, icon('warn', 'icon big'), h('h2', { class: 'h-section' }, title), h('p', { class: 'muted' }, msg), h('div', { class: 'row', style: { justifyContent: 'center' } }, actions)));
     ctx.setBar('sub', { title: 'توقف التحويل' });

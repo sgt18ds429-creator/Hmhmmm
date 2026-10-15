@@ -493,6 +493,24 @@ export function termsIn(text) {
   return out;
 }
 
+/**
+ * كاتب لم يلتزم بترميز المصطلحات (يكتب «المنصف (mediastinum)» بدل [[mediastinum]]، وهذا يحصل مع نماذج Groq):
+ * المصطلح الإنجليزي بين قوسين عاديين بعد كلام عربي يصير [[ ]]، فيدخل القاموس ويُعزل اتجاهه في السطر العربي.
+ * العناوين وأسطر الصور والأسئلة تبقى كما هي، وكذلك ما ليس مصطلحاً (Fig. 2، e.g. …، الجمل الطويلة).
+ */
+export function bracketTerms(markup) {
+  return String(markup || '').split('\n').map((line) => {
+    if (/^\s*(#{1,4}\s|@|\?\?|[a-d]\)\s|=\s)/.test(line)) return line;
+    return line
+      .replace(/\(\s*(\[\[[^\[\]]+\]\])\s*\)/g, '$1')
+      .replace(/\(([A-Za-z][A-Za-z0-9 .\-\/'+]{0,58}[A-Za-z0-9.+])\)/g, (m, t, at, str) => {
+        if (!/[\u0600-\u06FF]/.test(str.slice(Math.max(0, at - 40), at))) return m; // ليس بعد كلام عربي
+        if (t.split(/\s+/).length > 6 || /^(e\.?g|i\.?e|etc|fig|figure|table|slide|page|see|p)\b/i.test(t) || /^[\d\s.]+$/.test(t)) return m;
+        return `[[${t.trim()}]]`;
+      });
+  }).join('\n');
+}
+
 /** بصمة قصيرة لنص (لمعرفة إن تغيّر بين محاولة وأخرى). */
 export function textHash(str) {
   let a = 2166136261;

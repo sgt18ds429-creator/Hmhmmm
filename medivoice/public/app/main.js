@@ -11,6 +11,9 @@ import { viewDoc } from './doc.js';
 // نوع الملزمة في قائمة «محاضراتي»
 const LIST_LABEL = { highyield: 'High-Yield', notes: 'شرح مفصّل', integrated: 'ملزمة متكاملة', transcript: 'نص مفرّغ' };
 
+/** عدد المفاتيح بالعربي: مفتاح، مفتاحين، 3 مفاتيح. */
+const keysLabel = (n) => (n <= 1 ? 'مفتاح واحد' : n === 2 ? 'مفتاحين' : `${n} مفاتيح`);
+
 const ACCEPT = 'audio/*,video/*,.m4a,.mp3,.wav,.ogg,.oga,.opus,.aac,.flac,.mp4,.mov,.m4v,.webm,.mkv,.3gp,.amr,.wma';
 
 const PROVIDERS = {
@@ -22,7 +25,7 @@ const PROVIDERS = {
   },
   groq: {
     badge: 'Q', name: 'Groq', role: 'محرك الساعات',
-    desc: 'يحوّل الصوت إلى مسودة بثوانٍ: 8 ساعات كل يوم.',
+    desc: 'يحوّل الصوت إلى مسودة بثوانٍ، وحصته المجانية ساعات كل يوم.',
     url: 'https://console.groq.com/keys', site: 'Groq Console',
     steps: ['افتح Groq Console وسجّل دخول (بحساب Google أسرع).', 'اضغط Create API Key، سمِّه أي اسم، ثم Copy.', 'ارجع لهنا واضغط «لصق المفتاح».'],
   },
@@ -79,13 +82,16 @@ export async function start(MV, root) {
   function paintMeter() {
     if (!meterEl) return;
     const u = ctx.session.usage;
-    const left = Math.max(0, u.limit_sec - u.used_sec);
-    const frac = u.limit_sec ? left / u.limit_sec : 0;
+    const unlimited = !u.limit_sec; // 0 = بلا حد يومي
+    const left = unlimited ? 0 : Math.max(0, u.limit_sec - u.used_sec);
+    const frac = unlimited ? 1 : left / u.limit_sec;
     const C = 2 * Math.PI * 12;
     meterEl.querySelector('.fill').style.strokeDashoffset = String(C * (1 - frac));
-    meterEl.querySelector('b').textContent = fmtHM(left);
-    meterEl.classList.toggle('low', frac < 0.15);
-    meterEl.setAttribute('aria-label', `المتبقي اليوم ${fmtHM(left)} ساعة`);
+    meterEl.querySelector('b').textContent = unlimited ? '∞' : fmtHM(left);
+    meterEl.querySelector('small').textContent = unlimited ? 'بلا حد' : 'متبقي اليوم';
+    meterEl.classList.toggle('low', !unlimited && frac < 0.15);
+    meterEl.classList.toggle('inf', unlimited);
+    meterEl.setAttribute('aria-label', unlimited ? 'ساعاتك اليومية بلا حد' : `المتبقي اليوم ${fmtHM(left)} ساعة`);
   }
   function meter() {
     const C = 2 * Math.PI * 12;
@@ -173,7 +179,7 @@ export async function start(MV, root) {
         : !s.keys.gemini.linked
           ? h('div', { class: 'banner' }, icon('warn'), h('span', null, 'بدون Gemini تقل دقة المصطلحات الطبية. اربطه مجاناً.'), h('button', { class: 'btn small amber', onclick: () => go('link') }, 'ربط'))
           : !s.keys.groq.linked
-            ? h('div', { class: 'banner info' }, icon('info'), h('span', null, 'اربط Groq حتى تضمن 8 ساعات يومياً ويشتغل الاثنين سوا.'), h('button', { class: 'btn small ghost', onclick: () => go('link') }, 'ربط'))
+            ? h('div', { class: 'banner info' }, icon('info'), h('span', null, 'اربط Groq حتى تزيد ساعاتك اليومية ويشتغل الاثنين سوا.'), h('button', { class: 'btn small ghost', onclick: () => go('link') }, 'ربط'))
             : null,
       slab,
       h('div', { class: 'row' }, h('button', { class: 'btn ghost', onclick: () => (noKeys ? go('link') : openRecorder(ctx)) }, icon('mic'), 'تسجيل مباشر')),
@@ -249,21 +255,22 @@ export async function start(MV, root) {
       const box = h('section', { class: 'card prov' });
       const input = h('input', { class: 'input', type: 'text', placeholder: 'الصق المفتاح هنا', autocomplete: 'off', autocapitalize: 'off', spellcheck: false, 'aria-label': `مفتاح ${p.name}` });
       const pasteBtn = h('button', { class: 'btn small', onclick: paste }, icon('paste'), 'لصق المفتاح');
-      const adding = state.linked && id === 'gemini'; // مفتاح Gemini إضافي من حساب Google آخر
+      const adding = state.linked; // مفتاح إضافي من حساب آخر: حصة يومية مجانية جديدة فوق الحالية
       async function submit(raw) {
         const key = String(raw || '').trim().replace(/^["']|["']$/g, '');
         if (key.length < 20) { ctx.toast('الصق المفتاح كاملاً.', 'err'); return; }
         pasteBtn.disabled = true;
         const label = pasteBtn.lastChild;
         label.textContent = 'أتحقق…';
-        const r = await ctx.api('/api/keys', { method: 'POST', body: { key, provider: adding ? 'gemini' : undefined, add: adding } }); // الخادم يميّز المزوّد من شكل المفتاح
+        const r = await ctx.api('/api/keys', { method: 'POST', body: { key, provider: adding ? id : undefined, add: adding } }); // الخادم يميّز المزوّد من شكل المفتاح
         pasteBtn.disabled = false;
         label.textContent = adding ? 'إضافة' : 'لصق المفتاح';
         if (r.ok && r.data?.active) {
           ctx.session = MV.session = r.data;
           ctx.caps = null;
           ctx.ribbon.kick(0.8);
-          ctx.toast(adding ? `صار عندك ${r.data.keys.gemini.count} مفاتيح Gemini` : `تم ربط ${PROVIDERS[r.data.linked]?.name || p.name}`, 'ok');
+          const now = r.data.keys[id]?.count || 1;
+          ctx.toast(!adding ? `تم ربط ${PROVIDERS[r.data.linked]?.name || p.name}` : now > (state.count || 1) ? `صار عندك ${keysLabel(now)} ${p.name}` : 'هذا المفتاح مربوط من قبل. أضف مفتاح من حساب ثاني.', 'ok');
           render();
         } else {
           const e = r.data?.error;
@@ -290,7 +297,7 @@ export async function start(MV, root) {
         state.linked ? h('span', { class: 'chip ok' }, icon('check'), 'مربوط') : h('span', { class: 'chip off' }, 'غير مربوط')));
       if (state.linked) {
         const many = (state.count || 1) > 1;
-        box.append(h('div', { class: 'linked-row' }, h('span', null, many ? `${state.count} مفاتيح` : 'المفتاح'), h('code', null, state.hint),
+        box.append(h('div', { class: 'linked-row' }, h('span', null, many ? keysLabel(state.count) : 'المفتاح'), h('code', null, state.hint),
           h('button', { class: 'btn ghost small', onclick: async () => {
             if (!(await confirm({ title: `فك ربط ${p.name}`, message: many ? 'تنفك كل المفاتيح. تقدر تربطها مرة ثانية بأي وقت.' : 'تقدر تربطه مرة ثانية بأي وقت.', ok: 'فك الربط', danger: true }))) return;
             const r = await ctx.api(`/api/keys?provider=${id}`, { method: 'DELETE' });
@@ -298,8 +305,11 @@ export async function start(MV, root) {
           } }, 'فك الربط')));
         if (adding && (state.count || 1) < 6) {
           pasteBtn.lastChild.textContent = 'إضافة';
-          input.placeholder = 'إضافة مفتاح Gemini آخر';
-          box.append(h('div', { class: 'paste-row' }, input, pasteBtn));
+          input.placeholder = 'مفتاح من حساب ثاني';
+          box.append(h('div', { class: 'paste-row' }, input, pasteBtn),
+            h('small', { class: 'dim' }, id === 'groq'
+              ? 'كل حساب Groq يضيف ساعات صوت مجانية جديدة كل يوم، والموقع يتنقل بينها وحده.'
+              : 'كل حساب Google يضيف حصة يومية جديدة للنماذج القوية، والموقع يتنقل بينها وحده.'));
         }
       } else {
         box.append(
@@ -330,7 +340,7 @@ export async function start(MV, root) {
     const left = Math.max(0, u.limit_sec - u.used_sec);
     const keyRow = (id) => h('div', { class: 'row between' },
       h('span', null, h('b', { class: 'ltr' }, PROVIDERS[id].name), `  ${PROVIDERS[id].role}`),
-      s.keys[id].linked ? h('span', { class: 'chip ok' }, icon('check'), 'مربوط') : h('span', { class: 'chip warn' }, 'غير مربوط'));
+      s.keys[id].linked ? h('span', { class: 'chip ok' }, icon('check'), (s.keys[id].count || 1) > 1 ? keysLabel(s.keys[id].count) : 'مربوط') : h('span', { class: 'chip warn' }, 'غير مربوط'));
     const sh = sheet({
       title: 'حسابي',
       body: h('div', { class: 'stack lg' },
@@ -338,7 +348,9 @@ export async function start(MV, root) {
           s.user.label ? [h('dt', null, 'الاسم'), h('dd', null, s.user.label)] : null,
           h('dt', null, 'الكود'), h('dd', { class: 'ltr num' }, s.user.code),
           h('dt', null, 'الصلاحية'), h('dd', null, s.user.expires_at ? `حتى ${new Date(s.user.expires_at).toLocaleDateString('ar-IQ-u-nu-latn', { year: 'numeric', month: 'long', day: 'numeric' })}` : 'دائمة'),
-          h('dt', null, 'المتبقي اليوم'), h('dd', { class: 'num' }, `${fmtHM(left)} من ${fmtHM(u.limit_sec)} ساعة`),
+          u.limit_sec
+            ? [h('dt', null, 'المتبقي اليوم'), h('dd', { class: 'num' }, `${fmtHM(left)} من ${fmtHM(u.limit_sec)} ساعة`)]
+            : [h('dt', null, 'ساعات اليوم'), h('dd', { class: 'num' }, `بلا حد، حوّلت ${fmtHM(u.used_sec)} ساعة`)],
           h('dt', null, 'مجموع ما حوّلته'), h('dd', { class: 'num' }, `${fmtHM(u.total_sec)} ساعة، ${u.lectures} محاضرة`)),
         h('div', { class: 'card stack' }, keyRow('gemini'), keyRow('groq'),
           h('button', { class: 'btn ghost small', onclick: () => { sh.close(); go('link'); } }, icon('key'), 'إدارة المفاتيح')),

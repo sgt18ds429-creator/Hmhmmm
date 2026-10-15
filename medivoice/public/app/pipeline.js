@@ -6,7 +6,7 @@ import { chunkAudio, probeAudio, compressChunk, resetCompression, AudioError } f
 import {
   cleanWhisper, pickCut, wordsBetween, wordsToText, splitByWords, parseMarkup, joinChunks, blocksToMarkup,
   countWords, tokens, collectTerms, blockText, stripMarkup, parseJsonLoose, uid, langOf, termsIn, textHash, normalize, isNotes, repetitionScore, collapseMarkup, collapseRepeats, collapseCycles,
-  qualityGate, cleanBlockList,
+  qualityGate, cleanBlockList, bracketTerms,
 } from './text.js';
 import {
   whisperPrompt, audioPrompt, cleanupPrompt, glossaryPrompt, figuresPrompt, translatePrompt, translateExtrasPrompt,
@@ -97,6 +97,18 @@ export class Engine {
   }
 
   get hasGemini() { return this.gem.alive.length > 0; }
+
+  /**
+   * نموذج Gemini خرج لباقي المحاضرة (خلصت حصته اليومية). إذا كان الأخير والعمل يكمل بـ Groq، يُبلَّغ الطالب
+   * مرة واحدة: الدقة أقل، ومفتاح Gemini من حساب ثاني يرجّع حصة جديدة.
+   */
+  retire(m) {
+    m.dead = true;
+    if (!this.hasGemini && !this.outNoted && (this.hasGroqLlm || this.hasStt)) {
+      this.outNoted = true;
+      this.emit({ type: 'note', code: 'gemini_out' });
+    }
+  }
   get hasGroqLlm() { return this.llm.alive.length > 0; }
   get hasStt() { return this.stt.alive.length > 0; }
   get hasTx() { return this.tx.alive.length > 0; }
@@ -241,7 +253,7 @@ export class Engine {
         const details = Array.isArray(err.details) ? err.details : [];
         const perDay = details.some((d) => (d.violations || []).some((v) => /PerDay/i.test(v.quotaId || ''))) || /per day|daily/i.test(msg);
         const retry = details.map((d) => parseFloat(d.retryDelay)).find((x) => x > 0) || res.retryAfter || 20;
-        if (perDay) m.dead = true; else this.gem.cool(m, (retry + 1) * 1000);
+        if (perDay) this.retire(m); else this.gem.cool(m, (retry + 1) * 1000);
         continue;
       }
       if (res.status === 400 && /API key not valid|API_KEY_INVALID/i.test(msg) || res.status === 401 || res.status === 403 && /key|permission/i.test(msg)) {
@@ -252,7 +264,7 @@ export class Engine {
         if (/minimal/i.test(msg) && !m.noMinimal) m.noMinimal = true; else m.plain = true;
         continue;
       }
-      if (res.status === 404 || res.status === 400 && /not (found|supported)|no longer available/i.test(msg)) { m.dead = true; continue; }
+      if (res.status === 404 || res.status === 400 && /not (found|supported)|no longer available/i.test(msg)) { this.retire(m); continue; }
       if (res.status === 400 || res.status === 413) return { blocked: true, reason: `bad_request: ${msg.slice(0, 120)}` };
       // ضغط على النموذج (503/500) أو انقطاع: نهدّئه مدة تطول مع كل فشل وننتقل لغيره، ولا نستسلم بسرعة
       // (في المساء تكثر 503 على النماذج المجانية، والاستسلام يعني ملزمة ناقصة)
@@ -270,15 +282,27 @@ export class Engine {
   }
 
   // ── نماذج Groq النصية ──
-  async groq({ system, user, json = false, maxTokens = 3000, temperature = 0.1 }) {
-    let netFails = 0;
+  /**
+   * @param maxWaitMs أطول انتظار مقبول لنموذج في تهدئة (0 = إذا لم يتوفر نموذج الآن نرجع فوراً)
+   * @param bestWaitMs للكتابة الطويلة: إذا كان أفضل نموذج في تهدئة قصيرة (حد الدقيقة) ننتظره بدل نموذج أضعف
+   *   (الأضعف يخطئ بالمصطلحات العربية، مثل «سرطان» بدل «المنصف»). مرتين على الأكثر، ثم أي نموذج متاح
+   * @param onlyBest أفضل نموذج فقط (الكتابة بدل انتظار Gemini: لا نستبدل Gemini بنموذج أضعف منه)
+   */
+  async groq({ system, user, json = false, maxTokens = 3000, temperature = 0.1, maxWaitMs = 120_000, bestWaitMs = 0, onlyBest = false }) {
+    let netFails = 0, preferWaits = 0;
     const tooLarge = new Set(); // نماذج رفضت الطلب لأنه أكبر من حدها بالدقيقة
     for (let attempt = 0; attempt < 12; attempt++) {
       this.check();
-      const m = this.llm.pick();
+      const best = this.llm.items.find((x) => !x.dead && !tooLarge.has(x.id));
+      const only = onlyBest ? (x) => x === best : null;
+      const m = this.llm.pick(only);
+      if (m && best && m !== best && bestWaitMs > 0 && preferWaits < 2) {
+        const wait = best.until - Date.now();
+        if (wait > 0 && wait <= bestWaitMs) { preferWaits++; await this.pause(wait + 300, 'llm'); continue; }
+      }
       if (!m) {
-        const wait = this.llm.waitMs();
-        if (wait === null || wait > 120_000) return null;
+        const wait = this.llm.waitMs(only);
+        if (wait === null || wait > maxWaitMs) return null;
         await this.pause(wait + 400, 'llm');
         continue;
       }
@@ -325,6 +349,14 @@ export class Engine {
    */
   async write({ system, user, maxTokens = 16000, groqTokens = 4000, temperature = 0.2, groq = true, gemini = true, thinking = null, lite = false, patienceMs = null }) {
     let blocked = null;
+    // بعد نفاد النماذج القوية تبقى الخفيفة وحدها، ولها حد بالدقيقة: إذا كانت كلها في تهدئة الآن و Groq جاهز،
+    // يكتب Groq بدل انتظار دقيقة كاملة (حصته منفصلة). إذا لم يتوفر فوراً نرجع لـ Gemini وانتظاره المعتاد
+    const topGroq = this.llm.items.find((x) => !x.dead);
+    if (groq && gemini && this.hasGemini && topGroq && topGroq.until <= Date.now() && !this.gem.pick()
+      && (lite || !this.gem.items.some((x) => !x.dead && !/lite/.test(x.id)))) {
+      const r = await this.groq({ system, user, maxTokens: groqTokens, temperature, maxWaitMs: 0, onlyBest: true });
+      if (r) return r;
+    }
     if (gemini && this.hasGemini) {
       // عند التأخر لا ننتظر النماذج الدقيقة إذا كانت في تهدئة: الخفيفة أسرع ولها حدود أعلى.
       // من له بديل (Groq) لا ينتظر ضغط Google طويلاً؛ ومن لا بديل له يصبر حتى 4 دقائق
@@ -333,7 +365,7 @@ export class Engine {
       if (r?.blocked) blocked = r;
     }
     if (groq && this.hasGroqLlm) {
-      const r = await this.groq({ system, user, maxTokens: groqTokens, temperature });
+      const r = await this.groq({ system, user, maxTokens: groqTokens, temperature, bestWaitMs: lite ? 10_000 : 30_000 });
       if (r) return r;
     }
     return blocked;
@@ -913,7 +945,8 @@ async function writeSection(engine, meta, plan, s, paras, opts, depth = 0) {
     }
     if (!r || r.blocked) break;
     const loop = repetitionScore(r.text);
-    const text = tidySection(loop > 0.15 ? collapseMarkup(r.text).text : r.text, s);
+    const tidy = tidySection(loop > 0.15 ? collapseMarkup(r.text).text : r.text, s);
+    const text = lang === 'en' ? tidy : bracketTerms(tidy);
     const blocks = parseMarkup(text);
     const outWords = blocks.reduce((n, b) => n + countWords(blockText(b)), 0);
     // مصطلحات التفريغ التي لم ترد في الشرح لا بين [[ ]] ولا بدونها

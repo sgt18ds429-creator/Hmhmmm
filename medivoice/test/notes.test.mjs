@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Engine, writeNotes, enrich, complete, normalizePlan, rewriteLecture, sameContent, pickFigures, PipelineError, qualityGate } from '../public/app/pipeline.js';
-import { parseMarkup, blockText, countWords, uid, blocksToMarkup } from '../public/app/text.js';
+import { parseMarkup, blockText, countWords, uid, blocksToMarkup, bracketTerms } from '../public/app/text.js';
 import { buildPdfHtml } from '../public/app/pdf.js';
 
 // ── تفريغ محاضرة قصيرة بموضوعين ──
@@ -975,4 +975,127 @@ test('أسئلة MCQ تُراجَع مقابل الملزمة: المخالف ي
   assert.equal(qs.length, 7, 'سؤال حُذف');
   assert.equal(qs[0].q, 'Which sign indicates [[pneumothorax]] correctly?');
   assert.equal(qs[0].ans, 0);
+});
+
+// رد Google عند نفاد الحصة اليومية لنموذج (كما يصل من الخادم)
+const dayQuota = (model) => ({ ok: false, status: 429, retryAfter: null, data: { error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: 'You exceeded your current quota, please check your plan and billing details.',
+  details: [{ '@type': 'type.googleapis.com/google.rpc.QuotaFailure', violations: [{ quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', quotaDimensions: { model } }] }, { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '79525s' }] } } });
+
+test('حصة النماذج القوية تخلص بنص الملزمة: تكمل كلها بالخفيفة، بلا نص خام ولا ترجمة ناقصة ولا توقف', async () => {
+  for (const mode of ['notes', 'highyield']) {
+    const { io, calls } = makeIO();
+    const inner = io.gemini;
+    let strong = 0;
+    const used = [];
+    io.gemini = async (model, body, opts) => {
+      used.push(model);
+      if (!/lite/.test(model) && ++strong > 2) return dayQuota(model); // أول طلبين بالقوية ثم تخلص حصتها
+      return inner(model, body, opts);
+    };
+    const notes = [];
+    const doc = transcriptDoc({ mode });
+    const engine = new Engine(io, { ...CAPS, geminiModels: ['gemini-strong-a', 'gemini-strong-b', 'gemini-x-lite'] });
+    assert.equal(await writeNotes(doc, engine), true, mode);
+    await complete(doc, engine, { io, review: true, emit: (e) => { if (e.type === 'note') notes.push(e.code); } });
+    assert.equal(doc.stats.fallback, 0, `${mode}: كل الأقسام مكتوبة`);
+    assert.equal(engine.gem.items[0].dead && engine.gem.items[1].dead, true, `${mode}: النماذج القوية تُركت لباقي المحاضرة`);
+    assert.ok(used.lastIndexOf('gemini-strong-a') < used.length - 5, `${mode}: لا رجوع للقوية بعد نفادها`);
+    assert.ok(doc.alt?.blocks?.length && !doc.alt.partial, `${mode}: الترجمة كاملة`);
+    assert.deepEqual(notes, [], `${mode}: بلا تنبيه نقص`);
+    assert.deepEqual(doc.stats.gate, { repeats: 0, duplicates: 0, empty: 0, cycles: 0 });
+    if (mode === 'highyield') assert.ok(doc.blocks.filter((b) => b.t === 'mcq').length >= 4, 'أسئلة MCQ موجودة');
+    else assert.ok(doc.blocks.some((b) => b.box), 'أهم النقاط موجودة');
+    assert.ok(calls.section.length >= 2);
+  }
+});
+
+test('بعد نفاد القوية والخفيفة في حد الدقيقة: Groq الجاهز يكتب بدل الانتظار، وإذا لم يتوفر يُنتظر Gemini', async () => {
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow() + skew;
+  try {
+    const seen = [];
+    const io = {
+      sleep: async (ms) => { skew += ms; },
+      async gemini(model) { seen.push(model); return gemResponse('نص من Gemini'); },
+      async groq(body) { seen.push(body.model); return { ok: true, status: 200, data: { choices: [{ message: { content: 'نص من Groq' }, finish_reason: 'stop' }] } }; },
+    };
+    const engine = new Engine(io, { gemini: true, groq: true, geminiModels: ['gemini-strong', 'gemini-x-lite'], groqModels: ['openai/gpt-oss-120b'], sttModels: [] });
+    engine.gem.items[0].dead = true; // خلصت حصة اليوم
+    engine.gem.cool(engine.gem.items[1], 50_000); // الخفيفة في حد الدقيقة
+    const r = await engine.write({ system: 's', user: 'u', lite: true });
+    assert.equal(r.text, 'نص من Groq');
+    assert.deepEqual(seen, ['openai/gpt-oss-120b']);
+    // Groq أيضاً في تهدئة: ينتظر Gemini الخفيف (لا يستسلم)
+    engine.llm.cool(engine.llm.items[0], 80_000);
+    const r2 = await engine.write({ system: 's', user: 'u', lite: true });
+    assert.equal(r2.text, 'نص من Gemini');
+    assert.equal(seen.at(-1), 'gemini-x-lite');
+  } finally { Date.now = realNow; }
+});
+
+test('المصطلح بين قوسين عاديين بعد كلام عربي يصير [[ ]] (كاتب Groq)، وما ليس مصطلحاً يبقى', () => {
+  assert.equal(bracketTerms('يُعدّ تصوير الصدر (Chest X-ray) الأكثر طلباً، والتكبير ([[magnification]]) يكبّر القلب.'),
+    'يُعدّ تصوير الصدر [[Chest X-ray]] الأكثر طلباً، والتكبير [[magnification]] يكبّر القلب.');
+  for (const keep of ['### أنواع الزوايا (Projections)', 'انظر (Fig. 2) و(e.g. CT) و(5 mm).', 'The heart (cardiac silhouette) is big.', '@fig: radiograph | chest (PA) | a | b | صورة (PA)', 'نص (this is a long english sentence inside parentheses here) هنا']) {
+    assert.equal(bracketTerms(keep), keep);
+  }
+});
+
+test('Groq للكتابة الطويلة: ينتظر أفضل نموذج إذا كانت تهدئته قصيرة بدل نموذج أضعف', async () => {
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow() + skew;
+  try {
+    const seen = [];
+    const io = {
+      sleep: async (ms) => { skew += ms; },
+      async groq(body) { seen.push(body.model); return { ok: true, status: 200, data: { choices: [{ message: { content: `نص ${body.model}` }, finish_reason: 'stop' }] } }; },
+    };
+    const engine = new Engine(io, { gemini: false, groq: true, geminiModels: [], groqModels: ['openai/gpt-oss-120b', 'qwen/qwen3.8-27b'], sttModels: [] });
+    engine.llm.cool(engine.llm.items[0], 6000); // حد الدقيقة: ثوانٍ
+    const r = await engine.write({ system: 's', user: 'u' });
+    assert.equal(r.model, 'openai/gpt-oss-120b');
+    engine.llm.cool(engine.llm.items[0], 5 * 60_000); // تهدئة طويلة: الأضعف أفضل من الانتظار
+    const r2 = await engine.write({ system: 's', user: 'u' });
+    assert.equal(r2.model, 'qwen/qwen3.8-27b');
+  } finally { Date.now = realNow; }
+});
+
+test('خلصت حصة Gemini كلها والعمل يكمل بـ Groq: تنبيه واحد للطالب، وبدون Groq لا تنبيه (شاشة الخطأ تكفي)', async () => {
+  for (const groq of [true, false]) {
+    const notes = [];
+    const io = {
+      sleep: async () => {},
+      async gemini(model) { return dayQuota(model); },
+      async groq() { return { ok: true, status: 200, data: { choices: [{ message: { content: 'نص من Groq' }, finish_reason: 'stop' }] } }; },
+    };
+    const engine = new Engine(io, { gemini: true, groq, geminiModels: ['gemini-strong', 'gemini-x-lite'], groqModels: groq ? ['openai/gpt-oss-120b'] : [], sttModels: [] }, (e) => { if (e.type === 'note') notes.push(e.code); });
+    const r = await engine.write({ system: 's', user: 'u' });
+    await engine.write({ system: 's', user: 'u' });
+    assert.equal(engine.hasGemini, false);
+    if (groq) { assert.equal(r.text, 'نص من Groq'); assert.deepEqual(notes, ['gemini_out']); }
+    else { assert.equal(r, null); assert.deepEqual(notes, []); }
+  }
+});
+
+test('Groq: انتظار أفضل نموذج مرتين على الأكثر ثم أي نموذج متاح (لا يضيع القسم بانتظار لا ينتهي)', async () => {
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow() + skew;
+  try {
+    const seen = [];
+    const io = {
+      sleep: async (ms) => { skew += ms; },
+      async groq(body) {
+        seen.push(body.model);
+        if (body.model === 'openai/gpt-oss-120b') return { ok: false, status: 429, retryAfter: 5, data: { error: { message: 'Rate limit reached on tokens per minute (TPM)' } } };
+        return { ok: true, status: 200, data: { choices: [{ message: { content: `نص ${body.model}` }, finish_reason: 'stop' }] } };
+      },
+    };
+    const engine = new Engine(io, { gemini: false, groq: true, geminiModels: [], groqModels: ['openai/gpt-oss-120b', 'qwen/qwen3.8-27b'], sttModels: [] });
+    const r = await engine.write({ system: 's', user: 'u' });
+    assert.equal(r.model, 'qwen/qwen3.8-27b');
+    assert.equal(seen.filter((m) => m === 'openai/gpt-oss-120b').length, 3, 'محاولة أولى + انتظاران');
+  } finally { Date.now = realNow; }
 });

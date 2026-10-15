@@ -120,6 +120,28 @@ function stepper(start, min, max) {
 }
 const field = (label, control, hint) => h('label', { class: 'field' }, h('span', null, label), control, hint ? h('small', null, hint) : null);
 
+/** الحد اليومي كنص: «2:30 ساعة» أو «بلا حد». */
+const limitText = (sec) => (sec ? `${fmtHM(sec)} ساعة` : 'بلا حد');
+
+/** الساعات المسموحة باليوم: عدد ساعات أو «بلا حد» (يُرسل 0). sec = الحد الحالي بالثواني، و 0 = بلا حد. */
+function hoursControl(sec, label = 'الساعات المسموحة باليوم') {
+  let unlimited = Number(sec) === 0;
+  const input = h('input', { type: 'number', min: 0.5, max: 24, step: 0.5, value: unlimited ? 8 : Math.round((sec / 3600) * 100) / 100, inputMode: 'decimal', 'aria-label': 'عدد الساعات' });
+  const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'الحد اليومي' });
+  const hint = h('small', null);
+  const paint = () => {
+    clear(seg).append(
+      h('button', { type: 'button', 'aria-pressed': String(!unlimited), onclick: () => { unlimited = false; paint(); input.focus(); } }, 'عدد ساعات'),
+      h('button', { type: 'button', 'aria-pressed': String(unlimited), onclick: () => { unlimited = true; paint(); } }, 'بلا حد'));
+    input.hidden = unlimited;
+    hint.textContent = unlimited
+      ? 'الموقع ما يوقفه. يبقى حد مفاتيحه المجانية، وكل مفتاح يضيفه يزيد حصته.'
+      : 'تتجدد الساعات كل 24 ساعة.';
+  };
+  paint();
+  return { el: h('div', { class: 'field' }, h('span', null, label), seg, input, hint), get value() { return unlimited ? 0 : Number(input.value) || 8; } };
+}
+
 // ───────── الدخول ─────────
 function viewLogin(message = '') {
   root.classList.remove('in');
@@ -233,8 +255,8 @@ function codeCard(c) {
     h('div', { class: 'cc-line' }, h('span', { class: 'cc-code ltr' }, c.display), h('time', null, validity(c))),
     dev ? h('div', { class: 'cc-line' }, icon('phone'), h('span', null, [dev.os, dev.browser, place(dev)].filter(Boolean).join('، ')), h('time', null, ago(dev.last_seen))) : null,
     c.activated_at ? h('div', { class: 'use' },
-      h('div', { class: `track${pct > 85 ? ' hot' : ''}` }, h('i', { style: { width: `${pct}%` } })),
-      h('span', null, h('b', null, fmtHM(c.used_sec)), ` من ${fmtHM(c.daily_limit_sec)} اليوم`)) : null);
+      c.daily_limit_sec ? h('div', { class: `track${pct > 85 ? ' hot' : ''}` }, h('i', { style: { width: `${pct}%` } })) : null,
+      h('span', null, h('b', null, fmtHM(c.used_sec)), c.daily_limit_sec ? ` من ${fmtHM(c.daily_limit_sec)} اليوم` : ' اليوم، بلا حد')) : null);
 }
 
 async function mutate(request, done, sheets = []) {
@@ -252,11 +274,12 @@ function openCode(c) {
   const rows = [];
   const row = (k, v, cls) => { if (v !== '' && v !== null && v !== undefined) rows.push(h('dt', null, k), h('dd', { class: cls || '', dir: 'auto' }, v)); };
   row('الصلاحية', validity(c));
-  row('الحد اليومي', `${fmtHM(c.daily_limit_sec)} ساعة`);
+  row('الحد اليومي', limitText(c.daily_limit_sec));
   if (c.activated_at) {
     row('استخدام اليوم', `${fmtHM(c.used_sec)} ساعة`);
     row('المجموع', `${fmtHM(c.total_sec)} ساعة، ${c.lectures} محاضرة، ${c.pdfs} PDF`);
-    row('المفاتيح', [c.gemini ? 'Gemini' : '', c.groq ? 'Groq' : ''].filter(Boolean).join(' و ') || 'لم يربط مفاتيحه بعد');
+    const keys = (name, n) => (n ? (n > 1 ? `${name} (${n === 2 ? 'مفتاحين' : `${n} مفاتيح`})` : name) : '');
+    row('المفاتيح', [keys('Gemini', c.gemini), keys('Groq', c.groq)].filter(Boolean).join(' و ') || 'لم يربط مفاتيحه بعد');
   }
   for (const dev of c.devices) {
     row('الجهاز', [dev.os, dev.browser].filter(Boolean).join('، '));
@@ -306,18 +329,18 @@ function openExtend(c, parent) {
 function openEdit(c, parent) {
   const name = h('input', { type: 'text', value: c.label || '', maxLength: 80 });
   const note = h('input', { type: 'text', value: c.note || '', maxLength: 200, placeholder: 'اختياري' });
-  const hours = h('input', { type: 'number', min: 0.5, max: 24, step: 0.5, value: Math.round((c.daily_limit_sec / 3600) * 100) / 100, inputMode: 'decimal' });
+  const hours = hoursControl(c.daily_limit_sec);
   const devices = stepper(c.max_devices, 1, 5);
   const btn = h('button', { class: 'btn wide', type: 'submit' }, 'حفظ');
   const s = sheet({ title: 'تعديل البيانات', body: h('form', { class: 'stack', onsubmit: async (e) => {
     e.preventDefault();
     btn.disabled = true;
-    const ok = await mutate(api(`/api/admin/codes/${c.code}`, { method: 'PATCH', body: { label: name.value.trim(), note: note.value.trim(), daily_hours: Number(hours.value) || 8, max_devices: devices.value } }), 'انحفظ التعديل.', [s, parent]);
+    const ok = await mutate(api(`/api/admin/codes/${c.code}`, { method: 'PATCH', body: { label: name.value.trim(), note: note.value.trim(), daily_hours: hours.value, max_devices: devices.value } }), 'انحفظ التعديل.', [s, parent]);
     if (!ok) btn.disabled = false;
   } },
     field('اسم المستخدم', name),
     field('ملاحظة', note),
-    field('الساعات المسموحة باليوم', hours),
+    hours.el,
     h('div', { class: 'field' }, h('span', null, 'عدد الأجهزة المسموحة'), devices.el, h('small', null, 'الأصل جهاز واحد. زيده فقط لمن تريد تسمحله بأكثر.')),
     btn) });
 }
@@ -333,7 +356,7 @@ function openCreate() {
   const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'مدة الكود' });
   const paintSeg = () => clear(seg).append(...DUR.map(([v, label]) => h('button', { type: 'button', 'aria-pressed': String(dur === v), onclick: () => { dur = v; customWrap.hidden = v !== 'x'; paintSeg(); if (v === 'x') custom.focus(); } }, label)));
   paintSeg();
-  const hours = h('input', { type: 'number', min: 0.5, max: 24, step: 0.5, value: cfg.defaultDailyHours, inputMode: 'decimal' });
+  const hours = hoursControl(Math.round(Number(cfg.defaultDailyHours ?? 8) * 3600));
   const devices = stepper(1, 1, 5);
   const count = stepper(1, 1, 50);
   const btn = h('button', { class: 'btn wide', type: 'submit' }, icon('plus'), 'إنشاء الكود');
@@ -342,7 +365,7 @@ function openCreate() {
     const days = dur === 'x' ? parseInt(custom.value, 10) : dur;
     if (dur === 'x' && !(days >= 1)) { toast('اكتب عدد الأيام.', 'err'); custom.focus(); return; }
     btn.disabled = true;
-    const r = await api('/api/admin/codes', { method: 'POST', body: { count: count.value, label: name.value.trim(), note: note.value.trim(), days, max_devices: devices.value, daily_hours: Number(hours.value) || cfg.defaultDailyHours } });
+    const r = await api('/api/admin/codes', { method: 'POST', body: { count: count.value, label: name.value.trim(), note: note.value.trim(), days, max_devices: devices.value, daily_hours: hours.value } });
     if (!r.ok || !r.data?.created?.length) { btn.disabled = false; toast('تعذّر إنشاء الكود. حاول مرة ثانية.', 'err'); return; }
     s.close();
     await load(true);
@@ -351,7 +374,7 @@ function openCreate() {
     field('اسم المستخدم', name, 'يظهرلك في القائمة حتى تعرف الكود لمنو.'),
     h('div', { class: 'field' }, h('span', null, 'مدة الكود'), seg, h('small', null, 'المدة تبدأ من أول تفعيل، مو من الآن.')),
     customWrap,
-    field('الساعات المسموحة باليوم', hours),
+    hours.el,
     h('details', { class: 'more' }, h('summary', null, 'خيارات إضافية'),
       h('div', { class: 'stack' },
         h('div', { class: 'field' }, h('span', null, 'عدد الأكواد'), count.el, h('small', null, 'لإنشاء دفعة أكواد بنفس الإعدادات. الأسماء تترقّم تلقائياً.')),
@@ -467,7 +490,7 @@ function tabSettings(view) {
   const supLabel = h('input', { type: 'text', value: cfg.support?.label || '', maxLength: 60, placeholder: 'تواصل ويانه على تيليكرام' });
   const supUrl = h('input', { type: 'text', value: cfg.support?.url || '', maxLength: 200, dir: 'ltr', placeholder: 'https://t.me/username', inputMode: 'url', autocapitalize: 'off' });
   const notice = h('textarea', { value: cfg.notice || '', maxLength: 300, placeholder: 'مثلاً: صيانة اليوم الساعة 10 بالليل' });
-  const hours = h('input', { type: 'number', min: 0.5, max: 24, step: 0.5, value: cfg.defaultDailyHours, inputMode: 'decimal' });
+  const hours = hoursControl(Math.round(Number(cfg.defaultDailyHours ?? 8) * 3600), 'الساعات اليومية للكود الجديد');
   const pdfs = h('input', { type: 'number', min: 1, max: 500, value: cfg.pdfPerDay, inputMode: 'numeric' });
   const moves = stepper(cfg.moveLimit ?? 2, 0, 5);
   const chunk = h('input', { type: 'number', min: 60, max: 900, step: 30, value: cfg.chunkSec, inputMode: 'numeric' });
@@ -478,7 +501,7 @@ function tabSettings(view) {
     save.disabled = true;
     const r = await api('/api/admin/settings', { method: 'PUT', body: {
       support: { label: supLabel.value.trim(), url: fixUrl(supUrl.value) }, notice: notice.value.trim(),
-      defaultDailyHours: Number(hours.value), pdfPerDay: Number(pdfs.value), moveLimit: moves.value, chunkSec: Number(chunk.value),
+      defaultDailyHours: hours.value, pdfPerDay: Number(pdfs.value), moveLimit: moves.value, chunkSec: Number(chunk.value),
       geminiModels: lines(gem.value), groqModels: lines(grq.value), sttModels: lines(stt.value),
     } });
     save.disabled = false;
@@ -513,7 +536,7 @@ function tabSettings(view) {
       field('نص الإعلان', notice, 'يظهر كشريط بالصفحة الرئيسية. اتركه فارغ إذا ماكو شي.')),
     h('section', { class: 'card stack' },
       h('h3', null, 'الحدود'),
-      field('الساعات اليومية للكود الجديد', hours),
+      hours.el,
       field('ملفات PDF باليوم لكل مستخدم', pdfs, 'توليد PDF على الخادم المجاني محدود بـ 10 دقائق باليوم لكل الموقع، يعني تقريباً 250 ملف.'),
       h('div', { class: 'field' }, h('span', null, 'نقل التفعيل لمتصفح آخر على نفس الجهاز'), moves.el,
         h('small', null, 'عدد المرات المسموحة بالشهر. يفيد لمن يفتح الرابط من داخل تيليكرام وبعدين من Chrome. الصفر يمنعه نهائياً.'))),

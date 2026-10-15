@@ -1,12 +1,13 @@
 // تشغيل المسار الكامل على تسجيل من Node باتصال مباشر بالمزوّدين (لتجربة الدقة والسرعة خارج المتصفح).
 //   GROQ_KEY=... GEMINI_KEY=... node tools/run-lecture.mjs <audio> [--mode=highyield|notes|integrated|transcript] [--engines=both|groq|gemini]
 //                                [--chunk=600] [--pdf=slides.pdf (يحتاج playwright لقراءة PDF)] [--out=doc.json] [--subject=..] [--keywords=..]
+//                                [--exhaust=strong@3,whisper@1,groq@0] (محاكاة نفاد الحصة اليومية بعد N طلبات)
 import { openAsBlob } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { runLecture } from '../public/app/pipeline.js';
 import { blocksToMarkup } from '../public/app/text.js';
-import { nodeIO } from './node-io.mjs';
+import { nodeIO, withQuota } from './node-io.mjs';
 
 const args = process.argv.slice(2);
 const file = args.find((a) => !a.startsWith('--'));
@@ -17,7 +18,8 @@ const mode = opt('mode', 'notes');
 const chunkSec = Number(opt('chunk', '600'));
 const out = opt('out', '');
 
-const io = nodeIO({ groqKey: process.env.GROQ_KEY, geminiKey: process.env.GEMINI_KEY, log: (m) => console.log(`   · ${((Date.now() - t0) / 1000).toFixed(0).padStart(4)}s ${m}`) });
+const say = (m) => console.log(`   · ${((Date.now() - t0) / 1000).toFixed(0).padStart(4)}s ${m}`);
+const io = withQuota(nodeIO({ groqKey: process.env.GROQ_KEY, geminiKey: process.env.GEMINI_KEY, log: say }), opt('exhaust', ''), say);
 const blob = await openAsBlob(file);
 Object.defineProperty(blob, 'name', { value: path.basename(file) });
 

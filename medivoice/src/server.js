@@ -25,7 +25,7 @@ const TZ_OFFSET = 3 * HOUR; // بغداد، لتجميع الإحصائيات ا
 const DEFAULT_SETTINGS = {
   support: { label: '', url: '' },
   notice: '',
-  defaultDailyHours: 8,
+  defaultDailyHours: 8, // 0 = بلا حد
   pdfPerDay: 20,
   moveLimit: 2, // كم مرة بالشهر يُسمح بنقل التفعيل لمتصفح آخر على نفس الجهاز (0 = ممنوع)
   chunkSec: 480, // 8 دقائق: أقصر من 10 حتى لا ينزلق الاستماع إلى حلقات تكرار، والمسودات متوازية فلا يبطئ
@@ -39,6 +39,14 @@ const DEFAULT_SETTINGS = {
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
+
+/** ساعات يومية (من لوحة التحكم) إلى ثوانٍ: 0 = بلا حد، وغيرها بين ربع ساعة و 24 ساعة. */
+function hoursToLimit(hours) {
+  if (isUnlimited(hours)) return 0;
+  return Math.round(Math.min(Math.max(Number(hours) || 8, 0.25), 24) * 3600);
+}
+/** «بلا حد» فقط إذا أُرسل صفر صريح (حقل فارغ أو قيمة غريبة لا تفتح الحد بالغلط). */
+const isUnlimited = (hours) => hours === 0 || hours === '0';
 
 // ───────────────────────── أدوات عامة ─────────────────────────
 
@@ -276,7 +284,7 @@ export class MediVoiceStore extends DurableObject {
       notice: cfg.notice || '',
       user: { label: code.label, code: displayCode(code.code), expires_at: code.expires_at || null },
       keys: {
-        groq: { linked: !!code.groq_enc, hint: code.groq_hint || '' },
+        groq: { linked: !!code.groq_enc, hint: code.groq_hint || '', count: keyCount(code.groq_hint) },
         gemini: { linked: !!code.gemini_enc, hint: code.gemini_hint || '', count: keyCount(code.gemini_hint) },
       },
       usage: {
@@ -375,7 +383,7 @@ export class MediVoiceStore extends DurableObject {
     const c = this.#check(deviceId);
     if (!c.ok) return { ok: false, status: 401, error: c.reason === 'none' ? 'locked' : c.reason };
     const code = c.code;
-    if (sec > 0) {
+    if (sec > 0 && code.daily_limit_sec > 0) { // 0 = بلا حد يومي
       const used = this.#usedSec(code.code, DAY);
       if (used + sec > code.daily_limit_sec + 30) {
         const oldest = this.#row("SELECT MIN(ts) AS t FROM usage WHERE code = ? AND kind = 'audio' AND ts > ?", code.code, Date.now() - DAY);
@@ -397,7 +405,10 @@ export class MediVoiceStore extends DurableObject {
       if (out.wait_ms > 90_000) return { ok: false, status: 429, error: 'pdf_busy' };
       return out;
     }
-    if (kind === 'groq' || kind === 'both') out.groq = await this.#open(code.groq_enc);
+    if (kind === 'groq' || kind === 'both') {
+      out.groqKeys = parseKeys(await this.#open(code.groq_enc));
+      out.groq = out.groqKeys[0] || null;
+    }
     if (kind === 'gemini' || kind === 'both') {
       out.geminiKeys = parseKeys(await this.#open(code.gemini_enc));
       out.gemini = out.geminiKeys[0] || null;
@@ -423,7 +434,11 @@ export class MediVoiceStore extends DurableObject {
     const list = Array.isArray(keys) ? keys : [keys];
     const hintOf = (k) => k.slice(0, 4) + '…' + k.slice(-4);
     if (provider === 'groq') {
-      this.sql.exec('UPDATE codes SET groq_enc = ?, groq_hint = ? WHERE code = ?', await this.#seal(list[0]), hintOf(list[0]), c.code.code);
+      // عدة مفاتيح Groq من حسابات مختلفة: لكل حساب حصته اليومية من ساعات الصوت، والخادم يتنقل بينها
+      const current = add ? parseKeys(await this.#open(c.code.groq_enc)) : [];
+      const all = [...new Set([...current, ...list])];
+      if (all.length > MAX_GEMINI_KEYS) return { ok: false, status: 400, error: 'too_many_keys' };
+      this.sql.exec('UPDATE codes SET groq_enc = ?, groq_hint = ? WHERE code = ?', await this.#seal(JSON.stringify(all)), all.map(hintOf).join(' · '), c.code.code);
     } else {
       const current = add ? parseKeys(await this.#open(c.code.gemini_enc)) : [];
       const all = [...new Set([...current, ...list])];
@@ -497,7 +512,7 @@ export class MediVoiceStore extends DurableObject {
     const list = codes.map((c) => ({
       ...c,
       display: displayCode(c.code),
-      groq: !!c.groq_hint, gemini: !!c.gemini_hint,
+      groq: keyCount(c.groq_hint), gemini: keyCount(c.gemini_hint), // عدد المفاتيح المربوطة (0 = لا شيء)
       expired: !!(c.expires_at && now > c.expires_at),
       devices: byCode[c.code] || [],
     }));
@@ -532,7 +547,7 @@ export class MediVoiceStore extends DurableObject {
     if (!(await this.#admin(token))) return { ok: false, status: 401, error: 'unauthorized' };
     const cfg = this.#config();
     const n = Math.min(Math.max(parseInt(count, 10) || 1, 1), 200);
-    const limit = Math.round(Math.min(Math.max(Number(daily_hours) || cfg.defaultDailyHours, 0.25), 24) * 3600);
+    const limit = hoursToLimit(daily_hours === null || daily_hours === undefined || daily_hours === '' ? cfg.defaultDailyHours : daily_hours);
     const dur = days ? Math.min(Math.max(parseInt(days, 10) || 0, 1), 3650) : null;
     const maxDev = Math.min(Math.max(parseInt(max_devices, 10) || 1, 1), 10);
     const created = [];
@@ -560,7 +575,7 @@ export class MediVoiceStore extends DurableObject {
       this.#event(patch.status === 'active' ? 'code_resumed' : 'code_suspended', { code });
     }
     if (patch.max_devices !== undefined) this.sql.exec('UPDATE codes SET max_devices = ? WHERE code = ?', Math.min(Math.max(parseInt(patch.max_devices, 10) || 1, 1), 10), code);
-    if (patch.daily_hours !== undefined) this.sql.exec('UPDATE codes SET daily_limit_sec = ? WHERE code = ?', Math.round(Math.min(Math.max(Number(patch.daily_hours) || 8, 0.25), 24) * 3600), code);
+    if (patch.daily_hours !== undefined) this.sql.exec('UPDATE codes SET daily_limit_sec = ? WHERE code = ?', hoursToLimit(patch.daily_hours), code);
     if (patch.expires_at !== undefined) {
       // null = دائم، رقم = تاريخ انتهاء بالمللي ثانية
       const v = patch.expires_at === null ? null : Number(patch.expires_at) || null;
@@ -603,7 +618,7 @@ export class MediVoiceStore extends DurableObject {
       next.support = { label: String(patch.support.label || '').slice(0, 60), url: /^(https:\/\/|tel:|mailto:)/i.test(url) ? url : '' };
     }
     if (typeof patch.notice === 'string') next.notice = patch.notice.slice(0, 300);
-    if (patch.defaultDailyHours !== undefined) next.defaultDailyHours = Math.min(Math.max(Number(patch.defaultDailyHours) || 8, 0.25), 24);
+    if (patch.defaultDailyHours !== undefined) next.defaultDailyHours = isUnlimited(patch.defaultDailyHours) ? 0 : Math.min(Math.max(Number(patch.defaultDailyHours) || 8, 0.25), 24);
     if (patch.pdfPerDay !== undefined) next.pdfPerDay = Math.min(Math.max(parseInt(patch.pdfPerDay, 10) || 20, 1), 500);
     if (patch.moveLimit !== undefined) next.moveLimit = Math.min(Math.max(parseInt(patch.moveLimit, 10) || 0, 0), 10);
     if (patch.chunkSec !== undefined) next.chunkSec = Math.min(Math.max(parseInt(patch.chunkSec, 10) || 360, 60), 900);
@@ -752,6 +767,7 @@ const keyCount = (hint) => (hint ? hint.split(' · ').length : 0);
 const exhausted = new Map();
 const deadKeys = new Map();
 const EXHAUST_MS = 20 * 60_000;
+const DAY_MS = 24 * 3600_000;
 const DEAD_MS = 30 * 60_000;
 const isExhausted = (key, model) => (exhausted.get(`${key}|${model}`) || 0) > Date.now();
 const isDead = (key) => (deadKeys.get(key) || 0) > Date.now();
@@ -778,7 +794,10 @@ async function geminiWithKeys(keys, model, body) {
   const usable = order.filter((k) => !isDead(k));
   const pool = usable.length ? usable : order;
   const live = pool.filter((k) => !isExhausted(k, model));
-  let last = null;
+  // حصة اليوم لهذا النموذج خلصت بكل المفاتيح: نرد فوراً بنفس خطأ Google (فينتقل المتصفح للنموذج التالي)
+  // بدل طلب نعرف نتيجته. الذاكرة لكل مفتاح حتى موعد التجدد الذي ذكرته Google
+  if (!live.length && usable.length) return dayLimitError(model);
+  let last = null, minute = null;
   for (const key of live.length ? live : pool.slice(0, 1)) {
     let up;
     try {
@@ -791,20 +810,30 @@ async function geminiWithKeys(keys, model, body) {
     } catch {
       return upstreamError(504, 'upstream timeout');
     }
-    if (up.ok || keys.length === 1) return up;
+    if (up.ok) return up;
     if (up.status !== 429 && up.status !== 400 && up.status !== 401 && up.status !== 403) return up; // 5xx/404: لا يخص المفتاح
     const text = await up.clone().text().catch(() => '');
     if (up.status === 429) {
       // 429 قد تكون حصة الدقيقة (مؤقتة) أو حصة اليوم؛ في الحالتين المفتاح التالي أفضل الآن
-      if (/per_day|PerDay|daily/i.test(text) && !/per_minute|PerMinute/i.test(text)) remember(exhausted, `${key}|${model}`, EXHAUST_MS);
+      if (/per_day|PerDay|daily/i.test(text) && !/per_minute|PerMinute/i.test(text)) {
+        const delay = parseFloat((text.match(/"retryDelay"\s*:\s*"([\d.]+)s"/) || [])[1]) || 0;
+        remember(exhausted, `${key}|${model}`, Math.max(EXHAUST_MS, Math.min(delay * 1000, DAY_MS)));
+      } else minute = up;
       last = up;
       continue;
     }
-    if (keyRejected(up.status, text)) { remember(deadKeys, key, DEAD_MS); last = up; continue; }
+    if (keyRejected(up.status, text)) { if (keys.length > 1) remember(deadKeys, key, DEAD_MS); last = up; continue; }
     return up; // طلب غير صالح (400 عادي): المفتاح الآخر لن يغيّر شيئاً
   }
-  return last;
+  // مفتاح في حد الدقيقة (يرجع بعد ثوانٍ) أفضل للمتصفح من خبر نفاد اليوم بمفتاح آخر: ينتظر بدل أن يترك النموذج
+  return minute || last;
 }
+
+/** نفس رد Google عند نفاد الحصة اليومية للنموذج (المتصفح يميّزه من quotaId فيترك النموذج لباقي المحاضرة). */
+const dayLimitError = (model) => new Response(JSON.stringify({ error: {
+  code: 429, status: 'RESOURCE_EXHAUSTED', message: `Daily quota exhausted for ${model} on every linked key.`,
+  details: [{ '@type': 'type.googleapis.com/google.rpc.QuotaFailure', violations: [{ quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', quotaDimensions: { model } }] }],
+} }), { status: 429, headers: { 'content-type': 'application/json' } });
 
 /**
  * تصريح الطلبات المتكررة يُحفظ دقيقة في ذاكرة الـ Isolate: محاضرة واحدة ترسل نحو 150 طلباً، وكل تصريح طلبٌ على
@@ -826,6 +855,53 @@ async function authorizeCached(db, id, opts) {
   return value;
 }
 const forgetAuth = (id) => { for (const k of authCache.keys()) if (k.startsWith(`${id}|`)) authCache.delete(k); };
+
+/**
+ * طلب Groq بمفاتيح المستخدم بالتناوب: عند حد (429) أو رفض المفتاح يجرّب التالي. حد طويل (حصة الساعات اليومية)
+ * يُتذكّر لذلك المفتاح والنموذج حتى موعد تجدده، فلا يُضيَّع وقت عليه.
+ * @param body ArrayBuffer (يُرسل كما هو لكل مفتاح)
+ */
+async function groqWithKeys(keys, url, contentType, body, model = '') {
+  const start = Math.floor(Math.random() * keys.length);
+  const order = keys.map((_, i) => keys[(i + start) % keys.length]);
+  const usable = order.filter((k) => !isDead(k));
+  const pool = usable.length ? usable : order;
+  const tag = `groq:${model}`;
+  const live = pool.filter((k) => !isExhausted(k, tag));
+  if (model && !live.length && usable.length) {
+    // كل المفاتيح بلغت حدها الطويل لهذا النموذج: نرد فوراً بموعد أقرب تجدد، فيهدّئه المتصفح وينتقل لغيره
+    const soon = Math.min(...usable.map((k) => exhausted.get(`${k}|${tag}`) || 0));
+    const wait = Math.max(1, Math.ceil((soon - Date.now()) / 1000));
+    return new Response(JSON.stringify({ error: { message: `Rate limit reached for model \`${model}\` on every linked key. Please try again in ${wait}s.`, type: 'tokens', code: 'rate_limit_exceeded' } }),
+      { status: 429, headers: { 'content-type': 'application/json', 'retry-after': String(wait) } });
+  }
+  let last = null, soonest = null;
+  for (const key of live.length ? live : pool.slice(0, 1)) {
+    let up;
+    try {
+      up = await fetch(url, { method: 'POST', headers: { authorization: `Bearer ${key}`, 'content-type': contentType }, body, signal: AbortSignal.timeout(230_000) });
+    } catch {
+      return upstreamError(504, 'upstream timeout');
+    }
+    if (up.ok) return up;
+    if (up.status === 429) {
+      // «request too large» يخص الطلب لا المفتاح: مفتاح آخر لن يقبله أيضاً
+      const text = await up.clone().text().catch(() => '');
+      if (/request too large|reduce your message/i.test(text)) return up;
+      const wait = parseFloat(up.headers.get('retry-after')) || 0;
+      // حد طويل (ساعات الصوت أو رموز اليوم): يُتذكّر لهذا المفتاح والنموذج حتى موعده
+      if (wait > 120 && model) remember(exhausted, `${key}|${tag}`, Math.min(wait, 24 * 3600) * 1000);
+      // يرجع للمتصفح أقرب موعد بين المفاتيح، فينتظر أقصر مدة ممكنة
+      if (!soonest || wait < (parseFloat(soonest.headers.get('retry-after')) || 0)) soonest = up;
+      last = up;
+      continue;
+    }
+    if (up.status === 401) { if (keys.length > 1) remember(deadKeys, key, DEAD_MS); last = up; continue; } // مفتاح ملغى أو محذوف
+    if (up.status === 403) { last = up; continue; } // حساب مقيّد أو نموذج غير متاح له: نجرب حساباً آخر
+    return up;
+  }
+  return soonest || last;
+}
 
 async function verifyKey(provider, key) {
   try {
@@ -922,7 +998,6 @@ async function handleApi(request, env, ctx, url) {
     if (!keys.length || keys.some((k) => k.length < 20 || k.length > 300)) return json({ error: 'bad_key' }, 400);
     let provider = body.provider;
     if (provider !== 'groq' && provider !== 'gemini') provider = keys[0].startsWith('gsk_') ? 'groq' : 'gemini';
-    if (provider === 'groq' && keys.length > 1) return json({ error: 'bad_key' }, 400);
     if (keys.length > MAX_GEMINI_KEYS) return json({ error: 'too_many_keys' }, 400);
     if (!(await db.isActive(id))) return json({ error: 'locked' }, 401);
     for (const key of keys) {
@@ -963,17 +1038,9 @@ async function handleApi(request, env, ctx, url) {
     const auth = await authorizeCached(db, id, { kind: 'groq', sec });
     if (!auth.ok) return json(auth, auth.status);
     if (!auth.groq) return json({ error: 'no_key', provider: 'groq' }, 412);
-    let up;
-    try {
-      up = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-        method: 'POST',
-        headers: { authorization: `Bearer ${auth.groq}`, 'content-type': request.headers.get('content-type') || '' },
-        body: request.body,
-        signal: AbortSignal.timeout(230_000),
-      });
-    } catch {
-      return relay(upstreamError(504, 'upstream timeout'));
-    }
+    // الجسم يُقرأ مرة (نحو 2MB) حتى يُعاد إرساله بمفتاح آخر إذا بلغ الأول حده
+    const body = auth.groqKeys.length > 1 ? await request.arrayBuffer() : request.body;
+    const up = await groqWithKeys(auth.groqKeys, 'https://api.groq.com/openai/v1/audio/transcriptions', request.headers.get('content-type') || '', body, url.searchParams.get('m') || '');
     if (up.ok && sec > 0) ctx.waitUntil(db.logUsage(auth.code, 'audio', sec));
     return relay(up);
   }
@@ -982,18 +1049,8 @@ async function handleApi(request, env, ctx, url) {
     const auth = await authorizeCached(db, id, { kind: 'groq' });
     if (!auth.ok) return json(auth, auth.status);
     if (!auth.groq) return json({ error: 'no_key', provider: 'groq' }, 412);
-    let up;
-    try {
-      up = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: { authorization: `Bearer ${auth.groq}`, 'content-type': 'application/json' },
-        body: request.body,
-        signal: AbortSignal.timeout(230_000),
-      });
-    } catch {
-      return relay(upstreamError(504, 'upstream timeout'));
-    }
-    return relay(up);
+    const body = auth.groqKeys.length > 1 ? await request.arrayBuffer() : request.body;
+    return relay(await groqWithKeys(auth.groqKeys, 'https://api.groq.com/openai/v1/chat/completions', 'application/json', body, url.searchParams.get('m') || ''));
   }
 
   if (path === '/api/gemini' && method === 'POST') {

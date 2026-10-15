@@ -130,10 +130,10 @@ export function makeIO() {
       fd.append('timestamp_granularities[]', 'word');
       fd.append('timestamp_granularities[]', 'segment');
       fd.append('temperature', '0');
-      return call(`/api/stt?sec=${Math.round(sec)}`, { method: 'POST', headers, body: fd, credentials: 'same-origin', signal }, 240_000);
+      return call(`/api/stt?sec=${Math.round(sec)}&m=${encodeURIComponent(model)}`, { method: 'POST', headers, body: fd, credentials: 'same-origin', signal }, 240_000);
     },
     groq(body, { signal } = {}) {
-      return call('/api/groq', { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body), credentials: 'same-origin', signal }, 240_000);
+      return call(`/api/groq?m=${encodeURIComponent(body?.model || '')}`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body), credentials: 'same-origin', signal }, 240_000);
     },
     gemini(model, body, { sec = 0, signal } = {}) {
       // كتابة قسم طويل قد تأخذ دقيقتين أو ثلاثاً؛ المهلة تمنع التعليق فقط إذا توقف الاتصال
