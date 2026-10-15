@@ -2,7 +2,8 @@
 // public/logo.png هو المربع نفسه (الزوايا شفافة)، و public/mark.png و mark-mic.png هما العلامة البيضاء
 // المستخرجة منه بقناع شفافية حتى تُلوَّن بـ CSS (mask-image) في العناوين والترويسات. تُولَّد بـ tools/logo.py.
 
-export const LOGO = '/logo.png';
+export const LOGO = '/logo.webp'; // نفس الصورة بلا أي فرق في البكسلات (WebP بلا فقد)، بثلثي حجم PNG
+export const LOGO_PNG = '/logo.png';
 export const LOGO_SMALL = '/logo-96.png'; // للترويسات المتكررة (الـ PDF)
 export const MARK = '/mark.png'; // الدرع والقاعدة وأعمدة الصوت — نسبة العرض إلى الارتفاع 512:444
 export const MARK_MIC = '/mark-mic.png'; // الدرع والقاعدة فقط — 320:433

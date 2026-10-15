@@ -14,6 +14,8 @@ const TYPES = {
   '.js': 'text/javascript; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.webp': 'image/webp',
+  '.woff2': 'font/woff2',
   '.webmanifest': 'application/manifest+json',
   '.txt': 'text/plain; charset=utf-8',
 };
@@ -38,13 +40,25 @@ for (const file of walk(pub)) {
   const type = TYPES[extname(file)];
   if (!type) throw new Error(`نوع ملف غير معروف: ${path}`);
   const binary = !type.startsWith('text/') && type !== 'image/svg+xml' && type !== 'application/manifest+json';
-  const raw = readFileSync(file);
+  let raw = readFileSync(file);
+  // روابط الوحدات والتنسيقات تحمل رقم الإصدار (?v=البناء): يخزّنها المتصفح سنة بلا إعادة تحقق، وكل بناء جديد روابطه
+  // جديدة. ملفات المكتبات الخارجية (pdfjs/vendor) لا تُمس
+  if (!binary && !/\/(pdfjs(\.worker)?|vendor)\.js$/.test(path)) {
+    let text = raw.toString('utf8');
+    if (type.startsWith('text/javascript')) {
+      text = text.replace(/((?:from|import)\s*\(?\s*)(['"])((?:\.{1,2}\/|\/)[^'"?]+\.js)\2/g, (m, pre, q, spec) => `${pre}${q}${spec}?v=${BUILD}${q}`);
+    } else if (type.startsWith('text/html')) {
+      text = text.replace(/((?:href|src)=")(\/[^"?]+\.(?:css|js))"/g, (m, pre, spec) => `${pre}${spec}?v=${BUILD}"`);
+    }
+    raw = Buffer.from(text, 'utf8');
+  }
   const key = `${type}:${createHash('sha256').update(raw).digest('hex')}`;
   if (seen.has(key)) { aliases.push(`ASSETS[${JSON.stringify(path)}] = ASSETS[${JSON.stringify(seen.get(key))}];`); continue; }
   seen.set(key, path);
-  const body = binary ? `bin(${JSON.stringify(raw.toString('base64'))})` : JSON.stringify(raw.toString('utf8'));
+  // الملف الثنائي يُفك من base64 عند أول طلب له فقط (لا عند إقلاع الخادم كله)
+  const body = binary ? `get body() { return this._b ??= bin(${JSON.stringify(raw.toString('base64'))}); }` : `body: ${JSON.stringify(raw.toString('utf8'))}`;
   const gated = path.startsWith('/app/') && !OPEN_APP_FILES.has(path);
-  entries.push(`  ${JSON.stringify(path)}: { body: ${body}, type: ${JSON.stringify(type)}, gated: ${gated}, immutable: ${binary} }`);
+  entries.push(`  ${JSON.stringify(path)}: { ${body}, type: ${JSON.stringify(type)}, gated: ${gated}, immutable: ${binary} }`);
 }
 
 const assets = `var BUILD = ${JSON.stringify(BUILD)};

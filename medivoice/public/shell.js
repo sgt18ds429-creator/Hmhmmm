@@ -244,12 +244,29 @@ async function unveil(el) {
   el.style.clipPath = ''; el.style.opacity = '';
 }
 
+/**
+ * يبدأ تحميل التطبيق (وحداته وتنسيقه) فوراً، أثناء الافتتاحية لا بعدها. يُستدعى مرة واحدة لكل إصدار؛
+ * openApp ينتظر الوعد نفسه.
+ */
+function preloadApp(session) {
+  const v = encodeURIComponent(session.build || '');
+  if (MV.appJob && MV.appJob.v === v) return MV.appJob;
+  const css = document.createElement('link');
+  css.rel = 'preload'; css.as = 'style'; css.href = `/app/app.css?v=${v}`;
+  document.head.append(css);
+  const job = import(`/app/main.js?v=${v}`);
+  // الخطأ يُعرض في openApp؛ والوعد الفاشل لا يبقى محفوظاً حتى تعيد المحاولة التالية التحميل
+  job.catch(() => { if (MV.appJob === job) MV.appJob = null; });
+  MV.appJob = Object.assign(job, { v });
+  return job;
+}
+
 async function openApp(session, fromLock) {
   MV.session = session;
   const appEl = $('#app');
   let mod;
   try {
-    mod = await import(`/app/main.js?v=${encodeURIComponent(session.build || '')}`);
+    mod = await preloadApp(session);
   } catch (e) {
     console.error(e);
     // ملف لم يكتمل تحميله (شبكة ضعيفة): بطاقة واضحة بزر إعادة بدل شاشة فارغة
@@ -278,8 +295,15 @@ async function openApp(session, fromLock) {
   const intro = $('#intro');
   intro.querySelector('.intro-tile').append(logoEl());
   $('#lock .brand-tile').append(logoEl());
-  const introDone = sleep(reduced ? 0 : 2300);
+  // الافتتاحية كاملة (2.3 ثانية) أول فتح؛ وإذا فُتح الموقع خلال آخر 12 ساعة فنسخة قصيرة (اللوكو وحلقته الأولى)
+  let lastIntro = 0;
+  try { lastIntro = Number(localStorage.getItem('mv-intro-at')) || 0; } catch { /* تخزين ممنوع */ }
+  const quick = Date.now() - lastIntro < 12 * 3600_000;
+  if (!quick) try { localStorage.setItem('mv-intro-at', String(Date.now())); } catch { /* تخزين ممنوع */ }
+  const introDone = sleep(reduced ? 0 : quick ? 1150 : 2300);
   const sessionReq = api(`/api/session?fp=${encodeURIComponent(JSON.stringify(fingerprint()))}`);
+  // الكود مفعّل: التطبيق يُحمَّل بالتوازي مع الافتتاحية
+  sessionReq.then((r) => { if (r.data?.active) preloadApp(r.data); }).catch(() => {});
   MV.ribbon.set({ y: 0.5, energy: 0.2, alpha: 0 });
   const [, s] = await Promise.all([introDone, sessionReq]);
   const data = s.data || { active: false, reason: s.status === 0 ? 'network' : 'none' };

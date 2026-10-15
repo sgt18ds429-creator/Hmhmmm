@@ -1,8 +1,11 @@
 // run.js — تفاصيل المحاضرة، شاشة التحويل الحية، والتسجيل المباشر.
 
 import { h, icon, clear, sheet, confirm, fmtHM, fmtSize, countOf } from './ui.js';
-import { probeAudio } from './chunker.js';
-import { runLecture, rewriteLecture, PipelineError } from './pipeline.js';
+// المحرك (الاستماع والكتابة وقاطع الصوت) ثقيل ولا يلزم إلا عند بدء تحويل: يُحمَّل عند الحاجة حتى تفتح
+// الشاشة الرئيسية أسرع، ويُجلب مسبقاً في الخلفية بعد فتحها
+let engineJob = null;
+export const loadEngine = () => (engineJob ??= Promise.all([import('./pipeline.js'), import('./chunker.js')]).then(([p, c]) => ({ ...p, ...c })));
+const isPipelineError = (e) => !!e && e instanceof Error && typeof e.code === 'string' && e.name === 'PipelineError';
 import { parseMarkup, splitInline, fmtTime, isNotes } from './text.js';
 import { fmtDuration } from './pdf.js';
 import * as db from './db.js';
@@ -126,7 +129,7 @@ export function viewNew(ctx, el, { file, recId = null }) {
   });
   db.getPref('subjects', []).then((list) => { for (const s of list || []) subjects.append(h('option', { value: s })); });
 
-  probeAudio(file).then((i) => {
+  loadEngine().then(({ probeAudio }) => probeAudio(file)).then((i) => {
     info = i;
     const u = ctx.session.usage;
     const left = Math.max(0, u.limit_sec - u.used_sec);
@@ -445,7 +448,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
   function failWith(e) {
     if (e?.name === 'AbortError' || e?.code === 'aborted') { cleanup(); game?.close(); return; }
     console.error(e);
-    if (e instanceof PipelineError) fail(e.code, e);
+    if (isPipelineError(e)) fail(e.code, e);
     else fail(navigator.onLine === false ? 'network' : 'unknown');
     ctx.refreshSession().catch(() => {});
   }
@@ -514,7 +517,7 @@ export function viewRun(ctx, el, { file, meta, info, pdfFile = null, recId = nul
       if (prev?.job && prev.job !== job) db.clearSource(prev.job).catch(() => {}); // نسخة تحويل سابق لم يكتمل: لم تعد تلزم
       mark();
       keepSource(job, recId ? null : file, pdfFile); // التسجيل المباشر محفوظ أصلاً، فيُحفظ معه PDF السلايدات فقط
-      const caps = ctx.caps || await ctx.loadCaps();
+      const [caps, { runLecture, PipelineError }] = await Promise.all([ctx.caps || ctx.loadCaps(), loadEngine()]);
       let slides = null;
       if (meta.mode === 'integrated' && pdfFile) {
         screen.emit({ type: 'stage', name: 'slides' });
@@ -588,7 +591,7 @@ export async function viewRewrite(ctx, el, { id, mode = 'notes' }) {
     retry: () => ctx.go('rewrite', { id, mode }, { replace: true }),
   });
   try {
-    const caps = ctx.caps || await ctx.loadCaps();
+    const [caps, { rewriteLecture }] = await Promise.all([ctx.caps || ctx.loadCaps(), loadEngine()]);
     const job = `rw${id}:${mode}`; // الأقسام المكتوبة تُحفظ: إذا انقطعت الكتابة تكمل من مكانها
     const doc = await rewriteLecture({
       doc: src, caps, io: ctx.io, emit: screen.emit, signal: screen.signal, mode,

@@ -693,8 +693,9 @@ const SECURITY_HEADERS = {
 const CSP = [
   "default-src 'self'",
   "script-src 'self'",
+  // الخطوط من الموقع نفسه؛ وخطوط Google تبقى مسموحة لمستند الـ PDF عند طباعته من الجهاز (إطار داخل الصفحة)
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  'font-src https://fonts.gstatic.com',
+  "font-src 'self' https://fonts.gstatic.com",
   "img-src 'self' data: blob: https://upload.wikimedia.org https://thumb.wikimedia.org https://api.openverse.org",
   "media-src 'self' blob:",
   "connect-src 'self' https://commons.wikimedia.org https://en.wikipedia.org https://upload.wikimedia.org https://thumb.wikimedia.org https://api.openverse.org",
@@ -717,10 +718,13 @@ async function deviceId(request) {
 
 function serveAsset(request, asset) {
   const etag = `"${BUILD}"`;
+  // رابط يحمل رقم هذا البناء (?v=): لا يتغير محتواه أبداً، فيخزّنه المتصفح سنة بلا طلب تحقق عند كل فتح.
+  // الرابط بلا رقم يُتحقق منه كل مرة (304). ملفات التطبيق المحمية خاصة بالجهاز (private)
+  const versioned = new URL(request.url).searchParams.get('v') === BUILD;
   const headers = {
     'content-type': asset.type,
     etag,
-    'cache-control': asset.immutable ? 'public, max-age=604800' : 'no-cache',
+    'cache-control': versioned ? `${asset.gated ? 'private' : 'public'}, max-age=31536000, immutable` : asset.immutable ? 'public, max-age=604800' : 'no-cache',
     ...SECURITY_HEADERS,
   };
   if (asset.type.startsWith('text/html')) headers['content-security-policy'] = CSP;

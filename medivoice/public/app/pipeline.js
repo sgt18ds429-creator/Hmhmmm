@@ -16,7 +16,7 @@ import {
 import { findCandidates } from './images.js';
 
 export class PipelineError extends Error {
-  constructor(code, message, extra = {}) { super(message || code); this.code = code; Object.assign(this, extra); }
+  constructor(code, message, extra = {}) { super(message || code); this.name = 'PipelineError'; this.code = code; Object.assign(this, extra); }
 }
 
 const GEMINI_MAX_INLINE = 13 * 1024 * 1024; // حد الطلب 20MB بعد base64

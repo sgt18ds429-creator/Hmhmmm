@@ -5,7 +5,7 @@ import { makeIO } from './api.js';
 import * as db from './db.js';
 import { fmtDuration } from './pdf.js';
 import { logoEl } from '../brand.js';
-import { viewNew, viewRun, viewRewrite, openRecorder } from './run.js';
+import { viewNew, viewRun, viewRewrite, openRecorder, loadEngine } from './run.js';
 import { viewDoc } from './doc.js';
 
 // نوع الملزمة في قائمة «محاضراتي»
@@ -371,6 +371,12 @@ export async function start(MV, root) {
   await go(fresh ? 'link' : 'home');
   if (!fresh) loadCaps().catch(() => {});
   if (!fresh) resumeInterrupted().catch(() => {});
+  // المحرك يُجلب في الخلفية بعد أن تظهر الشاشة الرئيسية (لا يؤخرها)، فيبدأ التحويل فوراً عند الضغط
+  if (!fresh) {
+    const prefetch = () => loadEngine().catch(() => {});
+    if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(prefetch, { timeout: 4000 });
+    else setTimeout(prefetch, 1500);
+  }
 
   /**
    * تحويل كان يعمل قبل دقائق وانقطع لأن الهاتف أغلق الصفحة أو أعاد تحميلها (يحصل بعد الخروج الطويل من
