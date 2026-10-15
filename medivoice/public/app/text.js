@@ -775,7 +775,33 @@ export function parseJsonLoose(text) {
   try { return JSON.parse(s); } catch {}
   const a = s.indexOf('{'), b = s.lastIndexOf('}');
   if (a >= 0 && b > a) { try { return JSON.parse(s.slice(a, b + 1)); } catch {} }
-  return null;
+  return a >= 0 ? repairJson(s.slice(a)) : null;
+}
+
+/**
+ * رد JSON انقطع قبل نهايته (حد الرموز أو ضغط النموذج): يُبقي ما اكتمل منه ويغلق ما فُتح،
+ * فخطة من 12 قسماً انقطعت عند العاشر تبقى عشرة أقسام بدل لا شيء.
+ */
+export function repairJson(s) {
+  const walk = (text, onClose) => {
+    const stack = [];
+    let inStr = false, esc = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+      if (c === '"') inStr = true;
+      else if (c === '{' || c === '[') stack.push(c);
+      else if (c === '}' || c === ']') { stack.pop(); onClose?.(i, stack.length); }
+    }
+    return stack;
+  };
+  let lastGood = -1;
+  walk(s, (i, depth) => { if (depth <= 2) lastGood = i; });
+  if (lastGood < 0) return null;
+  let out = s.slice(0, lastGood + 1).replace(/,\s*$/, '');
+  const open = walk(out);
+  while (open.length) out += open.pop() === '{' ? '}' : ']';
+  try { return JSON.parse(out); } catch { return null; }
 }
 
 // ───────────── بوابة الجودة الأخيرة ─────────────

@@ -9,7 +9,7 @@ import {
   qualityGate, cleanBlockList, bracketTerms, trimHeading, dialectLines,
 } from './text.js';
 import {
-  whisperPrompt, audioPrompt, cleanupPrompt, glossaryPrompt, figuresPrompt, translatePrompt, translateExtrasPrompt,
+  whisperPrompt, audioPrompt, cleanupPrompt, mergeTranscriptsPrompt, glossaryPrompt, figuresPrompt, translatePrompt, translateExtrasPrompt,
   notesPlanPrompt, notesSectionPrompt, reviewPrompt, proofreadPrompt, figureTextPickPrompt, formalizePrompt,
   reviewNotesPrompt, mcqPrompt, mcqTranslatePrompt, mcqCheckPrompt, figuresBatchPrompt, slideFiguresPrompt,
 } from './prompts.js';
@@ -72,8 +72,12 @@ export class Engine {
     this.modelStats = {}; // لكل نموذج: ok/429/503/other — للتشخيص في doc.stats.models
     // التوازي يتسع مع عدد مفاتيح Gemini (لكل مفتاح حدّه بالدقيقة): 1 → 1، 2 → 2، 3 فأكثر → 3
     this.par = caps.gemini ? Math.max(1, Math.min(3, caps.geminiKeys || 1)) : 1;
-    this.strong5xx = 0; // ردود ضغط (503) متتالية على النماذج الدقيقة: بعد 3 ننزل للخفيفة بدل انتظارها
+    this.strong5xx = 0; // ردود ضغط (503) متتالية على النماذج الدقيقة
+    this.strongFailSince = 0; // منذ متى والدقيقة تفشل بلا نجاح: النزول للخفيفة بعد دقيقة من الضغط المتواصل لا بعد 3 ردود عابرة
   }
+
+  /** النماذج الدقيقة مضغوطة فعلاً (لا موجة 503 عابرة): لا يفيد انتظارها الآن */
+  get strongDown() { return this.strong5xx >= 8 || (this.strong5xx >= 3 && this.now() - this.strongFailSince > 60_000); }
 
   tally(model, res) {
     const k = res.ok ? 'ok' : res.status === 429 ? 'r429' : res.status === 503 || res.status === 500 ? 'r5xx' : 'other';
@@ -111,6 +115,10 @@ export class Engine {
     if (!this.hasGemini && !this.outNoted && (this.hasGroqLlm || this.hasStt)) {
       this.outNoted = true;
       this.emit({ type: 'note', code: 'gemini_out' });
+    } else if (this.hasGemini && !this.strongOutNoted && !this.gem.items.some((x) => !x.dead && !/lite/.test(x.id))) {
+      // النماذج الدقيقة كلها خلصت حصتها اليوم والعمل يكمل بالخفيفة: تنبيه واحد (مفتاح من حساب ثانٍ يرجّع الدقة الكاملة)
+      this.strongOutNoted = true;
+      this.emit({ type: 'note', code: 'strong_out' });
     }
   }
   /**
@@ -220,12 +228,18 @@ export class Engine {
       this.check();
       const now = Date.now();
       let m = order.find((x) => !x.dead && x.until <= now);
+      if (lite && m && !/lite/.test(m.id) && !this.late(0.9)) {
+        // مهمة مساعدة والخفيفة في تهدئة قصيرة (حد الدقيقة): ننتظرها بدل صرف حصة الدقيقة المحدودة عليها
+        const lites = order.filter((x) => !x.dead && /lite/.test(x.id));
+        const wait = lites.length ? Math.min(...lites.map((x) => x.until)) - now : Infinity;
+        if (wait <= 20_000) { await this.pause(Math.max(wait, 0) + 300, 'gemini'); continue; }
+      }
       if (!lite && m && /lite/.test(m.id)) {
         // الاستماع للصوت وكتابة الشرح: النماذج الخفيفة أضعف بالمصطلحات واللهجة. إذا النماذج الدقيقة في تهدئة
         // قصيرة (حد الدقيقة) ننتظرها، ولا ننزل للخفيفة إلا إذا طال الانتظار أو خلصت حصتها اليومية.
         // أما إذا كانت مضغوطة (503 متتالية) فانتظارها لا يفيد: الخفيفة الآن أفضل من لا شيء
         const strong = order.filter((x) => !x.dead && !/lite/.test(x.id));
-        if (strong.length && this.strong5xx < 3) {
+        if (strong.length && !this.strongDown) {
           const wait = Math.min(...strong.map((x) => x.until)) - now;
           if (wait <= strongWaitMs) { await this.pause(Math.max(wait, 0) + 400, 'gemini'); continue; }
         }
@@ -252,7 +266,9 @@ export class Engine {
       this.tally(m.id, res);
       const netDown = res.status === 0; // انقطاع الشبكة (لا يخص النموذج): لا نهدّئه ولا نعدّه ضغطاً
       const overloaded = [500, 502, 503, 504].includes(res.status);
-      if (!isLite) this.strong5xx = overloaded ? this.strong5xx + 1 : res.ok ? 0 : this.strong5xx;
+      if (!isLite) {
+        if (overloaded) { if (!this.strong5xx) this.strongFailSince = this.now(); this.strong5xx++; } else if (res.ok) this.strong5xx = 0;
+      }
       if (res.ok && res.data) {
         m.fails = 0;
         const cand = res.data.candidates?.[0];
@@ -389,7 +405,9 @@ export class Engine {
     if (gemini && this.hasGemini) {
       // عند التأخر لا ننتظر النماذج الدقيقة إذا كانت في تهدئة: الخفيفة أسرع ولها حدود أعلى.
       // من له بديل (Groq) لا ينتظر ضغط Google طويلاً؛ ومن لا بديل له يصبر حتى 4 دقائق
-      const r = await this.gemini({ system, parts: [{ text: user }], maxTokens, temperature, thinking, lite, strongWaitMs: lite || this.late(0.5) ? 0 : 40_000, patienceMs: patienceMs ?? (this.hasGroqLlm ? 90_000 : 240_000) });
+      // الشرح هو المحتوى نفسه: ننتظر النموذج الدقيق إذا كان في تهدئة قصيرة (حد الدقيقة) حتى عند التأخر، ولا ننزل
+      // للخفيف فوراً إلا بعد تجاوز الوقت المسموح كله (الخفيف أضعف بالمصطلحات العربية)
+      const r = await this.gemini({ system, parts: [{ text: user }], maxTokens, temperature, thinking, lite, strongWaitMs: lite || this.late(1) ? 0 : this.late(0.5) ? 20_000 : 40_000, patienceMs: patienceMs ?? (this.hasGroqLlm ? 90_000 : 240_000) });
       if (r && !r.blocked) return r;
       if (r?.blocked) blocked = r;
     }
@@ -424,7 +442,7 @@ function isEmptyMarkup(text) {
   return !t || /^\[?\s*لا يوجد كلام\s*\]?\.?$/.test(t);
 }
 
-async function refineChunk(engine, chunk, draft, meta, { first, last, exact, weak = false, known = [], retry = 0 }) {
+export async function refineChunk(engine, chunk, draft, meta, { first, last, exact, weak = false, known = [], retry = 0 }) {
   const { io, emit } = engine;
   const draftWords = draft ? countWords(draft) : 0;
   // مسودة Whisper تصلح مرجعاً فقط إذا كانت موثوقة. على الموسيقى والتسجيل الضعيف تكون مشوّهة،
@@ -502,8 +520,14 @@ async function refineChunk(engine, chunk, draft, meta, { first, last, exact, wea
       else if (tries >= 1) break;
     }
     if (best) {
-      const words = countWords(best.text);
+      let words = countWords(best.text);
       const refWords = ref ? countWords(ref.text) : 0;
+      // الاستماع أسقط جزءاً من الكلام (أقصر من المرجع الكامل): يُدمج معه نصياً فلا يضيع كلام ولا تضيع دقة المصطلحات
+      const fullSrc = ref && refWords >= 60 ? { text: ref.text, words: refWords } : trusted && draftWords >= 60 ? { text: draft, words: draftWords } : null;
+      if (fullSrc && words >= 30 && words < fullSrc.words * 0.85 && repetitionScore(best.text) <= 0.3 && !engine.late(1)) {
+        const merged = await mergeTranscripts(engine, best.text, fullSrc.text, meta);
+        if (merged) { best = { ...best, text: merged, merged: true }; words = countWords(merged); review = false; }
+      }
       // ما زال في حلقة بعد الطي والإعادة: النسخ الحرفي النظيف أفضل منه
       if (repetitionScore(best.text) > 0.3) {
         const clean = ref || await reference(45_000);
@@ -512,18 +536,18 @@ async function refineChunk(engine, chunk, draft, meta, { first, last, exact, wea
           return { markup, engine: 'gemini-tx', model: clean.model, review: true };
         }
       }
-      if (ref && refWords >= 40 && words < refWords * 0.55) {
-        // النموذج أسقط جزءاً كبيراً ولم تنفع الإعادة: النسخ الحرفي كامل، والكاتب يصحح مصطلحاته من السياق
+      if (ref && refWords >= 40 && words < refWords * 0.7) {
+        // النموذج أسقط جزءاً كبيراً ولم تنفع الإعادة ولا الدمج: النسخ الحرفي كامل، والكاتب يصحح مصطلحاته من السياق
         const markup = notes ? ref.text : (await cleanupDraft(engine, ref.text, meta, first)) || ref.text;
         return { markup, engine: 'gemini-tx', model: ref.model, review: true };
       }
-      if (!ref && trusted && draftWords >= 40 && words < draftWords * 0.45) {
+      if (!ref && trusted && draftWords >= 40 && words < draftWords * 0.6) {
         // أسقط كلاماً كثيراً مقارنة بمسودة موثوقة: نعتمد المسودة المنقّحة ونعلّم المقطع للمراجعة
         const cleaned = await cleanupDraft(engine, draft, meta, first);
         return { markup: cleaned || draft, engine: cleaned ? 'groq' : 'raw', review: true };
       }
       if (best.truncated) review = true;
-      return { markup: best.text, engine: 'gemini', model: best.model, review: (refWords >= 40 ? review && words < refWords * 0.78 : trusted && review && words < draftWords * 0.62) || !!best.truncated };
+      return { markup: best.text, engine: best.merged ? 'gemini+merge' : 'gemini', model: best.model, review: (refWords >= 40 ? review && words < refWords * 0.78 : trusted && review && words < draftWords * 0.62) || !!best.truncated };
     }
   }
 
@@ -586,6 +610,24 @@ async function cleanupDraft(engine, draft, meta, first) {
     else out.push(parts[i]); // النموذج اختصر أو فشل: نبقي الأصل حتى لا يضيع كلام
   }
   return out.join('\n\n');
+}
+
+/**
+ * يدمج استماع Gemini (دقيق المصطلحات، أسقط كلاماً) مع النص الكامل (نسخ حرفي أو مسودة Whisper موثوقة):
+ * نص واحد بكل الكلام وبمصطلحات الاستماع. يرجع null إذا لم يخرج الدمج كاملاً (فيبقى الحكم للقواعد التالية).
+ */
+async function mergeTranscripts(engine, precise, full, meta) {
+  const { system, user } = mergeTranscriptsPrompt(meta, precise, full);
+  const fullWords = countWords(full);
+  let r = engine.hasGemini ? await engine.gemini({ system, parts: [{ text: user }], maxTokens: 16000, lite: true, strongWaitMs: 0, patienceMs: 60_000 }) : null;
+  if ((!r?.text || r.blocked) && engine.hasGroqLlm && fullWords <= 1400) r = await engine.groq({ system, user, maxTokens: 6000, maxWaitMs: 30_000, bestWaitMs: 15_000 });
+  const text = r?.text && !r.blocked ? collapseMarkup(r.text.trim()).text : '';
+  const words = countWords(text);
+  // الدمج مقبول فقط إذا جاء كاملاً (بقدر النص الكامل) وبلا حلقة تكرار وبترميز المصطلحات
+  const termsIn = (t) => (t.match(/\[\[/g) || []).length;
+  if (words < fullWords * 0.9 || words > fullWords * 1.35 || repetitionScore(text) > 0.3) return null;
+  if (termsIn(precise) >= 8 && termsIn(text) < termsIn(precise) * 0.5) return null;
+  return text;
 }
 
 // ───────────── المسار الكامل ─────────────
@@ -869,13 +911,19 @@ export function normalizePlan(raw, paras, maxWords, lang = 'ar', pageCount = 0) 
     merged.push({ ...r });
   }
   ranges = merged;
+  // قسم واحد لمحاضرة طويلة (فشل التخطيط أو خطة ناقصة): أقسام بالحجم، وعنوان كل قسم يختاره كاتبه من موضوعه.
+  // قسم واحد ضخم يُكتب أجزاءً بلا تقسيم موضوعي، فيُضغط محتواه ويضيع ترتيبه
+  const total = sumWords(paras, 0, n);
+  if (ranges.length === 1 && total >= 1800) {
+    ranges = splitRange(paras, 0, n, 1000).map(([from, to]) => ({ from, to, title: '', points: '', untitled: true }));
+  }
   const titles = ranges.map((r, i) => r.title || sectionLabel(i, lang));
   // صفحات السلايدات لكل قسم (تُقرأ من الخطة الخام بترتيب الأقسام غير المدمجة؛ إن لم تطابق توزَّع بالتساوي)
   const pages = assignPages(ranges.length === secs.length ? raw : null, ranges, pageCount);
   const sections = [];
   ranges.forEach((r, index) => {
     const pieces = splitRange(paras, r.from, r.to, maxWords);
-    pieces.forEach(([from, to], k) => sections.push({ index, title: titles[index], points: r.points, from, to, part: k + 1, parts: pieces.length, pages: pages[index] }));
+    pieces.forEach(([from, to], k) => sections.push({ index, title: titles[index], points: r.points, from, to, part: k + 1, parts: pieces.length, pages: pages[index], untitled: !!r.untitled }));
   });
   return { kind: raw?.kind === 'other' ? 'other' : 'lecture', title: cleanTitle(raw?.title), titles, sections };
 }
@@ -884,13 +932,24 @@ async function planNotes(engine, meta, paras, lang, slides = null) {
   // Gemini يقرأ التفريغ كاملاً؛ Groq حدوده أضيق فيأخذ بداية كل فقرة فقط
   const budget = engine.hasGemini ? 120_000 : 11_000;
   const full = paras.map((p, i) => `[${i}] ${p.text}`).join('\n');
+  const ask = async (condensed, maxTokens) => {
+    const per = Math.max(6, Math.min(24, Math.floor(budget / paras.length / 7)));
+    const numbered = condensed
+      ? paras.map((p, i) => { const w = p.text.split(/\s+/); return `[${i}] ${w.slice(0, per).join(' ')}${w.length > per ? '…' : ''}`; }).join('\n').slice(0, budget)
+      : full;
+    const { system, user } = notesPlanPrompt(meta, numbered, { lang, condensed, slides: slides?.pages?.length && engine.hasGemini ? slides.pages : null });
+    return engine.json({ system, user, maxTokens, groqTokens: 2500, prefer: 'gemini' });
+  };
   const condensed = full.length > budget;
-  const per = Math.max(6, Math.min(24, Math.floor(budget / paras.length / 7)));
-  const numbered = condensed
-    ? paras.map((p, i) => { const w = p.text.split(/\s+/); return `[${i}] ${w.slice(0, per).join(' ')}${w.length > per ? '…' : ''}`; }).join('\n').slice(0, budget)
-    : full;
-  const { system, user } = notesPlanPrompt(meta, numbered, { lang, condensed, slides: slides?.pages?.length && engine.hasGemini ? slides.pages : null });
-  return engine.json({ system, user, maxTokens: 6000, groqTokens: 2500, prefer: 'gemini' });
+  let raw = await ask(condensed, 6000);
+  // خطة بلا أقسام (رد ناقص أو غير مفهوم) أو قسم واحد لمحاضرة طويلة: محاولة ثانية بالنص المختصر (رد أقصر وأضمن)
+  const count = Array.isArray(raw?.sections) ? raw.sections.length : 0;
+  const long = sumWords(paras, 0, paras.length) >= 1800;
+  if (raw?.kind !== 'other' && (!count || (long && count < 2))) {
+    const again = await ask(true, 8000);
+    if (Array.isArray(again?.sections) && again.sections.length > count) raw = again;
+  }
+  return raw;
 }
 
 /** يوزّع صفحات السلايدات على الأقسام: من الخطة إن ذكرتها، وإلا بالتساوي حسب الترتيب. */
@@ -1499,7 +1558,8 @@ async function chooseFigures(engine, items, lang) {
       parts.push({ text: `${i + 1}${String.fromCharCode(65 + k)} — ${x.c.title || ''}` });
       parts.push({ inline_data: { mime_type: x.t.mime, data: x.t.base64 } });
     }));
-    const r = await engine.gemini({ system, parts, json: true, maxTokens: 4000, strongWaitMs: 30_000 });
+    // مطابقة الصور بالنظر مهمة مساعدة: النماذج الخفيفة ترى الصور أيضاً، وحصة الدقيقة تبقى للاستماع والكتابة
+    const r = await engine.gemini({ system, parts, json: true, maxTokens: 4000, lite: true });
     const parsed = r?.text ? parseJsonLoose(r.text) : null;
     if (parsed && Array.isArray(parsed.picks)) {
       for (const p of parsed.picks) {
@@ -1691,7 +1751,7 @@ export async function detectSlideFigures(engine, pages, lang = 'ar') {
     const { system, user } = slideFiguresPrompt(group, { lang });
     const parts = [{ text: user }];
     for (const p of group) { parts.push({ text: `ص${p.page}` }); parts.push({ inline_data: { mime_type: p.small.mime || 'image/jpeg', data: p.small.base64 } }); }
-    const r = await engine.gemini({ system, parts, json: true, maxTokens: 6000, strongWaitMs: 30_000 });
+    const r = await engine.gemini({ system, parts, json: true, maxTokens: 6000, lite: true });
     const parsed = r?.text ? parseJsonLoose(r.text) : null;
     for (const f of parsed?.figures || []) {
       const page = parseInt(f?.page, 10);
@@ -2122,7 +2182,7 @@ export async function reviewNotes(doc, engine, { emit = () => {} } = {}) {
 async function checkMcqs(engine, notes, qs, inLang) {
   let parsed = null;
   try {
-    parsed = await engine.json({ ...mcqCheckPrompt(notes, qs), maxTokens: 9000, groqTokens: 4000, prefer: 'gemini' });
+    parsed = await engine.json({ ...mcqCheckPrompt(notes, qs), maxTokens: 9000, groqTokens: 4000, prefer: 'gemini-lite' });
   } catch (e) {
     if (isFatal(e)) throw e;
   }

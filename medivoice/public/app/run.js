@@ -319,7 +319,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
       paintPct();
     } else if (e.type === 'part') {
       P.chunk[e.index] = 'done';
-      if (strip.children[e.index]) strip.children[e.index].className = e.part.review ? 'review' : 'done';
+      if (strip.children[e.index]) strip.children[e.index].className = 'done';
       pending.set(e.index, e.part);
       showParts();
       ctx.ribbon.kick(0.5);
@@ -378,6 +378,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
       else if (e.code === 'figures_partial') ctx.toast('بعض الصور ما انفحصت (انقطاع أو ضيق وقت) فبقت مواضعها بلا صورة. الشرح كامل.');
       else if (e.code === 'key_groq_dead') ctx.toast('مفتاح Groq ما عاد يشتغل (انحذف أو انتهى)، فكمّلت بـ Gemini وحده. اربطه من جديد من الإعدادات.', 'err');
       else if (e.code === 'key_gemini_dead') ctx.toast('مفتاح Gemini ما عاد يشتغل (انحذف أو انتهى)، فكمّلت بـ Groq وحده (دقة المصطلحات أقل). اربطه من جديد من الإعدادات.', 'err');
+      else if (e.code === 'strong_out') ctx.toast('خلصت حصة اليوم للنماذج الدقيقة بمفتاحك، فأكمل بالنماذج الأخف. حتى تبقى الدقة كاملة كل يوم أضف مفتاح Gemini من حساب Google ثاني من «حسابي».');
       else if (e.code === 'gemini_out') ctx.toast('خلصت حصة Gemini اليوم بمفاتيحك، فأكمل بـ Groq (دقة المصطلحات أقل). لحصة جديدة أضف مفتاح Gemini من حساب Google ثاني.', 'err');
     } else if (e.type === 'images') {
       // الصور تُفحص أثناء الكتابة أيضاً: لا نغطي حالة الكتابة، ونعرض العدد فقط

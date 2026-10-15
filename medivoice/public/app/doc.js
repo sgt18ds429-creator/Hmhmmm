@@ -1,7 +1,7 @@
 // doc.js — عرض الملزمة وتعديلها: نص، جداول، مصطلحات، صور، قاموس، النص المفرّغ الأصلي، وتصدير PDF.
 
 import { h, icon, clear, sheet, confirm, fmtSize, countOf } from './ui.js';
-import { splitInline, inlineRuns, blockText, stripMarkup, countWords, uid, fmtTime, isNotes, MODE_LABEL, qualityGate } from './text.js';
+import { splitInline, inlineRuns, blockText, stripMarkup, countWords, uid, isNotes, MODE_LABEL, qualityGate } from './text.js';
 import { NOTE_TYPES } from './run.js';
 import { buildPdfHtml, buildPdfParts, fmtDate, fmtDuration, dirOf } from './pdf.js';
 import { pagedRuntime } from './paged.js';
@@ -112,10 +112,7 @@ export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
     paper.append(unsavedNote);
   }
 
-  if (doc.stats.review?.length) {
-    paper.append(h('div', { class: 'blk note' }, h('span', { class: 'tag' }, 'للمراجعة'),
-      `مقاطع قد ينقصها كلام بسبب ضعف الصوت: ${doc.stats.review.map((r) => `${fmtTime(r.start)} إلى ${fmtTime(r.end)}`).join('، ')}`));
-  }
+  // مقاطع عُلّمت للمراجعة أثناء الاستماع تبقى في doc.stats.review للتشخيص فقط (لا تُعرض ولا تدخل الـ PDF)
   const notes = isNotes(doc.meta.mode);
   // النسخة الثانية (الترجمة): عرض بلغة واحدة في كل مرة، والـ PDF يحوي اللغتين
   const hasAlt = !!doc.alt?.blocks?.length;

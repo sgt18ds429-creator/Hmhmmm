@@ -111,6 +111,38 @@ ${draft}
   return { system, user };
 }
 
+/**
+ * دمج تفريغين لنفس المقطع: (أ) استماع دقيق المصطلحات لكنه أسقط كلاماً، و(ب) نسخ حرفي كامل مصطلحاته أضعف.
+ * الناتج كامل كـ(ب) وبمصطلحات (أ) حيث تتطابق الجمل.
+ */
+export function mergeTranscriptsPrompt(meta, precise, full) {
+  const style = STYLE[meta.style] || STYLE.verbatim;
+  const system = `أنت محرر تفريغ محاضرات طبية. يصلك تفريغان آليان لنفس المقطع الصوتي من محاضرة جامعية:
+(أ) تفريغ دقيق في المصطلحات الطبية وإملائها، لكنه أسقط جملاً أو فقرات كاملة من الكلام.
+(ب) تفريغ حرفي كامل لكل الكلام بترتيبه، لكن مصطلحاته قد تكون مكتوبة بحروف عربية أو مشوّهة.
+مهمتك إخراج تفريغ واحد كامل.
+
+القواعد:
+- الناتج يحوي كل كلام (ب) بترتيبه: كل جملة في (ب) تظهر في الناتج. ممنوع التلخيص أو الحذف أو الاختصار، وممنوع إضافة معلومات ليست في أحدهما. عدد كلمات الناتج يقارب عدد كلمات (ب) أو يزيد قليلاً.
+- حيث تتطابق الجملة في (أ) و(ب) خذ صياغة (أ) ومصطلحاتها. وحيث الكلام في (ب) وحده صحّح مصطلحاته من السياق واكتبها بالإنجليزية الصحيحة بين [[ ]] مثل [[pleural effusion]]، وإذا لم تكن متأكداً من كلمة فاتركها كما هي.
+- حافظ على ترميز (أ): العناوين والقوائم والمصطلحات بين [[ ]].
+- ${style}
+${FORMAT_RULES}`;
+  const info = metaLine(meta);
+  const user = `${info ? info + '\n\n' : ''}التفريغ (أ) الدقيق الناقص:
+<<<
+${precise}
+>>>
+
+التفريغ (ب) الحرفي الكامل:
+<<<
+${full}
+>>>
+
+أخرج التفريغ الكامل المدمج فقط.`;
+  return { system, user };
+}
+
 /** قاموس المصطلحات: ترجمة وتعريف قصير لكل مصطلح. يرجع JSON. */
 export function glossaryPrompt(meta, terms) {
   const system = `أنت أستاذ جامعي في العلوم الطبية ومترجم طبي متمرس تعدّ قاموس مصطلحات لطلبة عرب. تستخدم المصطلحات العربية المعتمدة في المعجم الطبي الموحد والكتب الطبية الجامعية، لا الترجمة الحرفية. أجب بصيغة JSON فقط.`;
@@ -362,6 +394,10 @@ export function notesSectionPrompt(meta, s, { lang = 'ar', outline = [], source 
     lines.push(en
       ? `This is part ${s.part} of ${s.parts} of the same section, continuing directly from the previous part: do not write the "##" line; start with subheadings and explanation.`
       : `هذا الجزء ${s.part} من ${s.parts} من القسم نفسه، وهو تكملة مباشرة لما قبله: لا تكتب سطر «##»، وابدأ بالعناوين الفرعية والشرح.`);
+  } else if (s.untitled) {
+    lines.push(en
+      ? 'Start with a heading line you choose for the topic of this part: ## <a specific title> (not "Part N").'
+      : 'ابدأ بسطر عنوان تختاره أنت لموضوع هذا الجزء: ## <عنوان محدد بالعربية> (لا «القسم N»).');
   } else {
     lines.push(en ? `Start with the heading line: ## ${s.title}` : `ابدأ بسطر العنوان: ## ${s.title}`);
   }

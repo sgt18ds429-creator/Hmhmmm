@@ -1,8 +1,9 @@
 // اختبارات الشرح المفصل والصور: النماذج والمصادر كلها وهمية، فلا يحتاج الاختبار مفاتيح ولا إنترنت.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Engine, writeNotes, enrich, complete, normalizePlan, rewriteLecture, sameContent, pickFigures, PipelineError, qualityGate } from '../public/app/pipeline.js';
+import { Engine, writeNotes, enrich, complete, normalizePlan, rewriteLecture, sameContent, pickFigures, PipelineError, qualityGate, refineChunk } from '../public/app/pipeline.js';
 import { parseMarkup, blockText, countWords, uid, blocksToMarkup, bracketTerms, trimHeading, dialectLines } from '../public/app/text.js';
+import { notesSectionPrompt } from '../public/app/prompts.js';
 import { buildPdfHtml } from '../public/app/pdf.js';
 
 // ── تفريغ محاضرة قصيرة بموضوعين ──
@@ -1079,8 +1080,9 @@ test('خلصت حصة Gemini كلها والعمل يكمل بـ Groq: تنبي�
     const r = await engine.write({ system: 's', user: 'u' });
     await engine.write({ system: 's', user: 'u' });
     assert.equal(engine.hasGemini, false);
-    if (groq) { assert.equal(r.text, 'نص من Groq'); assert.deepEqual(notes, ['gemini_out']); }
-    else { assert.equal(r, null); assert.deepEqual(notes, []); }
+    // تنبيه نفاد الدقيقة مرة، ثم نفاد Gemini كله مرة (فقط إذا كان Groq يكمل)
+    if (groq) { assert.equal(r.text, 'نص من Groq'); assert.deepEqual(notes, ['strong_out', 'gemini_out']); }
+    else { assert.equal(r, null); assert.deepEqual(notes, ['strong_out']); }
   }
 });
 
@@ -1211,4 +1213,63 @@ test('حد الدقيقة يتكرر بلا نهاية: الاستدعاء ير�
   assert.equal(r, null);
   assert.ok(t <= 200_000, `توقف خلال الصبر (${t}ms)`);
   assert.equal(engine.hasGemini, true, 'النموذج لم يُترك (حد دقيقة لا يوم)');
+});
+
+
+test('خطة JSON انقطعت قبل نهايتها: تبقى أقسامها المكتملة بدل قسم واحد', () => {
+  const cut = '```json\n{"kind":"lecture","title":"الجفاف عند الأطفال","sections":[{"from":0,"title":"تقييم درجات الجفاف","points":"الدرجات"},{"from":6,"title":"خطة العلاج","points":"السوائل"},{"from":13,"title":"المتابعة","poi';
+  const p = parseJsonLoose(cut);
+  assert.equal(p.title, 'الجفاف عند الأطفال');
+  assert.deepEqual(p.sections.map((x) => x.from), [0, 6]);
+  assert.equal(parseJsonLoose('{"a": [1, 2'), null, 'لا كائن مكتمل داخله: لا شيء');
+});
+
+test('محاضرة طويلة بخطة من قسم واحد (أو بلا خطة): أقسام بالحجم وعنوان كل قسم يختاره كاتبه', () => {
+  const paras = Array.from({ length: 60 }, (_, i) => ({ text: `فقرة ${i} ` + 'كلمة '.repeat(150), words: 150, h: false })); // 9000 كلمة
+  for (const raw of [null, { kind: 'lecture', title: 'هستري', sections: [{ from: 0, title: 'كل المحاضرة', points: '' }] }]) {
+    const plan = normalizePlan(raw, paras, 2400, 'ar');
+    assert.ok(plan.titles.length >= 7 && plan.titles.length <= 10, `أقسام بالحجم (${plan.titles.length})`);
+    assert.ok(plan.sections.every((s) => s.untitled && s.parts === 1));
+    let at = 0;
+    for (const s of plan.sections) { assert.equal(s.from, at); at = s.to; }
+    assert.equal(at, paras.length);
+    const { user } = notesSectionPrompt({ title: '' }, plan.sections[2], { lang: 'ar', outline: plan.titles, source: 'x', words: 1000 });
+    assert.match(user, /عنوان تختاره أنت/);
+    assert.doesNotMatch(user, /ابدأ بسطر العنوان: ## القسم 3/);
+  }
+  // محاضرة قصيرة بقسم واحد تبقى قسماً واحداً
+  const short = normalizePlan(null, paras.slice(0, 8), 2400, 'ar');
+  assert.equal(short.titles.length, 1);
+  assert.ok(!short.sections[0].untitled);
+});
+
+test('استماع Gemini أسقط ربع الكلام: يُدمج مع النسخ الحرفي فيخرج المقطع كاملاً بلا علامة مراجعة', async () => {
+  // جمل مختلفة الكلمات (نص متكرر يُعدّ حلقة تكرار لا كلاماً ناقصاً)
+  const sentence = (i) => `${Array.from({ length: 9 }, (_, k) => `كلمة${i * 9 + k}`).join(' ')} [[${['pleural effusion', 'pneumothorax', 'CT', 'MRI', 'costophrenic angle'][i % 5]}]].`;
+  const full = Array.from({ length: 40 }, (_, i) => sentence(i)).join(' ');            // 40 جملة كاملة (نسخ حرفي)
+  const precise = Array.from({ length: 24 }, (_, i) => sentence(i)).join(' ');         // الاستماع سمع 60% فقط
+  const calls = [];
+  const io = {
+    sleep: async () => {}, blobToBase64: async () => 'AAAA',
+    async gemini(model, body) {
+      const parts = body.contents[0].parts, text = parts.map((p) => p.text || '').join('\n');
+      const kind = parts.some((p) => p.inline_data) ? (/Transcribe this audio/.test(text) ? 'tx' : 'listen') : /التفريغ \(أ\) الدقيق/.test(text) ? 'merge' : 'other';
+      calls.push(`${kind}:${model}`);
+      const out = kind === 'tx' ? full : kind === 'listen' ? precise : kind === 'merge' ? full.replace(/الجملة رقم/g, 'الجملة رقم') : 'x';
+      return { ok: true, status: 200, data: { candidates: [{ content: { parts: [{ text: out }] }, finishReason: 'STOP' }] } };
+    },
+  };
+  const engine = new Engine(io, { gemini: true, groq: false, geminiModels: ['gemini-strong', 'gemini-x-lite'], transcribeModels: ['gemini-tx'], groqModels: [], sttModels: [] });
+  const chunk = { index: 1, blob: new Blob(['x']), ext: 'ogg', mime: 'audio/ogg', audioSec: 480, start: 3840, end: 4320 };
+  const r = await refineChunk(engine, chunk, null, { title: '', mode: 'notes', style: 'verbatim' }, { first: false, last: false, exact: false });
+  assert.equal(r.engine, 'gemini+merge');
+  assert.equal(r.review, false, 'لا علامة مراجعة: الكلام كامل');
+  assert.ok(countWords(r.markup) >= countWords(full) * 0.95, 'المقطع كامل');
+  assert.ok(calls.some((c) => c.startsWith('merge:gemini-x-lite')), 'الدمج بنموذج خفيف (لا يستهلك حصة الدقيقة)');
+  // الدمج فشل (خرج ناقصاً): النسخ الحرفي الكامل يُعتمد بدل الاستماع الناقص
+  const io2 = { ...io, async gemini(model, body) { const r = await io.gemini(model, body); if (calls.at(-1).startsWith('merge')) r.data.candidates[0].content.parts[0].text = precise; return r; } };
+  const engine2 = new Engine(io2, { gemini: true, groq: false, geminiModels: ['gemini-strong', 'gemini-x-lite'], transcribeModels: ['gemini-tx'], groqModels: [], sttModels: [] });
+  const r2 = await refineChunk(engine2, chunk, null, { title: '', mode: 'notes', style: 'verbatim' }, { first: false, last: false, exact: false });
+  assert.equal(r2.engine, 'gemini-tx');
+  assert.ok(countWords(r2.markup) >= countWords(full) * 0.95, 'الكلام كله موجود');
 });

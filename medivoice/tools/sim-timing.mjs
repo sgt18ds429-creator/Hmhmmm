@@ -72,16 +72,19 @@ const overloaded = () => ({ ok: false, status: 503, retryAfter: null, data: { er
 function kindOf(system, parts) {
   if (parts.some((p) => p.inline_data) && !/تختار/.test(system)) return /Transcribe this audio/.test(JSON.stringify(parts.at(-1))) ? 'tx' : 'listen';
   if (/قاموس/.test(system)) return 'json';
+  if (/تختار/.test(system) && parts.some((p) => p.inline_data)) return 'json';
   if (/تقسمها إلى أقسام/.test(system)) return 'plan';
   if (/شرحاً مكتوباً مفصلاً|ملخصات امتحانية/.test(system)) return 'section';
   if (/medical translator|مترجم طبي/.test(system)) return 'translate';
   if (/مدقق لغوي/.test(system)) return 'proof';
+  if (/محرر تفريغ محاضرات/.test(system)) return 'merge';
   if (/تراجع ملزمة|reviewer of lecture notes|You review/.test(system)) return 'review';
   return 'json';
 }
 const between = (user) => (user.match(/<<<\n([\s\S]*)\n>>>/) || [])[1] || '';
 
 function answer(kind, system, user) {
+  if (kind === 'merge') { const m = user.match(/التفريغ \(ب\)[^\n]*\n<<<\n([\s\S]*?)\n>>>/); return m ? m[1] : user; }
   if (kind === 'listen' || kind === 'tx') {
     const paras = [];
     for (let i = 0; i < 12; i++) paras.push(paragraph(95));
@@ -125,6 +128,7 @@ function answer(kind, system, user) {
 }
 
 const counts = { gemini: 0, groq: 0, stt: 0, r429: 0, r503: 0 };
+const byKind = {}; // طلبات Gemini لكل مهمة ومستوى (strong/lite): لتقدير حصة اليوم
 const io = {
   activeNow: () => vt,
   sleep: (ms, signal) => vsleep(ms, signal),
@@ -156,6 +160,8 @@ const io = {
     const user = parts.map((p) => p.text || '').join('\n');
     const k = kindOf(system, parts);
     const t = tier(model);
+    const fine = k !== 'json' ? k : /قاموس/.test(system) ? 'glossary' : /examiner|ممتحن/.test(system) ? 'mcq' : /exam reviewer/.test(system) ? 'mcqcheck' : /تختار/.test(system) ? 'figpick' : /lines|أسطر/.test(system) && /فصحى|formal/.test(system) ? 'formalize' : `json(${system.slice(0, 18).replace(/\n/g, ' ')})`;
+    byKind[`${fine}:${t}`] = (byKind[`${fine}:${t}`] || 0) + 1;
     if (process.env.SIM_TRACE) console.log(`   ${((vt - t0) / 1000).toFixed(0)}s gemini ${model} ${k} ${system.slice(0, 40).replace(/\n/g, ' ')}`);
     if ((scenario === 'lite' || scenario === 'gemini-only') && t === 'strong') { await vsleep(500); counts.r429++; return perDay(); }
     if (scenario === 'overload' && t === 'strong' && rand() < 0.5) { await vsleep(8000); counts.r503++; return overloaded(); }
@@ -206,7 +212,7 @@ const doc = await drive(runLecture({ file: blob, meta, cfg: { chunkSec: 480, ove
 const total = (vt - t0) / 1000;
 if (args.includes('--json')) {
   const text = doc.blocks.map((b) => b.text || (b.items || []).join(' ')).join(' ');
-  console.log(JSON.stringify({ scenario, mode, minutes, totalSec: Math.round(total), sections: doc.stats.sections, fallback: doc.stats.fallback, alt: doc.alt?.blocks?.length || 0, partial: !!doc.alt?.partial, audit: !!doc.stats.audit, mcq: doc.blocks.filter((b) => b.t === 'mcq').length, figs: doc.blocks.filter((b) => b.t === 'fig').length, figStats: process.env.SIM_FIGS ? doc.stats.figures : undefined, dialect: /انتبهوا/.test(text) }));
+  console.log(JSON.stringify({ scenario, mode, minutes, totalSec: Math.round(total), sections: doc.stats.sections, fallback: doc.stats.fallback, alt: doc.alt?.blocks?.length || 0, partial: !!doc.alt?.partial, audit: !!doc.stats.audit, mcq: doc.blocks.filter((b) => b.t === 'mcq').length, figs: doc.blocks.filter((b) => b.t === 'fig').length, figStats: process.env.SIM_FIGS ? doc.stats.figures : undefined, dialect: /انتبهوا/.test(text), counts, byKind }));
   process.exit(0);
 }
 console.log(`${scenario} · ${mode} · ${minutes} min audio → ${(total / 60).toFixed(1)} min (${total.toFixed(0)}s virtual, ${((performance.now() - realStart) / 1000).toFixed(1)}s real)`);
