@@ -18,8 +18,9 @@ async function loadWorker() {
   return (await import(join(dir, 'worker.mjs'))).default;
 }
 
-// البناء يضيف رقم الإصدار لروابط الوحدات والتنسيقات (?v=test في الاختبار): يُزال قبل المقارنة بالأصل
-const unversion = (text) => text.replaceAll('?v=test', '');
+// البناء يضيف رقم الإصدار لروابط الوحدات والتنسيقات (?v=test في الاختبار)، والخادم يحقن التصميم في <head>
+// صفحات HTML: يُزالان قبل المقارنة بالأصل
+const unversion = (text) => text.replaceAll('?v=test', '').replace(/<style id="mv-theme">[\s\S]*?<\/style>\n(?=<\/head>)/, '');
 
 const env = (active) => ({ STORE: { idFromName: () => 'x', get: () => ({
   isActive: async () => active,
@@ -32,7 +33,9 @@ test('يخدم كل الملفات العامة كما هي', async () => {
     const res = await worker.fetch(new Request(`https://mv.test${path}`), env(false), {});
     assert.equal(res.status, 200, path);
     assert.ok(res.headers.get('content-type').startsWith(type), path);
-    assert.equal(unversion(await res.text()), readFileSync(join(root, 'public', file), 'utf8'), path);
+    const body = await res.text();
+    if (type === 'text/html') assert.match(body, /<style id="mv-theme">:root\{--v1:#5433ec;/, 'التصميم محقون');
+    assert.equal(unversion(body), readFileSync(join(root, 'public', file), 'utf8'), path);
   }
   const png = await worker.fetch(new Request('https://mv.test/icon-192.png'), env(false), {});
   assert.deepEqual(Buffer.from(await png.arrayBuffer()), readFileSync(join(root, 'public', 'icon-192.png')));

@@ -26,6 +26,11 @@ await page.locator('.lec').first().click();
 await page.waitForSelector('.paper', { timeout: 20000 });
 await page.locator('.docbar-actions .icon-btn').click();
 await page.locator('.menu button', { hasText: 'طباعة' }).click();
+// ملزمة بلغتين: يسأل أي ملف قبل الطباعة
+if (await page.waitForSelector('.sheet.open .pdf-langs', { timeout: 4000 }).catch(() => null)) {
+  await page.locator('.sheet .pdf-lang:not(.ghost)').click();
+  await page.waitForSelector('.pdf-langs', { state: 'detached', timeout: 5000 }).catch(() => {});
+}
 const t0 = Date.now();
 // الصفحات تُرتّب ثم يظهر زر يفتح نافذة الطباعة (iPhone يمنع فتحها تلقائياً بعد انتظار)
 await page.locator('.sheet.open button', { hasText: 'فتح نافذة الطباعة' }).click({ timeout: 90_000 });

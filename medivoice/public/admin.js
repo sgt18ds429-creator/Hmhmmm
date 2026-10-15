@@ -3,9 +3,14 @@
 
 import { h, icon, clear, sheet, confirm, fmtHM } from '/app/ui.js';
 import { logoEl } from '/brand.js';
+import { applyTheme, setMode, themeButton, ripples } from '/theme.js';
+import { DEFAULT_THEME, THEME_PRESETS, THEME_FONTS, SPLASH_MS, cleanTheme, themeCss } from '/theme-core.js';
+
+applyTheme();
+ripples();
 
 const DAY = 86400000;
-const TABS = [['codes', 'الأكواد', 'key'], ['activity', 'النشاط', 'pulse'], ['settings', 'الإعدادات', 'gear']];
+const TABS = [['codes', 'الأكواد', 'key'], ['activity', 'النشاط', 'pulse'], ['design', 'التصميم', 'palette'], ['settings', 'الإعدادات', 'gear']];
 
 const root = document.getElementById('adm');
 const state = { data: null, tab: 'codes', filter: 'all', query: '', loadedAt: 0 };
@@ -185,16 +190,19 @@ async function load(keepScroll = false) {
 
 function renderApp() {
   root.classList.add('in');
+  // تصميم لم يُحفظ والمسؤول ترك تبويب التصميم: ترجع المعاينة للمحفوظ
+  if (state.tab !== 'design' && state.leaveDesign) { state.leaveDesign(); state.leaveDesign = null; }
   clear(root);
   const view = h('main', { class: 'view' });
   root.append(
     h('header', { class: 'bar' },
       h('span', { class: 'tile' }, logo(false)), h('span', { class: 'name' }, 'لوحة التحكم'), h('span', { class: 'grow' }),
+      themeButton(),
       h('button', { class: 'icon-btn', 'aria-label': 'تحديث البيانات', onclick: async (e) => { e.currentTarget.disabled = true; if (await load(true)) toast('تحدّثت البيانات'); } }, icon('refresh'))),
     view,
     h('nav', { class: 'nav', 'aria-label': 'أقسام اللوحة' }, TABS.map(([id, label, ic]) =>
       h('button', { 'aria-current': state.tab === id ? 'page' : null, onclick: () => { if (state.tab === id) return; state.tab = id; renderApp(); scrollTo(0, 0); } }, icon(ic), label))));
-  ({ codes: tabCodes, activity: tabActivity, settings: tabSettings })[state.tab](view);
+  ({ codes: tabCodes, activity: tabActivity, design: tabDesign, settings: tabSettings })[state.tab](view);
 }
 
 const stat = (value, sub, label) => h('div', { class: 'stat' }, h('b', null, value, sub ? h('small', null, sub) : null), h('span', null, label));
@@ -443,7 +451,7 @@ function tabActivity(view) {
   let sel = cols.length - 1;
   const paint = () => {
     clear(chart).append(...cols.map((c, i) => h('button', { class: `col${c.sec > 0 ? ' has' : ''}${i === cols.length - 1 ? ' today' : ''}`, 'aria-pressed': String(i === sel), 'aria-label': dayLabel(c), onclick: () => { sel = i; paint(); } },
-      h('i', { class: 'bar', style: { height: `${Math.max(2, (c.sec / max) * 100)}%` } }), String(new Date(c.day * DAY).getUTCDate()))));
+      h('i', { class: 'cbar', style: { height: `${Math.max(2, (c.sec / max) * 100)}%` } }), String(new Date(c.day * DAY).getUTCDate()))));
     const c = cols[sel];
     note.textContent = c.sec || c.lectures || c.pdfs
       ? `${dayLabel(c)}: ${fmtHM(c.sec)} ساعة، ${c.lectures} محاضرة، ${c.pdfs} ملف PDF، ${c.users} مستخدم.`
@@ -472,6 +480,159 @@ function tabActivity(view) {
     h('section', { class: 'stack' },
       h('div', { class: 'sec-title' }, h('h2', { class: 'h-section' }, 'السجل'), h('small', null, 'آخر 80 حدث')),
       h('div', { class: 'card' }, events))));
+}
+
+// ───────── التصميم ─────────
+/** يطبّق تصميماً على هذه الصفحة فوراً (معاينة)، بنفس المتغيرات التي يحقنها الخادم لكل الصفحات */
+function previewTheme(t, { keepMode = false } = {}) {
+  let st = document.getElementById('mv-theme');
+  if (!st) { st = document.createElement('style'); st.id = 'mv-theme'; document.head.append(st); }
+  st.textContent = themeCss(t);
+  applyTheme({ mode: !keepMode });
+}
+
+/** شاشة الافتتاحية كاملة فوق اللوحة، بنفس شكلها في الموقع (للمعاينة) */
+function playSplash(ms) {
+  document.getElementById('intro')?.remove();
+  const intro = h('div', { id: 'intro', 'aria-hidden': 'true' },
+    h('img', { class: 'intro-ghost a', src: '/mark.png', alt: '' }),
+    h('img', { class: 'intro-ghost b', src: '/mark.png', alt: '' }),
+    h('div', { class: 'intro-center' },
+      h('span', { class: 'logo-mark on-brand intro-mark' }, h('img', { class: 'lm-mic', src: '/mark-color-mic.webp', alt: '' }), h('img', { class: 'lm-bars', src: '/mark-color-bars.webp', alt: '' })),
+      h('span', { class: 'intro-name' }, 'ميدي فويز')));
+  intro.style.setProperty('--k', String(Math.min(1, ms / 2300)));
+  let gone = false;
+  const leave = () => { if (gone) return; gone = true; intro.classList.add('out'); setTimeout(() => intro.remove(), 760); };
+  intro.addEventListener('click', leave);
+  document.body.append(intro);
+  setTimeout(leave, ms);
+}
+
+let fontsLinked = false;
+/** عينات الخطوط تحتاج الخطوط نفسها: تُحمَّل مرة واحدة من Google Fonts عند فتح التبويب */
+function linkFonts() {
+  if (fontsLinked) return;
+  fontsLinked = true;
+  const fams = Object.values(THEME_FONTS).filter((f) => f.g).map((f) => `family=${f.g}`).join('&');
+  document.head.append(h('link', { rel: 'stylesheet', href: `https://fonts.googleapis.com/css2?${fams}&display=swap` }));
+}
+
+function tabDesign(view) {
+  linkFonts();
+  let saved = cleanTheme(state.data.settings.theme);
+  // تعديلات لم تُحفظ تبقى عند تحديث البيانات، وتُلغى عند ترك التبويب
+  let draft = state.designDraft ? { ...state.designDraft } : { ...saved };
+  const same = (a, b) => JSON.stringify(cleanTheme(a)) === JSON.stringify(cleanTheme(b));
+  state.leaveDesign = () => { state.designDraft = null; if (!same(draft, saved)) previewTheme(saved); };
+
+  const saveBtn = h('button', { class: 'btn wide', onclick: save }, icon('check'), 'حفظ التصميم');
+  const cancelBtn = h('button', { class: 'btn ghost', onclick: () => { draft = { ...saved }; changed(); paintAll(); } }, 'إلغاء');
+  const resetBtn = h('button', { class: 'btn ghost wide', onclick: () => { draft = { ...DEFAULT_THEME }; changed(); paintAll(); } }, icon('undo'), 'رجوع للتصميم الأصلي');
+  // شريط الحفظ يظهر فقط عند وجود تعديل لم يُحفظ
+  const saveBar = h('div', { class: 'save-bar', hidden: true },
+    h('div', { class: 'save-row' }, saveBtn, cancelBtn),
+    h('p', { class: 'dim save-note' }, 'المعاينة على هذه الصفحة فقط. اضغط حفظ حتى يظهر عند الكل.'));
+
+  function changed({ animateMode = null } = {}) {
+    state.designDraft = draft;
+    previewTheme(draft, { keepMode: !!animateMode });
+    if (animateMode) setMode('auto', animateMode); // جهاز المسؤول يتبع الوضع الأساسي الجديد، بحركة من الزر
+    const dirty = !same(draft, saved);
+    saveBar.hidden = !dirty;
+    saveBtn.disabled = false;
+    resetBtn.disabled = same(draft, DEFAULT_THEME);
+  }
+  async function save() {
+    saveBtn.disabled = true;
+    const r = await api('/api/admin/settings', { method: 'PUT', body: { theme: draft } });
+    if (!r.ok || !r.data?.settings) { saveBtn.disabled = false; toast('ما انحفظ التصميم. حاول مرة ثانية.', 'err'); return; }
+    state.data.settings = r.data.settings;
+    saved = cleanTheme(r.data.settings.theme);
+    draft = { ...saved };
+    changed();
+    paintAll();
+    toast('انحفظ التصميم. يظهر عند كل المستخدمين خلال دقيقة.', 'ok');
+  }
+
+  // ── عناصر مشتركة ──
+  const segOf = (key, options, { onPick } = {}) => {
+    const el = h('div', { class: 'seg', role: 'group' });
+    const paint = () => clear(el).append(...options.map(([v, label, ic]) =>
+      h('button', { type: 'button', 'aria-pressed': String(draft[key] === v), onclick: (e) => { if (draft[key] === v) return; draft[key] = v; paint(); onPick ? onPick(e.currentTarget) : changed(); } }, ic ? icon(ic) : null, label)));
+    paint();
+    return { el, paint };
+  };
+  const switchOf = (key, label, hint) => {
+    const input = h('input', { type: 'checkbox', checked: !!draft[key], onchange: () => { draft[key] = input.checked; changed(); } });
+    return { el: h('label', { class: 'switch' }, input, h('i'), h('span', null, label, hint ? h('small', null, hint) : null)), paint: () => { input.checked = !!draft[key]; } };
+  };
+
+  // ── الألوان ──
+  const swatches = h('div', { class: 'swatches', role: 'group', 'aria-label': 'ألوان جاهزة' });
+  const KEYS = ['c1', 'c2', 'c3', 'splash1', 'splash2'];
+  const paintSwatches = () => clear(swatches).append(...THEME_PRESETS.map((p) => {
+    const on = KEYS.every((k) => cleanTheme(p)[k] === draft[k]);
+    return h('button', { type: 'button', class: 'swatch', 'aria-pressed': String(on), onclick: () => { for (const k of KEYS) draft[k] = p[k]; changed(); paintAll(); } },
+      h('i', { style: { background: `linear-gradient(135deg, ${p.c1}, ${p.c2} 52%, ${p.c3})` } }, icon('check')),
+      h('span', null, p.label));
+  }));
+  const pickers = KEYS.map((k) => {
+    const input = h('input', { type: 'color', value: draft[k], 'aria-label': k, oninput: () => { draft[k] = input.value; changed(); paintSwatches(); } });
+    // اللون الفاتح جداً يُغمَّق حتى يبقى النص مقروءاً: الخانة تعرض ما سيُحفظ فعلاً
+    input.addEventListener('change', () => { draft = cleanTheme(draft); input.value = draft[k]; changed(); });
+    return { k, input };
+  });
+  const pickerLabel = { c1: 'بداية التدرّج', c2: 'وسطه', c3: 'نهايته', splash1: 'الافتتاحية: أعلى', splash2: 'الافتتاحية: أسفل' };
+  const custom = h('details', { class: 'more' }, h('summary', null, 'ألوان مخصصة'),
+    h('div', { class: 'pickers' }, pickers.map(({ k, input }) => h('label', { class: 'picker' }, input, h('span', null, pickerLabel[k])))));
+
+  // ── الافتتاحية ──
+  const splashTile = h('button', { type: 'button', class: 'splash-tile', 'aria-label': 'شغّل الافتتاحية', onclick: () => playSplash(SPLASH_MS[draft.splash]) },
+    h('span', { class: 'logo-mark on-brand' }, h('img', { src: '/mark-color.webp', alt: '' })),
+    h('b', null, 'ميدي فويز'),
+    h('span', { class: 'splash-play' }, icon('play')));
+  const splashSeg = segOf('splash', [['short', 'قصيرة'], ['normal', 'عادية'], ['long', 'طويلة']]);
+
+  // ── الوضع ──
+  const modeSeg = segOf('mode', [['dark', 'ليلي', 'moon'], ['light', 'نهاري', 'sun'], ['auto', 'حسب الجهاز']], { onPick: (btn) => changed({ animateMode: btn }) });
+  const toggleSw = switchOf('toggle', 'زر التبديل يظهر للمستخدم', 'يقدر كل مستخدم يختار النهاري أو الليلي لجهازه.');
+
+  // ── الخط ──
+  const fonts = h('div', { class: 'fonts', role: 'radiogroup', 'aria-label': 'الخط' });
+  const paintFonts = () => clear(fonts).append(...Object.entries(THEME_FONTS).map(([id, f]) =>
+    h('button', { type: 'button', class: 'font-opt', role: 'radio', 'aria-checked': String(draft.font === id), onclick: () => { if (draft.font === id) return; draft.font = id; changed(); paintFonts(); } },
+      h('b', { style: { fontFamily: `'${f.name}', 'El Messiri', sans-serif` } }, 'محاضرتك، ملزمة مشروحة'),
+      h('small', null, f.label))));
+
+  // ── الشكل ──
+  const radiusSeg = segOf('radius', [['sharp', 'حادة'], ['soft', 'ناعمة'], ['round', 'دائرية']]);
+  const buttonsSeg = segOf('buttons', [['gradient', 'متدرّجة'], ['solid', 'لون واحد'], ['outline', 'إطار']]);
+  const sample = h('div', { class: 'btn-row sample' }, h('span', { class: 'btn small' }, icon('upload'), 'رفع تسجيل'), h('span', { class: 'btn ghost small' }, icon('mic'), 'تسجيل'));
+
+  // ── الحركة ──
+  const motionSeg = segOf('motion', [['full', 'كاملة'], ['light', 'خفيفة'], ['off', 'بدون']]);
+  const ribbonSw = switchOf('ribbon', 'خط الصوت المتحرك', 'الموجة الملونة خلف الواجهة.');
+
+  function paintAll() {
+    paintSwatches();
+    for (const { k, input } of pickers) input.value = draft[k];
+    for (const seg of [splashSeg, modeSeg, radiusSeg, buttonsSeg, motionSeg]) seg.paint();
+    toggleSw.paint(); ribbonSw.paint();
+    paintFonts();
+  }
+  paintAll();
+  changed();
+
+  const section = (title, ...kids) => h('section', { class: 'card stack' }, h('h3', null, title), ...kids);
+  view.append(h('div', { class: 'stack lg design' },
+    section('شاشة الافتتاحية', splashTile, h('div', { class: 'field' }, h('span', null, 'مدتها'), splashSeg.el)),
+    section('الألوان', swatches, custom),
+    section('الوضع', h('div', { class: 'field' }, h('span', null, 'الوضع الأساسي'), modeSeg.el), toggleSw.el),
+    section('الخط', fonts),
+    section('الشكل', h('div', { class: 'field' }, h('span', null, 'الحواف'), radiusSeg.el), h('div', { class: 'field' }, h('span', null, 'الأزرار'), buttonsSeg.el), sample),
+    section('الحركة', motionSeg.el, ribbonSw.el),
+    resetBtn,
+    saveBar));
 }
 
 // ───────── الإعدادات ─────────

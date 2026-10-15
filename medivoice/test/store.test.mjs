@@ -77,6 +77,23 @@ test('«بلا حد»: الكود لا يتوقف مهما حوّل، والحد
   assert.equal(fresh.daily_limit_sec, 0);
 });
 
+test('التصميم: المسؤول يحفظه منظّفاً، ويبقى مع حفظ باقي الإعدادات، والقيم الغريبة ترجع للأصل', async () => {
+  const { MediVoiceStore } = await loadModule();
+  const store = makeStore(MediVoiceStore);
+  assert.equal((await store.theme()).mode, 'dark', 'الأصل قبل أي حفظ');
+  const { token } = await store.adminLogin('admin-pass-123', '10.0.0.9');
+  assert.equal((await store.adminSaveSettings('bad-token', { theme: { mode: 'light' } })).ok, false, 'بلا دخول لا يُحفظ');
+  const r = await store.adminSaveSettings(token, { theme: { c1: '#2563eb', mode: 'light', font: 'cairo', motion: 'light', radius: 'evil', toggle: false } });
+  assert.equal(r.ok, true);
+  assert.equal(r.settings.theme.c1, '#2563eb');
+  assert.equal(r.settings.theme.radius, 'round', 'قيمة غير معروفة ترجع للأصل');
+  const t = await store.theme();
+  assert.deepEqual([t.mode, t.font, t.motion, t.toggle], ['light', 'cairo', 'light', false]);
+  // حفظ إعداد آخر لا يمس التصميم
+  await store.adminSaveSettings(token, { notice: 'صيانة' });
+  assert.equal((await store.theme()).c1, '#2563eb');
+});
+
 test('أكثر من مفتاح Groq: تُضاف وتُحفظ مشفّرة، والتكرار لا يُحسب، والحد 6', async () => {
   const { MediVoiceStore } = await loadModule();
   const store = makeStore(MediVoiceStore);

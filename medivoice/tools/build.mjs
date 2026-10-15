@@ -70,7 +70,11 @@ ${aliases.join('\n')}`;
 
 const server = readFileSync(join(root, 'src', 'server.js'), 'utf8');
 if (!server.includes('/*__ASSETS__*/')) throw new Error('src/server.js: علامة /*__ASSETS__*/ مفقودة');
+if (!server.includes('/*__THEME__*/')) throw new Error('src/server.js: علامة /*__THEME__*/ مفقودة');
+// منطق التصميم مشترك مع لوحة التحكم: يُضمَّن حرفياً بلا كلمة export (الخادم ملف واحد بلا استيراد)
+const themeCore = readFileSync(join(pub, 'theme-core.js'), 'utf8').replace(/^export\s+(?=(?:const|function|let)\b)/gm, '');
+if (/^\s*(?:import|export)\b/m.test(themeCore)) throw new Error('public/theme-core.js: لا يُسمح باستيراد أو تصدير غير مباشر');
 mkdirSync(join(root, 'dist'), { recursive: true });
-const out = server.replace('/*__ASSETS__*/', () => assets);
+const out = server.replace('/*__ASSETS__*/', () => assets).replace('/*__THEME__*/', () => themeCore);
 writeFileSync(join(root, 'dist', 'worker.js'), out);
 console.log(`dist/worker.js · build ${BUILD} · ${entries.length} ملف${aliases.length ? ` (+${aliases.length} مكرر)` : ''} · ${(out.length / 1024).toFixed(0)} KB`);

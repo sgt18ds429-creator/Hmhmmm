@@ -5,6 +5,7 @@ import { makeIO } from './api.js';
 import * as db from './db.js';
 import { fmtDuration } from './pdf.js';
 import { logoEl } from '../brand.js';
+import { design, motionOn, setMode, themeButton } from '../theme.js';
 import { viewNew, viewRun, viewRewrite, openRecorder, loadEngine } from './run.js';
 import { viewDoc } from './doc.js';
 
@@ -17,19 +18,10 @@ const keysLabel = (n) => (n <= 1 ? 'مفتاح واحد' : n === 2 ? 'مفتاح
 const ACCEPT = 'audio/*,video/*,.m4a,.mp3,.wav,.ogg,.oga,.opus,.aac,.flac,.mp4,.mov,.m4v,.webm,.mkv,.3gp,.amr,.wma';
 
 const PROVIDERS = {
-  gemini: {
-    badge: 'G', name: 'Gemini', role: 'محرك الدقة',
-    desc: 'يسمع التسجيل نفسه ويكتب المصطلحات الطبية صح.',
-    url: 'https://aistudio.google.com/apikey', site: 'Google AI Studio',
-    steps: ['افتح Google AI Studio وسجّل دخول بحساب Google.', 'اضغط Create API key ثم انسخ المفتاح.', 'ارجع لهنا واضغط «لصق المفتاح».'],
-  },
-  groq: {
-    badge: 'Q', name: 'Groq', role: 'محرك الساعات',
-    desc: 'يحوّل الصوت إلى مسودة بثوانٍ، وحصته المجانية ساعات كل يوم.',
-    url: 'https://console.groq.com/keys', site: 'Groq Console',
-    steps: ['افتح Groq Console وسجّل دخول (بحساب Google أسرع).', 'اضغط Create API Key، سمِّه أي اسم، ثم Copy.', 'ارجع لهنا واضغط «لصق المفتاح».'],
-  },
+  gemini: { badge: 'G', name: 'Gemini', role: 'محرك الدقة' },
+  groq: { badge: 'Q', name: 'Groq', role: 'محرك الساعات' },
 };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export async function start(MV, root) {
   // الأنماط أولاً حتى لا تظهر الواجهة بلا تنسيق
@@ -109,6 +101,7 @@ export async function start(MV, root) {
     clear(bar);
     if (kind === 'home') {
       bar.append(logoTile(), h('span', { class: 'name' }, 'ميدي فويز'), h('span', { class: 'grow' }), meter(),
+        design().toggle ? themeButton() : null,
         h('button', { class: 'icon-btn', 'aria-label': 'القائمة', onclick: openSettings }, icon('menu')));
     } else {
       meterEl = null;
@@ -119,25 +112,54 @@ export async function start(MV, root) {
   ctx.setBar = setBar;
 
   // ── التنقل ──
-  async function go(name, params = {}, { replace = false } = {}) {
+  let shown = false; // أول شاشة تُرسم تحت الافتتاحية بلا انتقال
+  async function go(name, params = {}, { replace = false, instant = false } = {}) {
     // نوافذ ما زالت مفتوحة: تُغلق، وخطوة أعلاها في السجل تصير خطوة الشاشة الجديدة (لا خطوات ميتة)
     const onSheet = closeAllSheets() > 0 && history.state?.sheet;
     ctx.view = name;
     ctx.guard = null;
     if (name !== 'home') { replace || onSheet ? histReplace({ v: name }) : histPush({ v: name }); }
-    clear(main);
-    scrollTo(0, 0);
     const el = h('main', { class: 'view' });
-    main.append(el);
-    if (name === 'home') await viewHome(el);
-    else if (name === 'link') viewLink(el, params);
-    else if (name === 'new') viewNew(ctx, el, params);
-    else if (name === 'run') viewRun(ctx, el, params);
-    else if (name === 'rewrite') await viewRewrite(ctx, el, params);
-    else if (name === 'doc') await viewDoc(ctx, el, params);
+    const render = async () => {
+      clear(main);
+      scrollTo(0, 0);
+      main.append(el);
+      if (name === 'home') await viewHome(el);
+      else if (name === 'link') viewLink(el, params);
+      else if (name === 'new') viewNew(ctx, el, params);
+      else if (name === 'run') viewRun(ctx, el, params);
+      else if (name === 'rewrite') await viewRewrite(ctx, el, params);
+      else if (name === 'doc') await viewDoc(ctx, el, params);
+    };
+    const first = !shown;
+    shown = true;
+    if (first || instant || document.hidden || !motionOn() || typeof document.startViewTransition !== 'function') return render();
+    return navTransition(render, el);
+  }
+  /**
+   * انتقال ناعم بين الشاشتين (View Transitions): الصفحة القديمة تتراجع والجديدة تصعد، والشريط يتبدل بمكانه.
+   * الشاشة الجديدة لا تنتظر أكثر من لحظة: ما يتأخر من محتواها (قراءة من الجهاز) يكمل بعد الانتقال.
+   */
+  function navTransition(render, el) {
+    const html = document.documentElement;
+    el.style.animation = 'none';
+    return new Promise((resolve, reject) => {
+      html.classList.add('vt-nav');
+      try {
+        const t = document.startViewTransition(() => {
+          const job = render();
+          job.then(resolve, reject);
+          return Promise.race([job.catch(() => {}), sleep(160)]);
+        });
+        t.finished.finally(() => html.classList.remove('vt-nav'));
+      } catch {
+        html.classList.remove('vt-nav');
+        render().then(resolve, reject);
+      }
+    });
   }
   function back() { history.back(); }
-  addEventListener('popstate', async () => {
+  addEventListener('popstate', async (e) => {
     if (ownPop()) return; // رجوع أطلقناه نحن عند إغلاق نافذة بزرها
     // لكل نافذة خطوتها في السجل: الرجوع يغلقها فقط
     if (closeTopSheet('history')) return;
@@ -148,7 +170,8 @@ export async function start(MV, root) {
       ctx.guard = null;
       return;
     }
-    if (ctx.view !== 'home') go('home');
+    // المتصفح رسم حركة رجوع بنفسه (سحب من حافة الشاشة في iPhone): بلا حركة ثانية فوقها
+    if (ctx.view !== 'home') go('home', {}, { instant: !!e.hasUAVisualTransition });
   });
 
   // ── الرئيسية ──
@@ -169,21 +192,24 @@ export async function start(MV, root) {
     slab.addEventListener('drop', (e) => { e.preventDefault(); slab.classList.remove('over'); const f = e.dataTransfer?.files?.[0]; if (f) (noKeys ? go('link') : go('new', { file: f })); });
 
     const list = h('div', { class: 'stack' });
+    // دخول متتابع: كل عنصر يصعد بعد الذي قبله
+    let order = 0;
+    const rise = (node) => { if (node) { node.classList.add('rise'); node.style.setProperty('--i', String(order++)); } return node; };
     el.append(h('div', { class: 'stack lg' },
-      h('div', { class: 'stack hero' },
+      rise(h('div', { class: 'stack hero' },
         h('h1', { class: 'h-display' }, 'محاضرتك الصوتية، ملزمة مشروحة'),
-        h('p', { class: 'lead' }, 'ارفع التسجيل، يفهم الشرح ويكتبه لك ملزمة مفصّلة ومرتبة بدون اختصار، بمصطلحاتها الطبية وصور مطابقة، جاهزة PDF.')),
-      s.notice ? h('div', { class: 'banner info' }, icon('info'), h('span', null, s.notice)) : null,
-      noKeys
+        h('p', { class: 'lead' }, 'ارفع التسجيل، يفهم الشرح ويكتبه لك ملزمة مفصّلة ومرتبة بدون اختصار، بمصطلحاتها الطبية وصور مطابقة، جاهزة PDF.'))),
+      rise(s.notice ? h('div', { class: 'banner info' }, icon('info'), h('span', null, s.notice)) : null),
+      rise(noKeys
         ? h('div', { class: 'banner' }, icon('key'), h('span', null, 'قبل أول محاضرة اربط مفاتيحك المجانية. دقيقتين ومرة وحدة.'), h('button', { class: 'btn small amber', onclick: () => go('link') }, 'ربط'))
         : !s.keys.gemini.linked
           ? h('div', { class: 'banner' }, icon('warn'), h('span', null, 'بدون Gemini تقل دقة المصطلحات الطبية. اربطه مجاناً.'), h('button', { class: 'btn small amber', onclick: () => go('link') }, 'ربط'))
           : !s.keys.groq.linked
             ? h('div', { class: 'banner info' }, icon('info'), h('span', null, 'اربط Groq حتى تزيد ساعاتك اليومية ويشتغل الاثنين سوا.'), h('button', { class: 'btn small ghost', onclick: () => go('link') }, 'ربط'))
-            : null,
-      slab,
-      h('div', { class: 'row' }, h('button', { class: 'btn ghost', onclick: () => (noKeys ? go('link') : openRecorder(ctx)) }, icon('mic'), 'تسجيل مباشر')),
-      h('div', { class: 'stack' }, h('h2', { class: 'h-section' }, 'محاضراتي'), list)));
+            : null),
+      rise(slab),
+      rise(h('div', { class: 'row' }, h('button', { class: 'btn ghost', onclick: () => (noKeys ? go('link') : openRecorder(ctx)) }, icon('mic'), 'تسجيل مباشر'))),
+      rise(h('div', { class: 'stack' }, h('h2', { class: 'h-section' }, 'محاضراتي'), list))));
 
     // تسجيلات مباشرة محفوظة لم تتحوّل بعد، وتحويل انقطع قبل أن يكمل
     const pendingBox = h('div', { class: 'stack' });
@@ -196,12 +222,15 @@ export async function start(MV, root) {
       return;
     }
     if (!items.length) list.append(h('div', { class: 'empty' }, 'ما عندك محاضرات بعد. ارفع أول تسجيل وتظهر هنا.'));
-    for (const it of items) {
-      list.append(h('button', { class: 'lec', onclick: () => go('doc', { id: it.id }) },
+    items.forEach((it, i) => {
+      const card = h('button', { class: 'lec', onclick: () => go('doc', { id: it.id }) },
+        h('span', { class: 'lec-ic' }, icon('book')),
         h('b', { dir: 'auto' }, it.title || 'محاضرة بدون عنوان'),
         icon('back'),
-        h('small', null, [LIST_LABEL[it.mode] || 'نص مفرّغ', it.subject, fmtDuration(it.duration), `${it.words.toLocaleString('en-US')} كلمة`, fmtAgo(it.createdAt)].filter(Boolean).join('  ·  '))));
-    }
+        h('small', null, [LIST_LABEL[it.mode] || 'نص مفرّغ', it.subject, fmtDuration(it.duration), `${it.words.toLocaleString('en-US')} كلمة`, fmtAgo(it.createdAt)].filter(Boolean).join('  ·  ')));
+      if (i < 12) { card.classList.add('rise'); card.style.setProperty('--i', String(order + i)); }
+      list.append(card);
+    });
   }
 
   async function paintPending(box) {
@@ -249,28 +278,29 @@ export async function start(MV, root) {
   }
 
   // ── ربط المفاتيح ──
+  // خانات المفاتيح فقط (الشرح يوصله المسؤول للمستخدم بنفسه)
   function viewLink(el) {
     setBar('sub', { title: 'ربط المفاتيح' });
     ctx.ribbon.set({ alpha: 0 });
     const cards = h('div', { class: 'stack' });
-    const done = h('button', { class: 'btn wide', onclick: () => go('home') }, 'تم، رجّعني للرئيسية');
+    const done = h('button', { class: 'btn wide rise', style: { '--i': '2' }, onclick: () => go('home') }, 'تم');
 
-    function card(id) {
+    function card(id, i) {
       const p = PROVIDERS[id];
       const state = ctx.session.keys[id];
-      const box = h('section', { class: 'card prov' });
-      const input = h('input', { class: 'input', type: 'text', placeholder: 'الصق المفتاح هنا', autocomplete: 'off', autocapitalize: 'off', spellcheck: false, 'aria-label': `مفتاح ${p.name}` });
-      const pasteBtn = h('button', { class: 'btn small', onclick: paste }, icon('paste'), 'لصق المفتاح');
+      const box = h('section', { class: 'card prov rise', style: { '--i': String(i) } });
       const adding = state.linked; // مفتاح إضافي من حساب آخر: حصة يومية مجانية جديدة فوق الحالية
+      const input = h('input', { class: 'input', type: 'text', placeholder: adding ? 'مفتاح من حساب ثاني' : 'الصق المفتاح هنا', autocomplete: 'off', autocapitalize: 'off', spellcheck: false, 'aria-label': `مفتاح ${p.name}` });
+      const label = h('span', null, adding ? 'إضافة' : 'لصق');
+      const pasteBtn = h('button', { class: 'btn small', onclick: paste }, icon(adding ? 'plus' : 'paste'), label);
       async function submit(raw) {
         const key = String(raw || '').trim().replace(/^["']|["']$/g, '');
         if (key.length < 20) { ctx.toast('الصق المفتاح كاملاً.', 'err'); return; }
         pasteBtn.disabled = true;
-        const label = pasteBtn.lastChild;
         label.textContent = 'أتحقق…';
         const r = await ctx.api('/api/keys', { method: 'POST', body: { key, provider: adding ? id : undefined, add: adding } }); // الخادم يميّز المزوّد من شكل المفتاح
         pasteBtn.disabled = false;
-        label.textContent = adding ? 'إضافة' : 'لصق المفتاح';
+        label.textContent = adding ? 'إضافة' : 'لصق';
         if (r.ok && r.data?.active) {
           ctx.session = MV.session = r.data;
           ctx.caps = null;
@@ -280,7 +310,7 @@ export async function start(MV, root) {
           render();
         } else {
           const e = r.data?.error;
-          ctx.toast(e === 'bad_key' ? 'المفتاح غير صحيح. انسخه كاملاً من صفحة المفاتيح.' : e === 'too_many_keys' ? 'الحد 6 مفاتيح.' : e === 'provider_down' ? 'تعذّر التحقق من المفتاح الآن. جرّب بعد قليل.' : 'تعذّر الحفظ. تأكد من الإنترنت.', 'err');
+          ctx.toast(e === 'bad_key' ? 'المفتاح غير صحيح. انسخه كاملاً.' : e === 'too_many_keys' ? 'الحد 6 مفاتيح.' : e === 'provider_down' ? 'تعذّر التحقق من المفتاح الآن. جرّب بعد قليل.' : 'تعذّر الحفظ. تأكد من الإنترنت.', 'err');
         }
       }
       async function paste() {
@@ -299,45 +329,27 @@ export async function start(MV, root) {
 
       box.append(h('div', { class: 'prov-head' },
         h('span', { class: 'prov-badge' }, p.badge),
-        h('div', null, h('h3', null, p.name), h('p', null, h('b', null, `${p.role}. `), p.desc)),
-        state.linked ? h('span', { class: 'chip ok' }, icon('check'), 'مربوط') : h('span', { class: 'chip off' }, 'غير مربوط')));
+        h('h3', null, p.name),
+        state.linked ? h('span', { class: 'chip ok' }, icon('check'), (state.count || 1) > 1 ? keysLabel(state.count) : 'مربوط') : null));
       if (state.linked) {
         const many = (state.count || 1) > 1;
-        box.append(h('div', { class: 'linked-row' }, h('span', null, many ? keysLabel(state.count) : 'المفتاح'), h('code', null, state.hint),
+        box.append(h('div', { class: 'linked-row' }, h('code', null, state.hint),
           h('button', { class: 'btn ghost small', onclick: async () => {
             if (!(await confirm({ title: `فك ربط ${p.name}`, message: many ? 'تنفك كل المفاتيح. تقدر تربطها مرة ثانية بأي وقت.' : 'تقدر تربطه مرة ثانية بأي وقت.', ok: 'فك الربط', danger: true }))) return;
             const r = await ctx.api(`/api/keys?provider=${id}`, { method: 'DELETE' });
             if (r.ok && r.data?.active) { ctx.session = MV.session = r.data; ctx.caps = null; render(); }
           } }, 'فك الربط')));
-        if (adding && (state.count || 1) < 6) {
-          pasteBtn.lastChild.textContent = 'إضافة';
-          input.placeholder = 'مفتاح من حساب ثاني';
-          box.append(h('div', { class: 'paste-row' }, input, pasteBtn),
-            h('small', { class: 'dim' }, id === 'groq'
-              ? 'كل حساب Groq يضيف ساعات صوت مجانية جديدة كل يوم، والموقع يتنقل بينها وحده.'
-              : 'مفتاح واحد يكفي لمحاضرتين طويلتين باليوم بالدقة الكاملة. كل حساب Google ثاني يضيف حصة يومية جديدة، والموقع يتنقل بينها وحده.'));
-        }
-      } else {
-        box.append(
-          h('ol', { class: 'steps' }, p.steps.map((t) => h('li', null, t))),
-          h('a', { class: 'btn ghost', href: p.url, target: '_blank', rel: 'noopener' }, icon('external'), `فتح ${p.site}`),
-          h('div', { class: 'paste-row' }, input, pasteBtn));
       }
+      if (!state.linked || (state.count || 1) < 6) box.append(h('div', { class: 'paste-row' }, input, pasteBtn));
       return box;
     }
     function render() {
-      clear(cards).append(card('gemini'), card('groq'));
+      clear(cards).append(card('gemini', 0), card('groq', 1));
       const any = ctx.session.keys.groq.linked || ctx.session.keys.gemini.linked;
       done.disabled = !any;
     }
     render();
-    el.append(h('div', { class: 'stack lg' },
-      h('div', { class: 'stack' },
-        h('h1', { class: 'h-display' }, 'اربط محركاتك المجانية'),
-        h('p', { class: 'lead' }, 'المفتاحان مجانيان ومن حسابك أنت، فحصتك اليومية إلك وحدك. الأفضل تربط الاثنين: Gemini للدقة و Groq للساعات.')),
-      cards,
-      h('p', { class: 'dim' }, 'المفاتيح تنحفظ مشفّرة وتُستخدم لمحاضراتك فقط. النسخة المجانية من Google قد تستعمل المحتوى لتحسين خدماتها، فلا ترفع تسجيلات خاصة.'),
-      done));
+    el.append(h('div', { class: 'stack lg' }, cards, done));
   }
 
   // ── الإعدادات ──
@@ -347,9 +359,20 @@ export async function start(MV, root) {
     const keyRow = (id) => h('div', { class: 'row between' },
       h('span', null, h('b', { class: 'ltr' }, PROVIDERS[id].name), `  ${PROVIDERS[id].role}`),
       s.keys[id].linked ? h('span', { class: 'chip ok' }, icon('check'), (s.keys[id].count || 1) > 1 ? keysLabel(s.keys[id].count) : 'مربوط') : h('span', { class: 'chip warn' }, 'غير مربوط'));
+    // المظهر: نهاري أو ليلي لهذا الجهاز (إذا المسؤول سامح بالتبديل)
+    const modeSeg = h('div', { class: 'seg', role: 'group', 'aria-label': 'المظهر' });
+    const paintMode = () => {
+      const now = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+      clear(modeSeg).append(...[['light', 'sun', 'نهاري'], ['dark', 'moon', 'ليلي']].map(([m, ic, label]) =>
+        h('button', { type: 'button', 'aria-pressed': String(now === m), onclick: (e) => { if (now !== m) setMode(m, e.currentTarget); } }, icon(ic), ` ${label}`)));
+    };
+    paintMode();
+    document.addEventListener('mv-theme', paintMode);
     const sh = sheet({
       title: 'حسابي',
+      onClose: () => document.removeEventListener('mv-theme', paintMode),
       body: h('div', { class: 'stack lg' },
+        design().toggle ? h('div', { class: 'field mode-field' }, h('span', null, 'المظهر'), modeSeg) : null,
         h('dl', { class: 'kv' },
           s.user.label ? [h('dt', null, 'الاسم'), h('dd', null, s.user.label)] : null,
           h('dt', null, 'الكود'), h('dd', { class: 'ltr num' }, s.user.code),

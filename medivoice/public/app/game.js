@@ -31,7 +31,7 @@ export function openGame({ onClose, build = '' } = {}) {
     h('div', { class: 'race-meta' }, h('small', null, 'الأفضل ', bestEl), comboEl, chips),
     h('div', { class: 'race-score' }, scoreEl, h('small', null, 'نقطة')));
   const card = h('div', { class: 'race-card' });
-  const stage = h('div', { class: 'race', role: 'application', 'aria-label': 'لعبة سباق: اضغط يمين اللعبة أو يسارها أو اسحب حتى تغيّر المسار' }, canvas, hudEl, card);
+  const stage = h('div', { class: 'race force-dark', role: 'application', 'aria-label': 'لعبة سباق: اضغط يمين اللعبة أو يسارها أو اسحب حتى تغيّر المسار' }, canvas, hudEl, card);
   const hint = h('p', { class: 'game-hint' }, 'اضغط يمين أو يسار، أو اسحب، حتى تغيّر المسار. الملزمة تكمل بالخلفية.');
   const s = sheet({ title: 'سباق لحد ما تجهز الملزمة', body: h('div', { class: 'game' }, bar, stage, hint), onClose: () => { stop(); onClose?.(); } });
   s.panel.classList.add('game-panel');

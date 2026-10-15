@@ -107,6 +107,13 @@ if (await page.locator('.mcq-opt').count()) { await page.locator('.mcq-opt').fir
 
 step('pdf');
 await page.locator('.fab .btn').click();
+// ملزمة بلغتين: يسأل أي ملف (العربية، الإنجليزية، أو الاثنين بملف واحد)
+const langPick = process.env.PDF_LANG || 'both';
+if (await page.waitForSelector('.sheet.open .pdf-langs', { timeout: 4000 }).catch(() => null)) {
+  await page.waitForTimeout(500); await shot('08a-pdf-langs');
+  await page.locator(langPick === 'both' ? '.sheet .pdf-lang:not(.ghost)' : `.sheet .pdf-lang.ghost >> nth=${langPick === 'ar' ? 0 : 1}`).click();
+  await page.waitForSelector('.pdf-langs', { state: 'detached', timeout: 5000 }).catch(() => {});
+}
 await page.waitForFunction(() => document.querySelector('.sheet a[download]') || document.querySelectorAll('.sheet .btn').length >= 2, null, { timeout: 120000 }).catch(() => {});
 await page.waitForTimeout(600); await shot('08-pdf-sheet');
 console.log('sheet:', (await page.locator('.sheet-panel').innerText()).replace(/\n+/g, ' | ').slice(0, 200));

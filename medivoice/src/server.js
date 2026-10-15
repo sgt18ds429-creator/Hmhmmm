@@ -37,6 +37,11 @@ const DEFAULT_SETTINGS = {
   groqModels: ['openai/gpt-oss-120b', 'qwen/qwen3.8-27b', 'openai/gpt-oss-20b'],
 };
 
+// ───────────────────────── التصميم (من لوحة التحكم) ─────────────────────────
+// DEFAULT_THEME و cleanTheme و themeCss من public/theme-core.js، يضمّنها tools/build.mjs هنا حرفياً
+// (نفس الملف تستورده لوحة التحكم للمعاينة، فما يراه المسؤول هو ما يُحفظ)
+/*__THEME__*/
+
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
@@ -203,7 +208,9 @@ export class MediVoiceStore extends DurableObject {
     this.sql.exec('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', key, JSON.stringify(value));
   }
   #config() {
-    return { ...DEFAULT_SETTINGS, ...(this.#setting('config', {}) || {}) };
+    const c = { ...DEFAULT_SETTINGS, ...(this.#setting('config', {}) || {}) };
+    c.theme = cleanTheme(c.theme);
+    return c;
   }
   #event(type, { code = null, ip = '', country = '', detail = '' } = {}) {
     this.sql.exec('INSERT INTO events (ts, type, code, ip, country, detail) VALUES (?, ?, ?, ?, ?, ?)', Date.now(), type, code, ip, country, String(detail).slice(0, 300));
@@ -288,6 +295,9 @@ export class MediVoiceStore extends DurableObject {
     const cfg = this.#config();
     return { support: cfg.support, build: BUILD };
   }
+
+  /** التصميم الحالي (منظَّف) لتضمينه في الصفحات */
+  theme() { return cleanTheme(this.#config().theme); }
 
   #sessionPayload(code) {
     const cfg = this.#config();
@@ -665,6 +675,7 @@ export class MediVoiceStore extends DurableObject {
     if (patch.overlapSec !== undefined) next.overlapSec = Math.min(Math.max(Number(patch.overlapSec) || 3, 0), 10);
     for (const k of ['sttModels', 'geminiModels', 'groqModels']) if (strList(patch[k])) next[k] = patch[k].slice(0, 12);
     if (Array.isArray(patch.transcribeModels)) next.transcribeModels = strList(patch.transcribeModels) ? patch.transcribeModels.slice(0, 4) : [];
+    if (patch.theme && typeof patch.theme === 'object') next.theme = cleanTheme(patch.theme);
     this.#putSetting('config', next);
     return { ok: true, settings: this.#config() };
   }
@@ -714,6 +725,42 @@ function store(env) {
 async function deviceId(request) {
   const secret = cookies(request)[DEVICE_COOKIE];
   return secret && /^[\w-]{30,80}$/.test(secret) ? sha256hex(secret) : null;
+}
+
+/**
+ * التصميم الحالي لكل صفحة HTML (يُحقن في <head>): نسخة في ذاكرة الخادم تُستعمل فوراً وتُحدَّث بالخلفية كل
+ * 20 ثانية، فلا تنتظر الصفحة قاعدة البيانات إلا أول طلب على خادم جديد.
+ */
+let themeCache = { at: 0, css: '', tag: '', mode: 'dark', refreshing: false };
+async function loadTheme(env) {
+  try {
+    const theme = await store(env).theme();
+    const css = themeCss(theme);
+    themeCache = { at: Date.now(), css, tag: (await sha256hex(css)).slice(0, 12), mode: theme.mode, refreshing: false };
+  } catch {
+    if (!themeCache.css) themeCache = { at: Date.now() - 15_000, css: themeCss(DEFAULT_THEME), tag: 'd', mode: DEFAULT_THEME.mode, refreshing: false };
+  }
+}
+async function currentTheme(env, ctx) {
+  if (!themeCache.css) await loadTheme(env);
+  else if (Date.now() - themeCache.at > 20_000 && !themeCache.refreshing) {
+    themeCache.refreshing = true;
+    const job = loadTheme(env).finally(() => { themeCache.refreshing = false; });
+    try { ctx.waitUntil(job); } catch { /* */ }
+  }
+  return themeCache;
+}
+const forgetTheme = () => { themeCache = { at: 0, css: '', tag: '', mode: 'dark', refreshing: false }; };
+
+async function serveHtml(request, asset, env, ctx) {
+  const th = await currentTheme(env, ctx);
+  const etag = `"${BUILD}.${th.tag}"`;
+  const headers = { 'content-type': asset.type, etag, 'cache-control': 'no-cache', ...SECURITY_HEADERS, 'content-security-policy': CSP };
+  if (request.headers.get('if-none-match') === etag) return new Response(null, { status: 304, headers });
+  // الوضع النهاري هو الأصل: يُكتب على <html> من الخادم حتى لا تومض الصفحة بالداكن قبل تشغيل السكربت
+  let html = asset.body.replace('</head>', () => `<style id="mv-theme">${th.css}</style>\n</head>`);
+  if (th.mode === 'light') html = html.replace(/<html\b/, '<html data-theme="light"');
+  return new Response(html, { headers });
 }
 
 function serveAsset(request, asset) {
@@ -1037,7 +1084,7 @@ async function handleApi(request, env, ctx, url) {
     }
     if (path === '/api/admin/overview' && method === 'GET') return reply(await db.adminOverview(token));
     if (path === '/api/admin/codes' && method === 'POST') return reply(await db.adminCreateCodes(token, body));
-    if (path === '/api/admin/settings' && method === 'PUT') return reply(await db.adminSaveSettings(token, body));
+    if (path === '/api/admin/settings' && method === 'PUT') { const r = await db.adminSaveSettings(token, body); if (r.ok) forgetTheme(); return reply(r); }
     if (path === '/api/admin/password' && method === 'POST') return reply(await db.adminChangePassword(token, body.current, body.next));
     const m = path.match(/^\/api\/admin\/codes\/([\w-]{8,14})(\/reset)?$/);
     if (m) {
@@ -1219,6 +1266,7 @@ export default {
       if (path === '/admin' || path === '/admin/') path = '/admin.html';
       const asset = ASSETS[path];
       if (!asset) return new Response('Not Found', { status: 404, headers: SECURITY_HEADERS });
+      if (asset.type.startsWith('text/html')) return serveHtml(request, asset, env, ctx);
       // نسخة الجهاز من هذا الإصدار صالحة: 304 لا يكشف شيئاً، فلا داعي لفحص التفعيل (طلب أقل على قاعدة البيانات)
       if (request.headers.get('if-none-match') === `"${BUILD}"`) return serveAsset(request, asset);
       if (asset.gated) {

@@ -1,6 +1,6 @@
 // run.js — تفاصيل المحاضرة، شاشة التحويل الحية، والتسجيل المباشر.
 
-import { h, icon, clear, sheet, confirm, fmtHM, fmtSize, countOf } from './ui.js';
+import { h, icon, clear, sheet, confirm, fmtHM, fmtSize, countOf, svgEl } from './ui.js';
 // المحرك (الاستماع والكتابة وقاطع الصوت) ثقيل ولا يلزم إلا عند بدء تحويل: يُحمَّل عند الحاجة حتى تفتح
 // الشاشة الرئيسية أسرع، ويُجلب مسبقاً في الخلفية بعد فتحها
 let engineJob = null;
@@ -221,8 +221,21 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
     game.update(shown, status.textContent);
   };
   const gameBtn = h('button', { class: 'btn game-btn', onclick: playGame }, icon('play'), 'العب سباق سيارات لحد ما تجهز');
+  // حلقة التقدم حول النسبة، بتدرّج الهوية
+  const RING = 2 * Math.PI * 80;
+  const ringFill = svgEl('circle', { class: 'r-fill', cx: 89, cy: 89, r: 80, 'stroke-dasharray': RING, 'stroke-dashoffset': RING });
+  const ring = h('div', { class: 'ring' },
+    svgEl('svg', { viewBox: '0 0 178 178', 'aria-hidden': 'true' },
+      svgEl('defs', {}, svgEl('linearGradient', { id: 'mv-ring-grad', x1: '0', y1: '0', x2: '1', y2: '1' },
+        svgEl('stop', { offset: '0', style: 'stop-color: var(--v1)' }),
+        svgEl('stop', { offset: '0.55', style: 'stop-color: var(--v2)' }),
+        svgEl('stop', { offset: '1', style: 'stop-color: var(--v3)' }))),
+      svgEl('circle', { class: 'r-track', cx: 89, cy: 89, r: 80 }),
+      ringFill),
+    h('div', { class: 'run-pct num' }, pct, h('small', null, '%')));
+  const paintRing = (v) => { ringFill.style.strokeDashoffset = String(RING * (1 - Math.max(0.012, v / 100))); };
   const body = h('div', { class: 'run' },
-    h('div', { class: 'run-head' }, h('div', { class: 'run-pct num' }, pct, h('small', null, '%')), status, sub),
+    h('div', { class: 'run-head' }, ring, status, sub),
     strip, stages, h('div', { class: 'row', style: { justifyContent: 'center' } }, gameBtn), live, h('div', { class: 'row', style: { justifyContent: 'center' } }, cancelBtn));
   el.append(body);
 
@@ -269,7 +282,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
   function paintPct() {
     const heard = weights.transcribe ? P.chunk.reduce((a, s) => a + (WEIGHT[s] || 0), 0) / P.total : 0;
     const value = Math.min(99, Math.round((heard * weights.transcribe + P.write * weights.write + P.extra) * 100));
-    if (value > shown) { shown = value; pct.textContent = String(value); }
+    if (value > shown) { shown = value; pct.textContent = String(value); paintRing(value); }
   }
   function setStage(k) {
     const order = stageNames.map(([n]) => n);
@@ -435,7 +448,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
   /** @param opts.mem المستند نفسه إذا تعذّر حفظه على الجهاز: يُفتح من الذاكرة حتى يُنزَّل PDF ولا يضيع */
   async function finish(doc, { mem = null } = {}) {
     const here = running && body.isConnected;
-    shown = 100; pct.textContent = '100';
+    shown = 100; pct.textContent = '100'; paintRing(100);
     status.textContent = 'الملزمة جاهزة';
     ctx.ribbon.kick(1);
     cleanup();

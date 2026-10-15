@@ -414,10 +414,11 @@ export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
     const langs = pdfLangs(doc);
     if (langs.length < 2) { then('both'); return; }
     const name = (l) => (l === 'en' ? 'English' : 'العربية');
+    const note = (l) => (l === 'en' ? 'النسخة الإنجليزية كاملة' : 'الشرح بالعربي والمصطلحات الطبية بالإنجليزي');
     const ordered = langs.includes('ar') ? ['ar', ...langs.filter((l) => l !== 'ar')] : langs;
     const s = sheet({ title: 'أي ملف تريد؟', body: h('div', { class: 'stack pdf-langs' },
-      ...ordered.map((l) => h('button', { class: 'btn ghost wide pdf-lang', onclick: () => { s.close(); then(l); } }, h('b', { dir: l === 'en' ? 'ltr' : 'rtl' }, name(l)))),
-      h('button', { class: 'btn wide pdf-lang', onclick: () => { s.close(); then('both'); } }, h('b', null, 'العربية + English'))) });
+      ...ordered.map((l) => h('button', { class: 'btn ghost wide pdf-lang', onclick: () => { s.close(); then(l); } }, h('b', { dir: l === 'en' ? 'ltr' : 'rtl' }, name(l)), h('small', null, note(l)))),
+      h('button', { class: 'btn wide pdf-lang', onclick: () => { s.close(); then('both'); } }, h('b', null, 'العربية + English'), h('small', null, 'النسختين بملف واحد'))) });
   }
 
   // صور الملزمة تُرسل داخل المستند، فنصغّر الكبير منها حتى يبقى الطلب خفيفاً على الخادم

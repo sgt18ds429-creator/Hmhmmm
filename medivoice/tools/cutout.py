@@ -84,9 +84,11 @@ def main():
     owner = lab[iy, ix]
     is_mic = np.isin(owner, list(mid))
 
-    save(to_image(F, a, box), 'mark-color.webp', lossless=True, method=6)
-    save(to_image(F, a * is_mic, box), 'mark-color-mic.webp', lossless=True, method=6)
-    save(to_image(F, a * ~is_mic, box), 'mark-color-bars.webp', lossless=True, method=6)
+    # ألوان بجودة 95 (فرق غير مرئي) وشفافية بلا فقد إطلاقاً: نصف الحجم، فتظهر الافتتاحية أسرع
+    webp = dict(quality=95, alpha_quality=100, method=6)
+    save(to_image(F, a, box), 'mark-color.webp', **webp)
+    save(to_image(F, a * is_mic, box), 'mark-color-mic.webp', **webp)
+    save(to_image(F, a * ~is_mic, box), 'mark-color-bars.webp', **webp)
 
     # بتدرّج الهوية (135°: #4a2fe0 → #8521d5 → #c923c1) للصفحات البيضاء
     h, w = a.shape

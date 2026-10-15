@@ -2,9 +2,14 @@
 // بعد التفعيل يُحمَّل التطبيق من /app/main.js (محمي ولا يُخدَّم لغير المفعّلين).
 
 import { logoEl } from '/brand.js';
+import { applyTheme, design, motionOn, themeButton, ripples } from '/theme.js';
 
+// الوضع (نهاري/ليلي) وإعدادات المسؤول قبل أي رسم
+applyTheme();
+ripples();
+const DESIGN = design();
 const $ = (s, r = document) => r.querySelector(s);
-const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const reduced = !motionOn();
 
 // ───────────── شريط الصوت ─────────────
 // خط متعرج بزاوية ثابتة (ميل شيفرونات اللوكو)، يتغير ارتفاع قممه مثل موجة صوت.
@@ -18,6 +23,9 @@ class Ribbon {
     this.last = 0;
     this.pulse = 0;
     this.running = false;
+    this.enabled = DESIGN.ribbon; // المسؤول يقدر يطفيه من لوحة التحكم
+    this.recolor();
+    document.addEventListener('mv-theme', () => this.recolor());
     addEventListener('resize', () => this.resize());
     document.addEventListener('visibilitychange', () => (document.hidden ? this.stop() : this.start()));
     this.resize();
@@ -29,8 +37,16 @@ class Ribbon {
     this.x.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.draw();
   }
+  /** ألوان الهوية من متغيرات التصميم (تتغير مع الوضع ومع ألوان لوحة التحكم) */
+  recolor() {
+    const cs = getComputedStyle(document.documentElement);
+    const v = (n, d) => cs.getPropertyValue(n).trim() || d;
+    const light = document.documentElement.dataset.theme === 'light';
+    this.colors = { v1: v('--v1', '#5433ec'), v2: v('--v2', '#8521d5'), v3: v('--v3', '#c923c1'), thin: light ? v('--accent', '#5433ec') : '#e2d6ff', light };
+    if (this.w) this.draw();
+  }
   /** y: موضع عمودي (0..1)، energy: ارتفاع الموجة (0..1)، alpha: الظهور */
-  set(o) { Object.assign(this.to, o); if (!this.running) this.start(); }
+  set(o) { Object.assign(this.to, o); if (!this.enabled) this.to.alpha = 0; if (!this.running) this.start(); }
   kick(amount = 0.5) { this.pulse = Math.min(1, this.pulse + amount); }
   start() { if (this.running || document.hidden || this.paused) return; this.running = true; this.last = performance.now(); requestAnimationFrame((n) => this.frame(n)); }
   stop() { this.running = false; }
@@ -87,11 +103,12 @@ class Ribbon {
     const cy = h * this.cur.y;
     const e = this.cur.energy * (1 + this.pulse * 0.9);
     const base = Math.min(w, 900) * 0.085 * e;
+    const { v1, v2, v3, thin, light } = this.colors;
     const grad = g.createLinearGradient(0, 0, w, 0);
-    grad.addColorStop(0, '#5433ec'); grad.addColorStop(0.5, '#8521d5'); grad.addColorStop(1, '#c923c1');
-    g.globalAlpha = 0.32 * a; this.layer(cy + 10, base * 1.7, 0.32, 1.7, Math.max(10, w * 0.014), grad);
-    g.globalAlpha = 0.85 * a; this.layer(cy, base, 0.5, 0, Math.max(5, w * 0.0075), grad);
-    g.globalAlpha = 0.55 * a; this.layer(cy - 4, base * 0.55, 0.78, 4.2, 1.5, '#d9c8ff');
+    grad.addColorStop(0, v1); grad.addColorStop(0.5, v2); grad.addColorStop(1, v3);
+    g.globalAlpha = (light ? 0.2 : 0.32) * a; this.layer(cy + 10, base * 1.7, 0.32, 1.7, Math.max(10, w * 0.014), grad);
+    g.globalAlpha = (light ? 0.75 : 0.85) * a; this.layer(cy, base, 0.5, 0, Math.max(5, w * 0.0075), grad);
+    g.globalAlpha = (light ? 0.45 : 0.55) * a; this.layer(cy - 4, base * 0.55, 0.78, 4.2, 1.5, thin);
     g.globalAlpha = 1;
   }
 }
@@ -217,6 +234,9 @@ function setupLock(info) {
     input.focus();
   });
 
+  // زر النهاري/الليلي بزاوية الشاشة (إذا المسؤول سامح بالتبديل)
+  if (DESIGN.toggle) $('#lock-corner').append(themeButton());
+
   lock.hidden = false;
   MV.ribbon.set({ y: lockRibbonY(), energy: 0.8, alpha: 1 });
   addEventListener('resize', () => { if (!lock.hidden) MV.ribbon.set({ y: lockRibbonY() }); });
@@ -285,22 +305,66 @@ async function openApp(session, fromLock) {
     return;
   }
   appEl.hidden = false;
+  // تحت الافتتاحية: الشاشة تُبنى وحركات دخولها متوقفة عند أول إطار، وتبدأ لحظة انكشافها
+  if (!fromLock) appEl.classList.add('hold');
   await mod.start(MV, appEl);
   if (fromLock) await unveil($('#lock'));
   else $('#lock').hidden = true;
 }
 
 // ───────────── الإقلاع ─────────────
+/**
+ * خروج الافتتاحية: الموقع ينكشف بدائرة تتسع من الشعار، والشعار نفسه يطير إلى مكانه في الشاشة التالية
+ * (شعار القفل، أو شعار الشريط العلوي) — View Transitions. بدونها: الشاشة البنفسجية تنكمش دائرةً وتختفي.
+ */
+async function leaveIntro(intro, dest) {
+  const root = document.documentElement;
+  const release = () => $('#app').classList.remove('hold');
+  const meta = document.querySelector('meta[name="theme-color"]');
+  const restoreMeta = () => { if (meta) meta.content = getComputedStyle(document.body).backgroundColor; };
+  const mark = intro.querySelector('.intro-mark');
+  if (!reduced && typeof document.startViewTransition === 'function' && mark) {
+    const r = mark.getBoundingClientRect();
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    root.style.setProperty('--vt-x', `${x}px`);
+    root.style.setProperty('--vt-y', `${y}px`);
+    root.style.setProperty('--vt-r', `${Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y))}px`);
+    mark.style.viewTransitionName = 'mv-logo';
+    root.classList.add('vt-intro');
+    try {
+      const t = document.startViewTransition(() => {
+        intro.remove();
+        restoreMeta();
+        release();
+        if (dest) dest.style.viewTransitionName = 'mv-logo';
+      });
+      await t.finished.catch(() => {});
+      return;
+    } catch { /* المتصفح رفض الانتقال: الطريقة العادية تحت */ } finally {
+      root.classList.remove('vt-intro');
+      if (dest) dest.style.viewTransitionName = '';
+    }
+  }
+  restoreMeta();
+  release();
+  intro.classList.add('out');
+  setTimeout(() => intro.remove(), reduced ? 0 : 760);
+}
+
 (async function boot() {
   const intro = $('#intro');
-  intro.querySelector('.intro-tile').append(logoEl());
   $('#lock .brand-tile').append(logoEl());
-  // الافتتاحية كاملة (2.3 ثانية) أول فتح؛ وإذا فُتح الموقع خلال آخر 12 ساعة فنسخة قصيرة (اللوكو وحلقته الأولى)
+  // شريط المتصفح بلون الافتتاحية أثناءها
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = getComputedStyle(document.documentElement).getPropertyValue('--splash-1').trim() || '#3a0ca3';
+  // الافتتاحية بمدتها الكاملة أول فتح (حسب لوحة التحكم)؛ وإذا فُتح الموقع خلال آخر 12 ساعة فنسخة أقصر
   let lastIntro = 0;
   try { lastIntro = Number(localStorage.getItem('mv-intro-at')) || 0; } catch { /* تخزين ممنوع */ }
   const quick = Date.now() - lastIntro < 12 * 3600_000;
   if (!quick) try { localStorage.setItem('mv-intro-at', String(Date.now())); } catch { /* تخزين ممنوع */ }
-  const introDone = sleep(reduced ? 0 : quick ? 1150 : 2300);
+  const ms = quick ? Math.min(1250, DESIGN.splashMs) : DESIGN.splashMs;
+  intro.style.setProperty('--k', String(Math.min(1, ms / 2300))); // الحركات الداخلية تتناسب مع المدة
+  const introDone = sleep(reduced ? 350 : ms);
   const sessionReq = api(`/api/session?fp=${encodeURIComponent(JSON.stringify(fingerprint()))}`);
   // الكود مفعّل: التطبيق يُحمَّل بالتوازي مع الافتتاحية
   sessionReq.then((r) => { if (r.data?.active) preloadApp(r.data); }).catch(() => {});
@@ -309,10 +373,9 @@ async function openApp(session, fromLock) {
   const data = s.data || { active: false, reason: s.status === 0 ? 'network' : 'none' };
   if (data.active) {
     await openApp(data, false);
-    intro.classList.add('out');
+    await leaveIntro(intro, $('#app .bar .tile'));
   } else {
     setupLock(data);
-    intro.classList.add('out');
+    await leaveIntro(intro, $('#lock .brand-tile'));
   }
-  setTimeout(() => intro.remove(), 700);
 })();

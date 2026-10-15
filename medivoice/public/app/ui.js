@@ -9,7 +9,7 @@ export function h(tag, props, ...kids) {
     for (const [k, v] of Object.entries(props)) {
       if (v === null || v === undefined || v === false) continue;
       if (k === 'class') el.className = v;
-      else if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
+      else if (k === 'style' && typeof v === 'object') { for (const [sk, sv] of Object.entries(v)) { if (sk.startsWith('--')) el.style.setProperty(sk, sv); else el.style[sk] = sv; } }
       else if (k === 'dataset') Object.assign(el.dataset, v);
       else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
       else if (k in el && k !== 'list' && k !== 'form') { try { el[k] = v; } catch { el.setAttribute(k, v); } }
@@ -68,6 +68,11 @@ const ICONS = {
   shield: 'M12 3 5 6v5.500c0 4.300 2.900 7.700 7 9 4.100-1.300 7-4.700 7-9V6l-7-3Z',
   calendar: 'M5 6h14v14H5zM5 10h14M9 3.500v4M15 3.500v4',
   lock: 'M7 11V8a5 5 0 0 1 10 0v3M6 11h12v9H6z',
+  palette: 'M12 3a9 9 0 0 0 0 18c1.400 0 2-.800 2-1.800 0-1.300-1-1.700-1-2.900 0-1 .800-1.800 1.800-1.800H17a4 4 0 0 0 4-4C21 6.300 17 3 12 3ZM7.500 11.500v.010M10 7.500v.010M14.500 7.500v.010',
+  sun: 'M12 3.500v1.600M12 18.900v1.600M3.500 12h1.600M18.900 12h1.600M6 6l1.150 1.150M16.850 16.850 18 18M6 18l1.150-1.150M16.850 7.150 18 6M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z',
+  moon: 'M19.600 14.400A7.900 7.900 0 0 1 9.600 4.400a7.900 7.900 0 1 0 10 10Z',
+  sparkle: 'M12 3l1.800 5.200L19 10l-5.200 1.800L12 17l-1.800-5.200L5 10l5.200-1.800L12 3ZM19 16l.700 1.800L21.500 18.500l-1.800.700L19 21l-.700-1.800L16.500 18.500l1.800-.700L19 16Z',
+  undo: 'M9 14 4 9l5-5M4 9h10.500a5.500 5.500 0 0 1 0 11H11',
 };
 
 export function icon(name, cls = 'icon') {
