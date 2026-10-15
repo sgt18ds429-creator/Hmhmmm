@@ -2,12 +2,16 @@
 // أو تُطبع مباشرة من جهاز المستخدم. كل نص يأتي من المستخدم أو من النماذج يُهرَّب قبل إدراجه.
 //
 // الهوية من اللوكو: تدرّج بنفسجي → أرجواني، مربعات بزوايا مدوّرة، أعمدة الصوت، وخط El Messiri للعناوين.
-// الملزمة بلغتين: جزء بلغة المحاضرة ثم جزء مترجم (doc.alt)، وبعدهما الأسئلة والقاموس والمصادر.
+// الملزمة بلغتين: جزء بلغة المحاضرة ثم جزء مترجم (doc.alt)، وبعدهما الأسئلة والقاموس والمصادر. ويمكن تنزيل
+// كل لغة وحدها (opts.lang).
+//
+// تنسيق «آمن للـ PDF»: لا ظلال مموّهة ولا text-shadow ولا filter ولا أقنعة CSS ولا تدرّجات بألوان شفافة.
+// Chrome يطبعها كطبقات بقناع شفافية (SMask)، وعارض PDF في iPhone يرسمها مربعات داكنة فوق النص.
+// اختبار test/pdf-safe.test.mjs يمنع رجوعها.
 
 import { inlineRuns, blockText, stripMarkup, isNotes, MODE_LABEL } from './text.js';
 import { creditLine } from './images.js';
 import { pagedRuntime } from './paged.js';
-import { markHtml, MARK_CSS } from '../brand.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const cssStr = (s) => String(s ?? '').replace(/[\\"\n\r]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -24,6 +28,18 @@ export function fmtDuration(sec) {
   if (h) return `${h} س ${m} د`;
   if (m) return `${m} دقيقة`;
   return `${sec} ثانية`;
+}
+const MONTHS_EN = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+function fmtDateEn(iso) {
+  const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${+m[3]} ${MONTHS_EN[+m[2] - 1]} ${m[1]}` : '';
+}
+function fmtDurationEn(sec) {
+  sec = Math.round(sec || 0);
+  const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60);
+  if (h) return `${h} h ${m} min`;
+  if (m) return `${m} min`;
+  return `${sec} s`;
 }
 
 const arabicRatio = (s) => {
@@ -75,50 +91,47 @@ body { margin: 0; font-family: 'IBM Plex Sans Arabic', 'El Messiri', 'IBM Plex S
 .nw { white-space: nowrap; }
 .en { font-family: 'IBM Plex Sans', 'IBM Plex Sans Arabic', sans-serif; line-height: 1.75; }
 .en .t { color: #5b21b6; }
-${MARK_CSS}
 
-/* ── الغلاف ── */
+/* ── الغلاف: كل طبقة معتمة أو بشفافية ثابتة فقط (لا ظلال ولا أقنعة) ── */
 .cover { position: relative; width: 210mm; height: 297mm; overflow: hidden; color: #fff; background: ${GRAD}; break-after: page; page-break-after: always; }
-.cover .glow { position: absolute; inset: 0; background:
-  radial-gradient(60% 45% at 85% 12%, rgba(255,255,255,.18), transparent 70%),
-  radial-gradient(70% 50% at 10% 95%, rgba(255,140,240,.28), transparent 70%),
-  radial-gradient(45% 35% at 50% 55%, rgba(255,255,255,.07), transparent 70%); }
-.cover .ghost { position: absolute; width: 165mm; inset-inline-end: -46mm; bottom: -30mm; opacity: 1; }
-.cover .brand { position: absolute; top: 18mm; inset-inline-start: 18mm; display: flex; align-items: center; gap: 4mm; }
-.cover .brand .tile { width: 15mm; height: 15mm; border-radius: 3.4mm; box-shadow: 0 5mm 12mm -3mm rgba(0,0,0,.5); }
-.cover .brand .tile img { display: block; width: 100%; height: 100%; border-radius: inherit; }
+.cover .ghost { position: absolute; width: 150mm; inset-inline-end: -38mm; bottom: -24mm; opacity: .08; }
+.cover .ghost img { display: block; width: 100%; height: auto; }
+.cover .brand { position: absolute; top: 18mm; inset-inline-start: 18mm; display: flex; align-items: center; gap: 3.4mm; }
+.cover .brand .mark { width: 15mm; height: 15mm; display: grid; place-items: center; }
+.cover .brand .mark img { display: block; max-width: 100%; max-height: 100%; }
 .cover .brand b { display: block; font-family: 'El Messiri', 'IBM Plex Sans Arabic', sans-serif; font-weight: 700; font-size: 19pt; line-height: 1; }
-.cover .brand span { display: block; font-family: 'IBM Plex Sans', sans-serif; font-size: 7.6pt; letter-spacing: .22em; opacity: .8; margin-top: 1.6mm; }
-.cover .kind { position: absolute; top: 21mm; inset-inline-end: 18mm; font: 600 9.4pt/1 'IBM Plex Sans', sans-serif; letter-spacing: .04em; padding: 2.6mm 5mm; border-radius: 99mm; background: rgba(255,255,255,.16); border: .3mm solid rgba(255,255,255,.35); }
+.cover .brand span { display: block; font-family: 'IBM Plex Sans', sans-serif; font-size: 7.6pt; letter-spacing: .22em; color: #e4d6ff; margin-top: 1.6mm; }
+.cover .kind { position: absolute; top: 21mm; inset-inline-end: 18mm; font: 600 9.4pt/1 'IBM Plex Sans', sans-serif; letter-spacing: .04em; padding: 2.6mm 5mm; border-radius: 99mm; background: #fff; color: #4a2fe0; }
 .cover .head { position: absolute; inset-inline: 18mm; top: 78mm; }
 .cover .subject { font-family: 'El Messiri', sans-serif; font-size: 13pt; font-weight: 600; color: #efe6ff; margin-bottom: 4mm; display: flex; align-items: center; gap: 3mm; }
-.cover .subject::before { content: ''; width: 9mm; height: 1.1mm; border-radius: 1mm; background: #fff; opacity: .85; }
-.cover h1 { margin: 0; font-family: 'El Messiri', 'IBM Plex Sans Arabic', 'IBM Plex Sans', sans-serif; font-weight: 700; line-height: 1.45; text-shadow: 0 2mm 8mm rgba(0,0,0,.18); }
+.cover .subject::before { content: ''; width: 9mm; height: 1.1mm; border-radius: 1mm; background: #fff; }
+.cover h1 { margin: 0; font-family: 'El Messiri', 'IBM Plex Sans Arabic', 'IBM Plex Sans', sans-serif; font-weight: 700; line-height: 1.45; color: #fff; }
 .cover h1 .t { color: #fff; font-weight: 700; }
-.cover .alt-title { margin-top: 5mm; font-family: 'IBM Plex Sans', 'IBM Plex Sans Arabic', sans-serif; font-size: 14pt; font-weight: 500; line-height: 1.5; color: #f1e9ff; opacity: .92; }
+.cover .alt-title { margin-top: 5mm; font-family: 'IBM Plex Sans', 'IBM Plex Sans Arabic', sans-serif; font-size: 14pt; font-weight: 500; line-height: 1.5; color: #f1e9ff; }
 .cover .alt-title .t { color: #fff; }
 .cover .bars { position: absolute; inset-inline: 18mm; top: 182mm; height: 22mm; display: flex; align-items: center; justify-content: space-between; gap: 1mm; }
 .cover .bars i { display: block; width: 2.1mm; border-radius: 2mm; background: #fff; }
 .cover .meta { position: absolute; inset-inline: 18mm; bottom: 40mm; display: grid; grid-template-columns: repeat(3, 1fr); gap: 4mm; }
-.cover .meta div { padding: 3.4mm 4.4mm 3mm; border-radius: 3.4mm; background: rgba(255,255,255,.13); border: .3mm solid rgba(255,255,255,.28); }
-.cover .meta small { display: block; font-size: 8pt; color: #e6dbff; margin-bottom: .6mm; }
-.cover .meta b { display: block; font-size: 12pt; font-weight: 600; line-height: 1.4; }
-.cover .audit { position: absolute; inset-inline-start: 18mm; bottom: 27mm; display: inline-flex; align-items: center; gap: 2mm; font-size: 8.6pt; color: #fff; padding: 1.4mm 4mm; background: rgba(0,0,0,.18); border-radius: 99mm; }
-.cover .audit i { width: 2.6mm; height: 2.6mm; border-radius: 50%; background: #7af0c0; box-shadow: 0 0 3mm #7af0c0; }
-.cover .foot { position: absolute; inset-inline: 18mm; bottom: 15mm; font-size: 8pt; color: #e6dbff; opacity: .9; }
+.cover .meta div { padding: 3.2mm 4.4mm 2.8mm; border-radius: 3.4mm; background: #fff; color: #2a1a4d; }
+.cover .meta small { display: block; font-size: 8pt; color: #7c5fc4; margin-bottom: .6mm; }
+.cover .meta b { display: block; font-size: 12pt; font-weight: 700; line-height: 1.4; color: #2a1a4d; }
+.cover .audit { position: absolute; inset-inline-start: 18mm; bottom: 27mm; display: inline-flex; align-items: center; gap: 2.2mm; font-size: 8.6pt; font-weight: 600; color: #2a1a4d; padding: 1.4mm 4.2mm 1.4mm 4mm; background: #fff; border-radius: 99mm; }
+.cover .audit i { flex: none; width: 3.4mm; height: 3.4mm; border-radius: 50%; background: #12b886; position: relative; }
+.cover .audit i::after { content: ''; position: absolute; left: 1.2mm; top: .7mm; width: .9mm; height: 1.6mm; border: solid #fff; border-width: 0 .45mm .45mm 0; transform: rotate(45deg); }
+.cover .foot { position: absolute; inset-inline: 18mm; bottom: 15mm; font-size: 8pt; color: #eadfff; }
 
 /* ── فاصل اللغة ── */
 .part { break-before: page; page-break-before: always; display: flex; align-items: center; justify-content: space-between; gap: 6mm; margin: 0 0 8mm; padding: 6mm 7mm; border-radius: 4.2mm; background: ${GRAD}; color: #fff; break-inside: avoid; page-break-inside: avoid; }
 .part b { display: block; font-family: 'El Messiri', 'IBM Plex Sans', sans-serif; font-size: 17pt; font-weight: 700; line-height: 1.3; }
-.part span { display: block; font-size: 9.6pt; opacity: .9; margin-top: 1mm; }
+.part span { display: block; font-size: 9.6pt; color: #f3ecff; margin-top: 1mm; }
 .part .t { color: #fff; font-weight: 600; }
 .part .pbars { display: flex; align-items: center; gap: 1.1mm; flex: none; }
-.part .pbars i { display: block; width: 1.7mm; border-radius: 2mm; background: #fff; opacity: .9; }
+.part .pbars i { display: block; width: 1.7mm; border-radius: 2mm; background: #fff; }
 
 /* ── المتن ── */
 main { padding: 0; }
 h2 { font-family: 'El Messiri', 'IBM Plex Sans Arabic', 'IBM Plex Sans', sans-serif; font-weight: 700; font-size: 16pt; line-height: 1.45; color: #2a1a4d; margin: 9mm 0 3.5mm; padding-bottom: 2.2mm; border-bottom: .3mm solid #e9e2fb; break-after: avoid; page-break-after: avoid; display: flex; align-items: flex-start; gap: 3.4mm; }
-h2 .num { flex: none; width: 8.6mm; height: 8.6mm; border-radius: 2.4mm; background: ${GRAD}; color: #fff; font: 700 10.5pt/8.6mm 'El Messiri', 'IBM Plex Sans', sans-serif; text-align: center; margin-top: 1mm; box-shadow: 0 1.5mm 4mm -1.5mm rgba(74,47,224,.6); }
+h2 .num { flex: none; width: 8.6mm; height: 8.6mm; border-radius: 2.4mm; background: ${GRAD}; color: #fff; font: 700 10.5pt/8.6mm 'El Messiri', 'IBM Plex Sans', sans-serif; text-align: center; margin-top: 1mm; }
 h2 .hx { flex: 1; min-width: 0; }
 h2 .t { color: inherit; }
 h2.plain::before { content: ''; flex: none; width: 4.6mm; height: 4.2mm; margin-top: 2.6mm; background: ${GRAD}; clip-path: polygon(0 0, 50% 55%, 100% 0, 100% 45%, 50% 100%, 0 45%); }
@@ -136,7 +149,7 @@ ol > li::before { content: counter(n); position: absolute; inset-inline-start: 0
 .note { margin: 4.4mm 0 5mm; padding: 3mm 4.6mm 3mm 4.4mm; background: #f5f0ff; border-inline-start: 1.3mm solid #c923c1; border-start-end-radius: 3mm; border-end-end-radius: 3mm; break-inside: avoid; }
 .note b.tag { display: inline-block; margin-inline-end: 2.4mm; font-size: 8.4pt; font-weight: 700; color: #fff; background: ${GRAD}; padding: 0 2.8mm; line-height: 1.8; border-radius: 99mm; vertical-align: .3mm; }
 figure { margin: 6mm 0 7mm; break-inside: avoid; page-break-inside: avoid; text-align: center; }
-figure .frame { display: inline-block; max-width: 100%; padding: 2.4mm; border: .3mm solid #e3dbf7; border-radius: 3.2mm; background: #fff; box-shadow: 0 2.5mm 7mm -2mm rgba(74,47,224,.18); }
+figure .frame { display: inline-block; max-width: 100%; padding: 2.4mm; border: .35mm solid #ddd2f6; border-radius: 3.2mm; background: #fff; }
 figure img { display: block; max-width: 100%; max-height: 98mm; height: auto; margin: 0 auto; border-radius: 1.6mm; }
 figcaption { margin-top: 2.8mm; font-size: 9.6pt; line-height: 1.7; color: #2f2550; }
 figcaption b { display: inline-block; color: #fff; background: ${GRAD}; font: 700 8pt/1.9 'El Messiri', 'IBM Plex Sans', sans-serif; padding: 0 2.8mm; border-radius: 99mm; margin-inline-end: 2mm; vertical-align: .4mm; }
@@ -152,6 +165,7 @@ ul.box { margin: 2mm 0 5mm; padding: 4mm 5mm 2.4mm; border-radius: 3.4mm; border
 table.tbl, table.answers, table.gloss { width: 100%; border-collapse: separate; border-spacing: 0; border: .3mm solid #e3dbf7; border-radius: 3mm; overflow: hidden; margin: 2mm 0 5mm; }
 .tbl { font-size: 10pt; line-height: 1.7; }
 .tbl th, .answers th, .gloss th { text-align: start; font-weight: 700; color: #fff; background: ${GRAD}; padding: 2mm 2.8mm; vertical-align: bottom; font-size: 9.6pt; }
+th .t, .en th .t { color: #fff; }
 .tbl td { padding: 1.8mm 2.8mm; vertical-align: top; border-bottom: .25mm solid #ebe5fa; overflow-wrap: anywhere; }
 .tbl tr, .answers tr, .gloss tr { break-inside: avoid; page-break-inside: avoid; }
 .tbl tbody tr:nth-child(even) td, .gloss tbody tr:nth-child(even) td, .answers tbody tr:nth-child(even) td { background: #faf7ff; }
@@ -176,10 +190,10 @@ table.tbl, table.answers, table.gloss { width: 100%; border-collapse: separate; 
 .pg { position: relative; width: 210mm; height: 296mm; overflow: hidden; display: grid; grid-template-rows: 22mm minmax(0, 1fr) 19mm; padding: 0 17mm; background: #fff; break-after: page; page-break-after: always; break-inside: avoid; page-break-inside: avoid; }
 .pg:last-of-type { break-after: auto; page-break-after: auto; }
 .pg-head { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 10mm; padding: 8mm 0 0; font-size: 8.2pt; line-height: 1.5; white-space: nowrap; }
-.pg-head::after { content: ''; position: absolute; inset-inline: 0; bottom: 3.6mm; height: .45mm; border-radius: 1mm; background: ${GRAD}; opacity: .85; }
+.pg-head::after { content: ''; position: absolute; inset-inline: 0; bottom: 3.6mm; height: .45mm; border-radius: 1mm; background: ${GRAD}; }
 .pg-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: #7c6ca3; font-weight: 500; }
 .pg-brand { flex: none; display: flex; align-items: center; gap: 2mm; color: #5b21b6; font-family: 'El Messiri', sans-serif; font-weight: 700; font-size: 9.4pt; }
-.pg-brand img { width: 5.6mm; height: 5.6mm; border-radius: 1.3mm; }
+.pg-brand img { width: 5.6mm; height: 5.6mm; object-fit: contain; }
 .pg-body { min-height: 0; padding-top: 1mm; }
 .pg-body > :first-child { margin-top: 0 !important; }
 .pg-body > .section-break, .pg-body > .part { break-before: auto; page-break-before: auto; }
@@ -207,11 +221,40 @@ const KEYPOINT_HEADINGS = new Set(['أهم النقاط للمراجعة', 'Key 
 const MCQ_HEADINGS = new Set(['أسئلة اختيار من متعدد للمراجعة', 'Self-assessment MCQs']);
 const L = ['a', 'b', 'c', 'd'];
 
+/** اللغات المتاحة للتنزيل: لغة الملزمة، ولغة الترجمة إن وُجدت. */
+export function pdfLangs(doc) {
+  const main = mainLangOf(doc);
+  const alt = isNotes(doc.meta?.mode) && doc.alt?.blocks?.length ? doc.alt.lang : null;
+  return alt && alt !== main ? [main, alt] : [main];
+}
+const mainLangOf = (doc) => doc.lang || (dirOf((doc.blocks || []).filter((b) => b.t !== 'fig').map(blockText).join(' ')) === 'ltr' ? 'en' : 'ar');
+
+/** نصوص الغلاف والأقسام الثابتة بلغة الملف */
+const LABELS = {
+  ar: {
+    subject: 'المادة', lecturer: 'التدريسي', date: 'التاريخ', duration: 'مدة التسجيل', words: 'عدد الكلمات', terms: 'المصطلحات',
+    audit: (a, g) => `${a ? 'روجعت كاملة مقابل التسجيل' : ''}${a && g ? ' وفُحصت كل صفحاتها' : g ? 'فُحصت كل صفحاتها' : ''} قبل التسليم`,
+    foot: (notes) => (notes ? 'شرح مكتوب آلياً من تسجيل المحاضرة. راجعه مع المحاضرة الأصلية قبل الاعتماد عليه.' : 'نص مفرّغ آلياً من تسجيل صوتي. راجعه مع المحاضرة الأصلية قبل الاعتماد عليه.'),
+    gloss: 'قاموس المصطلحات', gTerm: 'المصطلح', gAr: 'بالعربية', gDef: 'التعريف', sources: 'مصادر الصور',
+    endnote: (notes) => `أُعدّت هذه الملزمة بواسطة ميدي فويز من تسجيل صوتي للمحاضرة. ${notes ? 'كتابة الشرح والترجمة' : 'التفريغ'} والقاموس واختيار الصور تمت آلياً وقد تحتوي أخطاء؛ المرجع النهائي هو المحاضر والمصادر المعتمدة.`,
+    date_: fmtDate, dur_: fmtDuration, tag: 'AR',
+  },
+  en: {
+    subject: 'Subject', lecturer: 'Lecturer', date: 'Date', duration: 'Recording', words: 'Words', terms: 'Terms',
+    audit: (a, g) => `${a ? 'Fully reviewed against the recording' : ''}${a && g ? ' and every page checked' : g ? 'Every page checked' : ''} before delivery`,
+    foot: (notes) => (notes ? 'Notes written automatically from the lecture recording. Review them against the original lecture before relying on them.' : 'Text transcribed automatically from an audio recording. Review it against the original lecture before relying on it.'),
+    gloss: 'Glossary of terms', gTerm: 'Term', gAr: 'Arabic', gDef: 'Definition', sources: 'Image sources',
+    endnote: (notes) => `This booklet was prepared by MediVoice from an audio recording of the lecture. ${notes ? 'The notes, translation' : 'The transcript'}, glossary and image selection were produced automatically and may contain errors; the lecturer and approved references remain the final authority.`,
+    date_: fmtDateEn, dur_: fmtDurationEn, tag: 'EN',
+  },
+};
+
 /**
  * @param doc المستند (meta, blocks, alt, terms, duration, stats)
  * @param opts.paged  true عند التوليد على الخادم: يُضاف سكربت يبني صفحات ثابتة بترويسة وأرقام
  * @param opts.images خريطة (معرّف الصورة ← dataUrl) لصور مصغّرة بدل الأصلية
- * @param opts.brand  { logo, mark, mic } روابط (data:) لأصول الهوية
+ * @param opts.brand  { logo, logoSmall, mark, cover, head } روابط (data:) لأصول الهوية
+ * @param opts.lang   'both' (الافتراضي: اللغتان) أو رمز لغة واحدة ('ar' / 'en') لملف بتلك اللغة وحدها
  * @param opts.screen true لمعاينة الشاشة
  */
 export function buildPdfHtml(doc, opts = {}) {
@@ -225,10 +268,17 @@ export function buildPdfHtml(doc, opts = {}) {
  */
 export function buildPdfParts(doc, opts = {}) {
   const meta = doc.meta || {};
-  const title = String(meta.title || 'محاضرة');
   const notes = isNotes(meta.mode);
-  const mainLang = doc.lang || (dirOf(doc.blocks.filter((b) => b.t !== 'fig').map(blockText).join(' ')) === 'ltr' ? 'en' : 'ar');
-  const dir = mainLang === 'en' ? 'ltr' : 'rtl';
+  const mainLang = mainLangOf(doc);
+  const alt = notes && doc.alt?.blocks?.length ? doc.alt : null;
+  // ملف بلغة واحدة: الملزمة الأصلية وحدها، أو الترجمة وحدها
+  const only = opts.lang && opts.lang !== 'both' ? opts.lang : null;
+  const altOnly = !!alt && only === alt.lang && only !== mainLang;
+  const both = !!alt && !only;
+  const fileLang = altOnly ? alt.lang : mainLang;
+  const T = LABELS[fileLang === 'en' ? 'en' : 'ar'];
+  const title = String((altOnly ? alt.title : '') || meta.title || (fileLang === 'en' ? 'Lecture' : 'محاضرة'));
+  const dir = fileLang === 'en' ? 'ltr' : 'rtl';
   const plainTitle = stripMarkup(title);
   const titleSize = plainTitle.length <= 28 ? 36 : plainTitle.length <= 56 ? 29 : plainTitle.length <= 90 ? 24 : 20;
   const brand = opts.brand || {};
@@ -237,11 +287,8 @@ export function buildPdfParts(doc, opts = {}) {
 
   const sources = [];
   const seenSources = new Set();
-  const answers = [];
-  const mcqParts = [];
-  let qNo = 0;
 
-  /** يحوّل كتل جزء واحد (لغة واحدة) إلى HTML. الأسئلة تُجمع لتُعرض مرة واحدة في آخر الملزمة. */
+  /** يحوّل كتل جزء واحد (لغة واحدة) إلى HTML. الأسئلة تُعرض مرة واحدة في آخر الملزمة. */
   function renderPart(blocks, lang) {
     const en = lang === 'en';
     const cls = en ? ' class="en"' : '';
@@ -262,12 +309,10 @@ export function buildPdfParts(doc, opts = {}) {
         parts.push(`<${b.t}${b.box ? ` class="box${en ? ' en' : ''}"` : cls}${from} dir="${dirOf(b.items.join(' '))}">${b.items.map((i) => `<li>${inlineHtml(i)}</li>`).join('')}</${b.t}>`);
       } else if (b.t === 'table' && b.rows?.length) {
         const cols = b.head.length;
-        const row = (cells, tag) => `<tr>${Array.from({ length: cols }, (_, c) => `<${tag} dir="${dirOf(cells[c] || '')}">${inlineHtml(cells[c] || '')}</${tag}>`).join('')}</tr>`;
+        // خلية مصطلح فقط (مثل [[PA view]]) تتبع اتجاه لغتها، لا الاتجاه العربي الافتراضي
+        const cellDir = (t) => (stripMarkup(String(t).replace(/\[\[[^\]]*\]\]/g, '')).trim() ? dirOf(t) : en ? 'ltr' : 'rtl');
+        const row = (cells, tag) => `<tr>${Array.from({ length: cols }, (_, c) => `<${tag} dir="${cellDir(cells[c] || '')}">${inlineHtml(cells[c] || '')}</${tag}>`).join('')}</tr>`;
         parts.push(`<table class="tbl${en ? ' en' : ''}" dir="${dirOf(blockText(b))}"><thead>${row(b.head, 'th')}</thead><tbody>${b.rows.map((r) => row(r, 'td')).join('')}</tbody></table>`);
-      } else if (b.t === 'mcq') {
-        qNo++;
-        answers.push({ n: qNo, a: L[b.ans] || '?', why: b.why || '' });
-        mcqParts.push(`<div class="mcq en" dir="${dirOf(b.q)}"><div class="q"><b>${qNo}</b><span>${inlineHtml(b.q)}</span></div><ol>${b.opts.map((o, i) => `<li data-l="${L[i]}" style="position:relative" dir="${dirOf(o)}">${inlineHtml(o)}</li>`).join('')}</ol></div>`);
       } else if (b.t === 'note') {
         const d = dirOf(b.text);
         parts.push(`<div class="note${en ? ' en' : ''}" dir="${d}"><b class="tag">${d === 'rtl' ? 'مهم' : 'Important'}</b>${inlineHtml(b.text)}</div>`);
@@ -291,49 +336,54 @@ export function buildPdfParts(doc, opts = {}) {
     return `<div class="part${en ? ' en' : ''}" dir="${en ? 'ltr' : 'rtl'}" data-dir="${en ? 'ltr' : 'rtl'}"><div><b>${en ? 'English edition' : 'النسخة العربية'}</b>${subtitle ? `<span dir="${dirOf(subtitle)}">${inlineHtml(subtitle)}</span>` : ''}</div><div class="pbars">${bars}</div></div>`;
   };
 
-  const alt = notes && doc.alt?.blocks?.length ? doc.alt : null;
-  const mainParts = renderPart(doc.blocks, mainLang);
-  const altParts = alt ? renderPart(alt.blocks, alt.lang) : [];
-  const body = alt
-    ? [partBanner(mainLang, ''), ...mainParts, partBanner(alt.lang, alt.title || ''), ...altParts]
-    : mainParts;
+  const body = both
+    ? [partBanner(mainLang, ''), ...renderPart(doc.blocks, mainLang), partBanner(alt.lang, alt.title || ''), ...renderPart(alt.blocks, alt.lang)]
+    : altOnly ? renderPart(alt.blocks, alt.lang) : renderPart(doc.blocks, mainLang);
 
-  const mcqHtml = mcqParts.length ? `
+  // الأسئلة بالإنجليزية في الملزمة الأصلية (الترجمة لا تحملها): تظهر في كل ملف، مرة واحدة
+  const seenQ = new Set();
+  const mcqs = [...doc.blocks, ...(alt?.blocks || [])].filter((b) => b.t === 'mcq' && b.q && Array.isArray(b.opts) && !seenQ.has(b.q) && seenQ.add(b.q));
+  const mcqHtml = mcqs.length ? `
 <h2 class="plain en section-break" dir="ltr" data-dir="ltr"><span class="hx">Self-assessment MCQs</span></h2>
-${mcqParts.join('\n')}
+${mcqs.map((b, i) => `<div class="mcq en" dir="${dirOf(b.q)}"><div class="q"><b>${i + 1}</b><span>${inlineHtml(b.q)}</span></div><ol>${b.opts.map((o, k) => `<li data-l="${L[k]}" style="position:relative" dir="${dirOf(o)}">${inlineHtml(o)}</li>`).join('')}</ol></div>`).join('\n')}
 <h2 class="plain en section-break" dir="ltr"><span class="hx">Answer key</span></h2>
 <table class="answers en" dir="ltr">
   <thead><tr><th>Q</th><th>Answer</th><th>Explanation</th></tr></thead>
-  <tbody>${answers.map((a) => `<tr><td class="n">${a.n}</td><td class="a">${esc(a.a)}</td><td dir="${dirOf(a.why)}">${inlineHtml(a.why)}</td></tr>`).join('')}</tbody>
+  <tbody>${mcqs.map((b, i) => `<tr><td class="n">${i + 1}</td><td class="a">${esc(L[b.ans] || '?')}</td><td dir="${dirOf(b.why || '')}">${inlineHtml(b.why || '')}</td></tr>`).join('')}</tbody>
 </table>` : '';
 
   const terms = doc.terms || [];
   const gloss = terms.length ? `
-<h2 class="plain section-break" dir="rtl" data-dir="rtl"><span class="hx">قاموس المصطلحات</span></h2>
-<table class="gloss" dir="rtl">
-  <thead><tr><th class="en">المصطلح</th><th class="ar">بالعربية</th><th>التعريف</th></tr></thead>
-  <tbody>${terms.map((t) => `<tr><td class="en"><span class="t">${esc(t.en)}</span></td><td class="ar">${esc(t.ar)}</td><td>${esc(t.def)}</td></tr>`).join('')}</tbody>
+<h2 class="plain section-break" dir="${dir}" data-dir="${dir}"><span class="hx">${T.gloss}</span></h2>
+<table class="gloss" dir="${dir}">
+  <thead><tr><th class="en">${T.gTerm}</th><th class="ar">${T.gAr}</th><th>${T.gDef}</th></tr></thead>
+  <tbody>${terms.map((t) => `<tr><td class="en"><span class="t">${esc(t.en)}</span></td><td class="ar" dir="rtl">${esc(t.ar)}</td><td dir="${dirOf(t.def || '')}">${esc(t.def)}</td></tr>`).join('')}</tbody>
 </table>` : '';
 
   const src = sources.length ? `
-<h2 class="plain" dir="rtl" data-dir="rtl"><span class="hx">مصادر الصور</span></h2>
-<ul class="sources" dir="rtl">${sources.map((s) => `<li><b>${esc(s.label)}:</b> <span dir="ltr" class="ltr">${esc(s.title || '')}</span> — <span dir="ltr" class="ltr">${esc(creditLine(s))}</span>${/^https:\/\//.test(s.page || '') ? `<a dir="ltr" href="${esc(s.page)}">${esc(s.page)}</a>` : ''}</li>`).join('')}</ul>` : '';
+<h2 class="plain" dir="${dir}" data-dir="${dir}"><span class="hx">${T.sources}</span></h2>
+<ul class="sources" dir="${dir}">${sources.map((s) => `<li><b>${esc(s.label)}:</b> <span dir="ltr" class="ltr">${esc(s.title || '')}</span> — <span dir="ltr" class="ltr">${esc(creditLine(s))}</span>${/^https:\/\//.test(s.page || '') ? `<a dir="ltr" href="${esc(s.page)}">${esc(s.page)}</a>` : ''}</li>`).join('')}</ul>` : '';
 
   const metaItems = [
-    ['المادة', meta.subject], ['التدريسي', meta.lecturer], ['التاريخ', fmtDate(meta.date)],
-    ['مدة التسجيل', doc.duration ? fmtDuration(doc.duration) : ''], ['عدد الكلمات', doc.stats?.words ? doc.stats.words.toLocaleString('en-US') : ''],
-    ['المصطلحات', terms.length ? String(terms.length) : ''],
+    [T.subject, meta.subject], [T.lecturer, meta.lecturer], [T.date, T.date_(meta.date)],
+    [T.duration, doc.duration ? T.dur_(doc.duration) : ''], [T.words, doc.stats?.words ? doc.stats.words.toLocaleString('en-US') : ''],
+    [T.terms, terms.length ? String(terms.length) : ''],
   ].filter(([, v]) => v);
 
   const header = cssStr(plainTitle).slice(0, 70);
-  // الترويسة تتكرر في كل صفحة: نسخة صغيرة من اللوكو حتى لا يتضخم الملف
-  const pageHead = `<header class="pg-head"><span class="pg-title" dir="${dirOf(title)}">${esc(plainTitle)}</span><span class="pg-brand" dir="rtl"><img src="${esc(brand.logoSmall || logoUrl)}" alt="">ميدي فويز</span></header><div class="pg-body"></div><footer class="pg-foot"><b class="pg-num"></b><i class="pg-total"></i></footer>`;
+  // الترويسة تتكرر في كل صفحة: نسخة صغيرة من العلامة حتى لا يتضخم الملف
+  const headLogo = brand.head || brand.logoSmall || logoUrl;
+  const pageHead = `<header class="pg-head"><span class="pg-title" dir="${dirOf(title)}">${esc(plainTitle)}</span><span class="pg-brand" dir="rtl"><img src="${esc(headLogo)}" alt="">ميدي فويز</span></header><div class="pg-body"></div><footer class="pg-foot"><b class="pg-num"></b><i class="pg-total"></i></footer>`;
   const pagedCfg = { dir, firstPage: 2, fonts: PAGED_FONTS, pagedCss: PAGED_CSS, pageHtml: pageHead };
   const paged = opts.paged === true ? `<script>(${pagedRuntime.toString()})(${scriptJson(pagedCfg)});</script>` : '';
-  const kindLabel = notes ? `${MODE_LABEL[meta.mode] || 'Notes'}${alt ? ' · AR + EN' : ''}` : 'ملزمة محاضرة';
+  const kindLabel = notes ? `${MODE_LABEL[meta.mode] || 'Notes'} · ${both ? 'AR + EN' : T.tag}` : (fileLang === 'en' ? 'Lecture transcript' : 'ملزمة محاضرة');
+  const audit = doc.stats?.audit || (doc.stats?.gate && !doc.stats.gate.onOpen);
+  // العلامة على الغلاف بلا مربعها (صورة بشفافية، لا قناع CSS)، والعلامة الكبيرة الخافتة خلف البطاقات المعتمة
+  const coverMark = brand.cover || logoUrl;
+  const ghost = brand.mark ? `<div class="ghost" aria-hidden="true"><img src="${esc(brand.mark)}" alt=""></div>` : '';
 
   const html = `<!doctype html>
-<html lang="${mainLang === 'en' ? 'en' : 'ar'}" dir="${dir}">
+<html lang="${fileLang === 'en' ? 'en' : 'ar'}" dir="${dir}">
 <head>
 <meta charset="utf-8">
 <title>${esc(plainTitle)} — ميدي فويز</title>
@@ -347,31 +397,30 @@ ${mcqParts.join('\n')}
   @bottom-center { content: counter(page); font: 600 9pt 'IBM Plex Sans', sans-serif; color: #5b21b6; vertical-align: top; padding-top: 6mm; }
 }
 @page :first { @top-left { content: none; } @top-right { content: none; } @bottom-center { content: none; } }
-${opts.screen ? '@media screen { body { background: #2a1a4d; } .cover, main { margin: 12px auto; box-shadow: 0 10px 40px rgba(0,0,0,.4); } main { width: 210mm; background: #fff; padding: 23mm 17mm; } }' : ''}
+${opts.screen ? '@media screen { body { background: #2a1a4d; } .cover, main { margin: 12px auto; } main { width: 210mm; background: #fff; padding: 23mm 17mm; } }' : ''}
 </style>
 </head>
 <body>
-<section class="cover" dir="rtl">
-  <div class="glow"></div>
-  ${markHtml({ color: 'rgba(255,255,255,.07)', cls: 'ghost', urls: brand })}
-  <div class="brand"><span class="tile"><img src="${esc(logoUrl)}" alt=""></span><div><b>ميدي فويز</b><span dir="ltr">MediVoice</span></div></div>
+<section class="cover" dir="${dir}">
+  ${ghost}
+  <div class="brand"><span class="mark"><img src="${esc(coverMark)}" alt=""></span><div><b>ميدي فويز</b><span dir="ltr">MediVoice</span></div></div>
   <div class="kind"><span dir="ltr">${esc(kindLabel)}</span></div>
-  <div class="head" dir="${dirOf(title)}">
-    ${meta.subject ? `<div class="subject" dir="${dirOf(meta.subject)}">${esc(meta.subject)}</div>` : ''}
-    <h1 style="font-size:${titleSize}pt">${inlineHtml(title)}</h1>
-    ${alt?.title ? `<div class="alt-title" dir="${dirOf(alt.title)}">${inlineHtml(alt.title)}</div>` : ''}
+  <div class="head" dir="${dir}">
+    ${meta.subject ? `<div class="subject" dir="${dir}"><span dir="auto">${esc(meta.subject)}</span></div>` : ''}
+    <h1 style="font-size:${titleSize}pt" dir="${dirOf(title)}">${inlineHtml(title)}</h1>
+    ${both && alt?.title ? `<div class="alt-title" dir="${dirOf(alt.title)}">${inlineHtml(alt.title)}</div>` : ''}
   </div>
   <div class="bars" aria-hidden="true">${soundBars()}</div>
   <div class="meta">${metaItems.map(([k, v]) => `<div><small>${esc(k)}</small><b dir="auto">${esc(v)}</b></div>`).join('')}</div>
-  ${doc.stats?.audit || (doc.stats?.gate && !doc.stats.gate.onOpen) ? `<div class="audit"><i></i>${doc.stats?.audit ? 'روجعت كاملة مقابل التسجيل' : ''}${doc.stats?.audit && doc.stats?.gate ? ' وفُحصت كل صفحاتها' : doc.stats?.gate ? 'فُحصت كل صفحاتها' : ''} قبل التسليم</div>` : ''}
-  <div class="foot">${notes ? 'شرح مكتوب آلياً من تسجيل المحاضرة. راجعه مع المحاضرة الأصلية قبل الاعتماد عليه.' : 'نص مفرّغ آلياً من تسجيل صوتي. راجعه مع المحاضرة الأصلية قبل الاعتماد عليه.'}</div>
+  ${audit ? `<div class="audit"><i></i>${T.audit(!!doc.stats?.audit, !!(doc.stats?.gate && !doc.stats.gate.onOpen))}</div>` : ''}
+  <div class="foot">${T.foot(notes)}</div>
 </section>
 <main id="flow">
 ${body.join('\n')}
 ${mcqHtml}
 ${gloss}
 ${src}
-<div class="endnote" dir="rtl" data-dir="rtl">أُعدّت هذه الملزمة بواسطة ميدي فويز من تسجيل صوتي للمحاضرة. ${notes ? 'كتابة الشرح والترجمة' : 'التفريغ'} والقاموس واختيار الصور تمت آلياً وقد تحتوي أخطاء؛ المرجع النهائي هو المحاضر والمصادر المعتمدة.</div>
+<div class="endnote" dir="${dir}" data-dir="${dir}">${T.endnote(notes)}</div>
 </main>
 ${paged}
 </body>

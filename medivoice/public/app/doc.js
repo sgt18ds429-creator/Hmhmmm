@@ -3,7 +3,7 @@
 import { h, icon, clear, sheet, confirm, fmtSize, countOf } from './ui.js';
 import { splitInline, inlineRuns, blockText, stripMarkup, countWords, uid, isNotes, MODE_LABEL, qualityGate } from './text.js';
 import { NOTE_TYPES } from './run.js';
-import { buildPdfHtml, buildPdfParts, fmtDate, fmtDuration, dirOf } from './pdf.js';
+import { buildPdfHtml, buildPdfParts, pdfLangs, fmtDate, fmtDuration, dirOf } from './pdf.js';
 import { pagedRuntime } from './paged.js';
 import { brandAssets } from '../brand.js';
 import { findCandidates, creditLine } from './images.js';
@@ -399,7 +399,26 @@ export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
   if (fresh) ctx.toast('الملزمة جاهزة. راجعها ثم حمّلها PDF.', 'ok');
 
   // ── التصدير ──
-  const fileName = () => `${stripMarkup(doc.meta.title || 'محاضرة').replace(/[\\/:*?"<>|\n\r]+/g, ' ').trim().slice(0, 80) || 'محاضرة'}.pdf`;
+  // اسم الملف بعنوان لغته، ومعه اللغة إذا كان بلغة واحدة
+  const fileName = (lang = 'both') => {
+    const altTitle = lang !== 'both' && doc.alt?.lang === lang && lang !== (doc.lang || 'ar') ? doc.alt.title : '';
+    const base = stripMarkup(altTitle || doc.meta.title || 'محاضرة').replace(/[\\/:*?"<>|\n\r]+/g, ' ').trim().slice(0, 80) || 'محاضرة';
+    return `${base}${lang === 'ar' ? ' - عربي' : lang === 'en' ? ' - English' : ''}.pdf`;
+  };
+
+  /**
+   * الملزمة بلغتين: يختار الطالب ملف العربية وحده (بمصطلحاته الإنجليزية)، أو الإنجليزية وحدها، أو الاثنين.
+   * ملزمة بلغة واحدة: لا سؤال.
+   */
+  function chooseLang(then) {
+    const langs = pdfLangs(doc);
+    if (langs.length < 2) { then('both'); return; }
+    const name = (l) => (l === 'en' ? 'English' : 'العربية');
+    const ordered = langs.includes('ar') ? ['ar', ...langs.filter((l) => l !== 'ar')] : langs;
+    const s = sheet({ title: 'أي ملف تريد؟', body: h('div', { class: 'stack pdf-langs' },
+      ...ordered.map((l) => h('button', { class: 'btn ghost wide pdf-lang', onclick: () => { s.close(); then(l); } }, h('b', { dir: l === 'en' ? 'ltr' : 'rtl' }, name(l)))),
+      h('button', { class: 'btn wide pdf-lang', onclick: () => { s.close(); then('both'); } }, h('b', null, 'العربية + English'))) });
+  }
 
   // صور الملزمة تُرسل داخل المستند، فنصغّر الكبير منها حتى يبقى الطلب خفيفاً على الخادم
   async function pdfImages(budget = 2_300_000) {
@@ -427,12 +446,14 @@ export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
   }
 
   let exporting = false;
-  async function exportPdf() {
+  /** lang غير محدد: يُسأل الطالب أولاً عن لغة الملف */
+  async function exportPdf(lang) {
+    if (!lang) { chooseLang((l) => exportPdf(l)); return; }
     if (exporting) return; // ضغطتان متتاليتان كانتا ترسلان ملفين وتحجزان دورين في طابور الخادم
     exporting = true;
-    try { await exportPdfOnce(); } finally { exporting = false; }
+    try { await exportPdfOnce(lang); } finally { exporting = false; }
   }
-  async function exportPdfOnce() {
+  async function exportPdfOnce(lang) {
     document.activeElement?.blur?.();
     // النافذة تظهر فوراً (تجهيز الصور قد يأخذ ثواني على الهاتف)
     const stateText = h('p', { class: 'muted' }, 'أجهّز الصفحات وأرتّب الخطوط والصور…');
@@ -444,7 +465,7 @@ export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
     if (!unsaved) await db.saveLecture(doc).catch(() => {});
     const [images, brand] = await Promise.all([pdfImages(), brandAssets()]);
     if (cancelled) return;
-    const html = buildPdfHtml(doc, { paged: true, images, brand });
+    const html = buildPdfHtml(doc, { paged: true, images, brand, lang });
     let blob = null, error = '', timedOut = false;
     for (let attempt = 0; attempt < 3 && !blob && !cancelled; attempt++) {
       // مهلة دقيقتين ونصف للطلب كله (مع تنزيل الملف): إذا علق خادم التحويل نعرض الطباعة من الجهاز
@@ -470,7 +491,7 @@ export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
     }
     if (cancelled) return;
     if (blob) {
-      const name = fileName();
+      const name = fileName(lang);
       const url = URL.createObjectURL(blob);
       const file = new File([blob], name, { type: 'application/pdf' });
       const canShare = !!navigator.canShare?.({ files: [file] });
@@ -489,8 +510,8 @@ export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
       : error === 'network' ? 'انقطع الاتصال.' : error === 'timeout' ? 'خادم التحويل تأخر كثيراً.' : 'تعذّر تجهيز الملف على الخادم.';
     clear(box).append(
       h('p', { class: 'muted' }, `${why} تقدر تحفظها من نافذة الطباعة: اختر «حفظ كـ PDF».`),
-      h('button', { class: 'btn wide', onclick: () => { s.close(); printDoc(); } }, icon('print'), 'فتح نافذة الطباعة'),
-      h('button', { class: 'btn ghost wide', onclick: () => { s.close(); exportPdf(); } }, icon('refresh'), 'حاول مرة ثانية'));
+      h('button', { class: 'btn wide', onclick: () => { s.close(); printDoc(lang); } }, icon('print'), 'فتح نافذة الطباعة'),
+      h('button', { class: 'btn ghost wide', onclick: () => { s.close(); exportPdf(lang); } }, icon('refresh'), 'حاول مرة ثانية'));
   }
 
   /**
@@ -499,7 +520,8 @@ export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
    * ثم تُفتح نافذة الطباعة فيختار الطالب «حفظ كـ PDF».
    */
   let preparingPrint = false;
-  async function printDoc() {
+  async function printDoc(lang) {
+    if (!lang) { chooseLang((l) => printDoc(l)); return; }
     if (preparingPrint) return;
     preparingPrint = true;
     const wait = h('div', { class: 'stack' }, h('p', { class: 'muted' }, 'أرتّب الصفحات للطباعة…'), h('div', { class: 'progress-line' }, h('i')));
@@ -507,7 +529,7 @@ export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
     const s = sheet({ title: 'تجهيز الطباعة', body: wait, onClose: () => { preparingPrint = false; if (frame && !printed) frame.remove(); } });
     const [images, brand] = await Promise.all([pdfImages(), brandAssets()]);
     if (!s.panel.isConnected) return;
-    const { html, pagedCfg } = buildPdfParts(doc, { paged: 'external', images, brand });
+    const { html, pagedCfg } = buildPdfParts(doc, { paged: 'external', images, brand, lang });
     frame = h('iframe', { title: 'طباعة', 'aria-hidden': 'true', style: { position: 'fixed', left: '-12000px', top: '0', width: '860px', height: '1200px', border: '0', opacity: '0', pointerEvents: 'none' } });
     frame.onload = async () => {
       const w = frame.contentWindow, d = frame.contentDocument;

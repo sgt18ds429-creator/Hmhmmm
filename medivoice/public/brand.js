@@ -2,24 +2,42 @@
 // public/logo.png هو المربع نفسه (الزوايا شفافة)، و public/mark.png و mark-mic.png هما العلامة البيضاء
 // المستخرجة منه بقناع شفافية حتى تُلوَّن بـ CSS (mask-image) في العناوين والترويسات. تُولَّد بـ tools/logo.py.
 
-export const LOGO = '/logo.webp'; // نفس الصورة بلا أي فرق في البكسلات (WebP بلا فقد)، بثلثي حجم PNG
+export const LOGO = '/logo.webp'; // المربع الكامل (أيقونات التطبيق فقط)، WebP بلا فقد
 export const LOGO_PNG = '/logo.png';
-export const LOGO_SMALL = '/logo-96.png'; // للترويسات المتكررة (الـ PDF)
-export const MARK = '/mark.png'; // الدرع والقاعدة وأعمدة الصوت — نسبة العرض إلى الارتفاع 512:444
+export const LOGO_SMALL = '/logo-96.png';
+export const MARK = '/mark.png'; // العلامة البيضاء (قناع) — نسبة العرض إلى الارتفاع 512:444
 export const MARK_MIC = '/mark-mic.png'; // الدرع والقاعدة فقط — 320:433
 export const MARK_RATIO = 512 / 444;
 export const MIC_RATIO = 320 / 433;
+// العلامة مفرّغة من مربعها بألوانها الأصلية (tools/cutout.py): كاملة، والدرع وحده، والأعمدة وحدها بنفس المقاس
+export const MARK_COLOR = '/mark-color.webp';
+export const MARK_COLOR_MIC = '/mark-color-mic.webp';
+export const MARK_COLOR_BARS = '/mark-color-bars.webp';
+export const MARK_GRAD = '/mark-grad.png'; // بتدرّج الهوية للصفحات البيضاء (ترويسة الـ PDF)
+export const CUT_RATIO = 640 / 553;
 
-/** اللوكو كصورة (المربع الكامل). */
-export function logoEl({ cls = 'logo', size } = {}) {
-  const img = document.createElement('img');
-  img.src = LOGO;
-  img.alt = 'ميدي فويز';
-  img.className = cls;
-  img.decoding = 'async';
-  img.draggable = false;
-  if (size) { img.width = size; img.height = size; }
-  return img;
+/**
+ * الشعار بلا خلفيته: بألوانه الأصلية في الوضع الليلي، وبتدرّج الهوية في الوضع النهاري (الأبيض لا يظهر على
+ * خلفية فاتحة). العنصران معاً والـ CSS يُظهر المناسب ([data-theme]).
+ * layers: الدرع والأعمدة كطبقتين (للحركة).
+ */
+export function logoEl({ cls = '', layers = false } = {}) {
+  const box = document.createElement('span');
+  box.className = `logo-mark${cls ? ` ${cls}` : ''}`;
+  box.setAttribute('role', 'img');
+  box.setAttribute('aria-label', 'ميدي فويز');
+  const img = (src, c) => {
+    const i = document.createElement('img');
+    i.src = src; i.alt = ''; i.className = c; i.decoding = 'async'; i.draggable = false;
+    return i;
+  };
+  if (layers) box.append(img(MARK_COLOR_MIC, 'lm-color lm-mic'), img(MARK_COLOR_BARS, 'lm-color lm-bars'));
+  else box.append(img(MARK_COLOR, 'lm-color'));
+  const grad = document.createElement('span');
+  grad.className = 'mk lm-grad';
+  grad.style.setProperty('--mk', `url(${MARK_COLOR})`);
+  box.append(grad);
+  return box;
 }
 
 /** العلامة ملوّنة بلون النص الحالي (currentColor) عبر قناع، كعنصر DOM. */
@@ -55,8 +73,9 @@ const toDataUrl = async (url) => {
  */
 export function brandAssets() {
   if (!assetsJob) {
-    assetsJob = Promise.all([LOGO, LOGO_SMALL, MARK, MARK_MIC].map((u) => toDataUrl(u).catch(() => new URL(u, location.href).href)))
-      .then(([logo, logoSmall, mark, mic]) => ({ logo, logoSmall, mark, mic }));
+    // cover: العلامة المفرّغة على الغلاف البنفسجي، head: بتدرّج الهوية في ترويسة كل صفحة، mark: العلامة الخافتة
+    assetsJob = Promise.all([LOGO, LOGO_SMALL, MARK, MARK_MIC, MARK_COLOR, MARK_GRAD].map((u) => toDataUrl(u).catch(() => new URL(u, location.href).href)))
+      .then(([logo, logoSmall, mark, mic, cover, head]) => ({ logo, logoSmall, mark, mic, cover, head }));
   }
   return assetsJob;
 }
