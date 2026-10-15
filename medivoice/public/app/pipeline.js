@@ -1419,6 +1419,7 @@ async function pickBatch(figs, engine, io, used, lang, stat = null) {
   const results = new Array(figs.length).fill(null);
   const tried = figs.map(() => new Set());
   for (let round = 0; round < 2; round++) {
+    engine.check(); // أوقف الطالب التحويل: لا نكمل البحث عن صور
     const todo = [];
     figs.forEach((f, i) => {
       if (results[i]) return;
@@ -1427,6 +1428,7 @@ async function pickBatch(figs, engine, io, used, lang, stat = null) {
     });
     if (!todo.length || (round > 0 && engine.late(0.8))) break;
     const found = await mapLimit(todo, 4, async ({ i, q }) => {
+      engine.check();
       const cands = (await findCandidates(q, io.net, 6).catch(() => [])).filter((c) => {
         const k = c.original || c.id;
         if (used.has(k) || tried[i].has(k)) return false;
@@ -1444,6 +1446,7 @@ async function pickBatch(figs, engine, io, used, lang, stat = null) {
     const picks = await chooseFigures(engine, items, lang);
     if (stat) { for (const v of picks.values()) stat[v.vision ? 'vision' : 'text']++; }
     await mapLimit([...picks.entries()], 3, async ([k, v]) => {
+      engine.check();
       const { i, f, ok } = items[k];
       const pick = ok[v.idx].c;
       const key = pick.original || pick.id;

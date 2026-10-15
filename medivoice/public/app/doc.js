@@ -32,9 +32,18 @@ function editable(el) {
   return el;
 }
 
-export async function viewDoc(ctx, el, { id, fresh }) {
-  const doc = await db.getLecture(id).catch(() => null);
-  if (!doc) { ctx.toast('ما لقيت هذي المحاضرة على الجهاز.', 'err'); ctx.go('home'); return; }
+export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
+  // mem: ملزمة جديدة تعذّر حفظها على الجهاز (مساحة ممتلئة): تُعرض من الذاكرة حتى تُنزَّل ولا تضيع
+  let readFailed = false;
+  const doc = mem || await db.getLecture(id).catch(() => { readFailed = true; return null; });
+  if (!doc) {
+    if (readFailed) {
+      el.append(h('div', { class: 'result' }, icon('warn', 'icon big'), h('h2', { class: 'h-section' }, 'تعذّر فتح الملزمة الآن'), h('p', { class: 'muted' }, 'التخزين على الجهاز ما استجاب. حدّث الصفحة وحاول مرة ثانية.'),
+        h('div', { class: 'row', style: { justifyContent: 'center' } }, h('button', { class: 'btn', onclick: () => location.reload() }, 'تحديث'))));
+      return;
+    }
+    ctx.toast('ما لقيت هذي المحاضرة على الجهاز.', 'err'); ctx.go('home'); return;
+  }
   // ملازم قديمة (قبل بوابة الجودة) قد تحمل تكراراً من خلل التفريغ: تُنظّف مرة واحدة عند فتحها وتُحفظ
   if (!doc.stats?.gate) {
     try {
@@ -50,13 +59,19 @@ export async function viewDoc(ctx, el, { id, fresh }) {
   ctx.ribbon.set({ alpha: 0, energy: 0.2 });
 
   let saveTimer = null;
+  let unsaved = !!mem;
+  let unsavedNote = null;
   const save = () => {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       doc.stats.words = doc.blocks.reduce((n, b) => n + (b.t === 'fig' ? 0 : countWords(blockText(b))), 0);
-      db.saveLecture(doc).catch(() => ctx.toast('تعذّر الحفظ: مساحة الجهاز ممتلئة؟', 'err'));
+      db.saveLecture(doc).then(() => {
+        if (unsaved) { unsaved = false; unsavedNote?.remove(); ctx.toast('انحفظت الملزمة على الجهاز.', 'ok'); }
+      }).catch(() => ctx.toast('تعذّر الحفظ: مساحة الجهاز ممتلئة؟', 'err'));
     }, 500);
   };
+  /** يحفظ فقط إذا تغيّر النص فعلاً (لمسة على فقرة للقراءة لا تعيد حفظ الملزمة كلها) */
+  const saveIf = (changed) => { if (changed) save(); };
 
   const pdfBtn = h('button', { class: 'btn small', onclick: () => exportPdf() }, icon('download'), 'PDF');
   ctx.setBar('sub', { title: doc.meta.title || 'محاضرة', actions: [h('div', { class: 'docbar-actions' }, pdfBtn, h('button', { class: 'icon-btn', 'aria-label': 'خيارات', onclick: openMenu }, icon('dots')))] });
@@ -70,11 +85,12 @@ export async function viewDoc(ctx, el, { id, fresh }) {
   const titleEl = editable(h('h1', { class: 'doc-title', dir: 'auto' }, stripMarkup(doc.meta.title || '')));
   titleEl.addEventListener('blur', () => {
     const t = titleEl.textContent.replace(/\s+/g, ' ').trim();
-    if (view === 'alt') { doc.alt.title = t; titleEl.textContent = t; save(); return; }
+    if (view === 'alt') { const changed = doc.alt.title !== t; doc.alt.title = t; titleEl.textContent = t; saveIf(changed); return; }
+    const before = doc.meta.title;
     doc.meta.title = t || 'محاضرة';
     titleEl.textContent = doc.meta.title;
     ctx.root.querySelector('.bar .title').textContent = doc.meta.title;
-    save();
+    saveIf(before !== doc.meta.title);
   });
   titleEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); titleEl.blur(); } });
   const metaLine = h('div', { class: 'doc-meta' });
@@ -85,6 +101,12 @@ export async function viewDoc(ctx, el, { id, fresh }) {
   paintMeta();
   if (doc.meta.subject) paper.append(h('div', { class: 'doc-kicker' }, doc.meta.subject));
   paper.append(titleEl, metaLine);
+  if (mem) {
+    unsavedNote = h('div', { class: 'blk note' }, h('span', { class: 'tag' }, 'غير محفوظة'),
+      'ما كدرت أحفظ هذي الملزمة على الجهاز (غالباً المساحة ممتلئة). نزّلها PDF هسه حتى لا تضيع، أو فرّغ مساحة ثم اضغط حفظ.',
+      h('div', null, h('button', { class: 'mini', onclick: () => save() }, icon('check'), 'حفظ على الجهاز')));
+    paper.append(unsavedNote);
+  }
 
   if (doc.stats.review?.length) {
     paper.append(h('div', { class: 'blk note' }, h('span', { class: 'tag' }, 'للمراجعة'),
@@ -137,7 +159,8 @@ export async function viewDoc(ctx, el, { id, fresh }) {
     fill(node, get());
     node.addEventListener('focus', () => { node.textContent = get(); });
     node.addEventListener('blur', () => {
-      const raw = node.textContent.replace(/ /g, ' ').trim();
+      const raw = node.textContent.replace(/\u00a0/g, ' ').trim();
+      if (raw === String(get() || '').trim()) { fill(node, get()); return; } // لم يتغيّر شيء: لا حفظ
       const lines = raw.split(/\n+/).map((s) => s.trim()).filter(Boolean);
       if (!lines.length) {
         if (key === null) removeBlock(block); else { block.items.splice(key, 1); if (!block.items.length) removeBlock(block); else rerender(block); }
@@ -170,10 +193,11 @@ export async function viewDoc(ctx, el, { id, fresh }) {
     node.addEventListener('focus', () => { node.textContent = get(); });
     node.addEventListener('blur', () => {
       const v = node.textContent.replace(/\s+/g, ' ').trim();
+      const changed = v !== get();
       if (r < 0) b.head[c] = v; else b.rows[r][c] = v;
       node.dir = dirOf(v);
       fill(node, v);
-      save();
+      saveIf(changed);
     });
     node.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); node.blur(); } });
     return node;
@@ -232,7 +256,7 @@ export async function viewDoc(ctx, el, { id, fresh }) {
     const cap = editable(h('div', { class: 'cap', dir: 'auto' }));
     fill(cap, b.caption || '');
     cap.addEventListener('focus', () => { cap.textContent = b.caption || ''; });
-    cap.addEventListener('blur', () => { b.caption = cap.textContent.replace(/\s+/g, ' ').trim(); fill(cap, b.caption); save(); });
+    cap.addEventListener('blur', () => { const v = cap.textContent.replace(/\s+/g, ' ').trim(); const changed = v !== (b.caption || ''); b.caption = v; fill(cap, b.caption); saveIf(changed); });
     cap.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); cap.blur(); } });
     return h('figure', { class: 'blk fig' }, grip,
       src.img?.dataUrl ? h('img', { src: src.img.dataUrl, alt: b.caption || '', loading: 'lazy' }) : null,
@@ -340,7 +364,16 @@ export async function viewDoc(ctx, el, { id, fresh }) {
     const s = sheet({ title: 'اختيار صورة', wide: true, body: h('div', { class: 'stack' },
       h('div', { class: 'paste-row' }, q, go),
       h('p', { class: 'dim' }, 'الصور من مصادر مفتوحة ويُذكر مصدرها وترخيصها تحت الصورة.'), state, grid) });
-    if (b.candidates?.length) paint(b.candidates); else if (b.query) search();
+    if (b.candidates?.length) {
+      paint(b.candidates);
+      // المصغّرات لا تُحفظ مع الملزمة (تثقلها): تُحمَّل عند فتح النافذة
+      const missing = b.candidates.filter((c) => !c.tiny);
+      if (missing.length) {
+        state.textContent = 'أحمّل الصور البديلة…';
+        Promise.all(missing.map(async (c) => { try { c.tiny = (await ctx.io.loadImage(c, 'small')).dataUrl; } catch { c.tiny = ''; } }))
+          .then(() => { if (s.panel.isConnected) paint(b.candidates.filter((c) => c.tiny)); });
+      }
+    } else if (b.query) search();
   }
 
   // ── القاموس ──
@@ -390,17 +423,25 @@ export async function viewDoc(ctx, el, { id, fresh }) {
     return out;
   }
 
+  let exporting = false;
   async function exportPdf() {
+    if (exporting) return; // ضغطتان متتاليتان كانتا ترسلان ملفين وتحجزان دورين في طابور الخادم
+    exporting = true;
+    try { await exportPdfOnce(); } finally { exporting = false; }
+  }
+  async function exportPdfOnce() {
     document.activeElement?.blur?.();
-    clearTimeout(saveTimer);
-    await db.saveLecture(doc).catch(() => {});
-    const [images, brand] = await Promise.all([pdfImages(), brandAssets()]);
-    const html = buildPdfHtml(doc, { paged: true, images, brand });
+    // النافذة تظهر فوراً (تجهيز الصور قد يأخذ ثواني على الهاتف)
     const stateText = h('p', { class: 'muted' }, 'أجهّز الصفحات وأرتّب الخطوط والصور…');
     const box = h('div', { class: 'stack' }, stateText, h('div', { class: 'progress-line' }, h('i')));
     let cancelled = false;
     const controller = new AbortController();
     const s = sheet({ title: 'تجهيز PDF', body: box, onClose: () => { cancelled = true; controller.abort(); } });
+    clearTimeout(saveTimer);
+    if (!unsaved) await db.saveLecture(doc).catch(() => {});
+    const [images, brand] = await Promise.all([pdfImages(), brandAssets()]);
+    if (cancelled) return;
+    const html = buildPdfHtml(doc, { paged: true, images, brand });
     let blob = null, error = '', timedOut = false;
     for (let attempt = 0; attempt < 3 && !blob && !cancelled; attempt++) {
       // مهلة دقيقتين ونصف للطلب كله (مع تنزيل الملف): إذا علق خادم التحويل نعرض الطباعة من الجهاز
@@ -451,13 +492,17 @@ export async function viewDoc(ctx, el, { id, fresh }) {
    * مخفي بحجم حقيقي، وتقسيم الصفحات يشغّله هذا السكربت على الإطار (سياسة الأمان تمنع السكربتات داخله)،
    * ثم تُفتح نافذة الطباعة فيختار الطالب «حفظ كـ PDF».
    */
+  let preparingPrint = false;
   async function printDoc() {
-    const [images, brand] = await Promise.all([pdfImages(), brandAssets()]);
-    const { html, pagedCfg } = buildPdfParts(doc, { paged: 'external', images, brand });
-    const frame = h('iframe', { title: 'طباعة', 'aria-hidden': 'true', style: { position: 'fixed', left: '-12000px', top: '0', width: '860px', height: '1200px', border: '0', opacity: '0', pointerEvents: 'none' } });
+    if (preparingPrint) return;
+    preparingPrint = true;
     const wait = h('div', { class: 'stack' }, h('p', { class: 'muted' }, 'أرتّب الصفحات للطباعة…'), h('div', { class: 'progress-line' }, h('i')));
-    let printing = false;
-    const s = sheet({ title: 'تجهيز الطباعة', body: wait, onClose: () => { if (!printing) frame.remove(); } });
+    let frame = null, printed = false;
+    const s = sheet({ title: 'تجهيز الطباعة', body: wait, onClose: () => { preparingPrint = false; if (frame && !printed) frame.remove(); } });
+    const [images, brand] = await Promise.all([pdfImages(), brandAssets()]);
+    if (!s.panel.isConnected) return;
+    const { html, pagedCfg } = buildPdfParts(doc, { paged: 'external', images, brand });
+    frame = h('iframe', { title: 'طباعة', 'aria-hidden': 'true', style: { position: 'fixed', left: '-12000px', top: '0', width: '860px', height: '1200px', border: '0', opacity: '0', pointerEvents: 'none' } });
     frame.onload = async () => {
       const w = frame.contentWindow, d = frame.contentDocument;
       try {
@@ -466,12 +511,14 @@ export async function viewDoc(ctx, el, { id, fresh }) {
         while (!d.documentElement.classList.contains('mv-ready') && Date.now() - t0 < 45_000) await new Promise((r) => setTimeout(r, 150));
       } catch { /* نطبع كما هو: قواعد ‎@page‎ تكفي */ }
       if (!frame.isConnected) return; // أغلق الطالب النافذة
-      printing = true;
-      s.close();
-      setTimeout(() => {
+      // الطباعة تُفتح بلمسة من الطالب: iPhone يمنع فتحها تلقائياً بعد انتظار
+      const goPrint = h('button', { class: 'btn wide', onclick: () => {
+        printed = true;
         try { w.focus(); w.print(); } catch { ctx.toast('تعذّر فتح نافذة الطباعة على هذا المتصفح.', 'err'); }
+        s.close();
         setTimeout(() => frame.remove(), 60_000);
-      }, 250);
+      } }, icon('print'), 'فتح نافذة الطباعة');
+      clear(wait).append(h('p', { class: 'muted' }, 'الصفحات جاهزة. من نافذة الطباعة اختر «حفظ كـ PDF» أو الطابعة.'), goPrint);
     };
     frame.srcdoc = html;
     document.body.append(frame);

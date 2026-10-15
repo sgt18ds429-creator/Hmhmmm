@@ -90,16 +90,25 @@ export function svgEl(tag, attrs = {}, ...kids) {
 
 // ───────────── نافذة سفلية ─────────────
 const openSheets = [];
-export function sheet({ title, body, wide = false, onClose } = {}) {
+let sheetHistory = false;
+/**
+ * التطبيق يفعّلها: كل نافذة تأخذ خطوة في سجل التصفح، فزر الرجوع في الهاتف يغلقها بدل أن يغادر الموقع
+ * (كان الرجوع والنافذة مفتوحة في الرئيسية يغلق التطبيق كله).
+ */
+export function enableSheetHistory() { sheetHistory = true; }
+
+/** @param persistent نافذة لا تُغلق بلمسة خارجها ولا بـ Esc (مثل التسجيل الجاري)؛ قيمة أو دالة */
+export function sheet({ title, body, wide = false, onClose, persistent = false } = {}) {
   const panel = h('div', { class: `sheet-panel${wide ? ' wide' : ''}`, role: 'dialog', 'aria-modal': 'true', 'aria-label': title || '' },
     h('div', { class: 'sheet-head' },
       h('h2', null, title || ''),
       h('button', { class: 'icon-btn', 'aria-label': 'إغلاق', onclick: () => api.close() }, icon('close'))),
     h('div', { class: 'sheet-body' }, body));
-  const root = h('div', { class: 'sheet', onclick: (e) => { if (e.target === root) api.close(); } }, panel);
+  const root = h('div', { class: 'sheet', onclick: (e) => { if (e.target === root && !api.locked()) api.close(); } }, panel);
   let closed = false;
   const api = {
     el: root, panel,
+    locked: () => (typeof persistent === 'function' ? !!persistent() : !!persistent),
     close(result) {
       if (closed) return;
       closed = true;
@@ -112,6 +121,7 @@ export function sheet({ title, body, wide = false, onClose } = {}) {
   };
   document.body.append(root);
   openSheets.push(api);
+  if (sheetHistory) { try { history.pushState({ ...(history.state || {}), sheet: true }, ''); } catch { /* السجل غير متاح */ } }
   requestAnimationFrame(() => root.classList.add('open'));
   return api;
 }
@@ -122,7 +132,11 @@ export function closeTopSheet() {
   top.close();
   return true;
 }
-addEventListener('keydown', (e) => { if (e.key === 'Escape') closeTopSheet(); });
+addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const top = openSheets[openSheets.length - 1];
+  if (top && !top.locked()) top.close();
+});
 
 export function confirm({ title, message, ok = 'تأكيد', cancel = 'إلغاء', danger = false }) {
   return new Promise((resolve) => {

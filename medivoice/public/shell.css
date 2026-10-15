@@ -217,6 +217,7 @@ a.btn { text-decoration: none; }
 #lock {
   position: relative;
   z-index: 2;
+  min-height: 100vh;
   min-height: 100dvh;
   display: grid;
   place-items: center;
@@ -281,3 +282,7 @@ a.btn { text-decoration: none; }
   #intro .intro-tile { transform: none; opacity: 1; filter: none; }
   #intro .intro-tile::before, #intro .intro-tile::after { display: none; }
 }
+
+/* فشل تحميل التطبيق: بطاقة بزر إعادة */
+.load-failed { min-height: 70vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 24px; text-align: center; color: inherit; }
+.load-failed p { margin: 0; font-size: 1.05rem; opacity: 0.85; }

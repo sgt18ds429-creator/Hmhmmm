@@ -1,6 +1,6 @@
 // main.js — التطبيق بعد التفعيل: التنقل، الرئيسية، ربط المفاتيح، الإعدادات.
 
-import { h, icon, clear, sheet, closeTopSheet, confirm, fmtHM, fmtAgo, svgEl } from './ui.js';
+import { h, icon, clear, sheet, closeTopSheet, confirm, fmtHM, fmtAgo, svgEl, enableSheetHistory } from './ui.js';
 import { makeIO } from './api.js';
 import * as db from './db.js';
 import { fmtDuration } from './pdf.js';
@@ -36,6 +36,7 @@ export async function start(MV, root) {
     document.head.append(link);
   });
 
+  enableSheetHistory();
   const ctx = {
     MV, root, toast: MV.toast, api: MV.api, ribbon: MV.ribbon, io: makeIO(),
     session: MV.session, caps: null, view: null, guard: null,
@@ -130,7 +131,8 @@ export async function start(MV, root) {
   }
   function back() { history.back(); }
   addEventListener('popstate', async () => {
-    if (closeTopSheet()) { history.pushState({ v: ctx.view }, ''); return; }
+    // لكل نافذة خطوتها في السجل: الرجوع يغلقها فقط
+    if (closeTopSheet()) return;
     if (ctx.guard) {
       history.pushState({ v: ctx.view }, '');
       if (!(await ctx.guard())) return;
@@ -175,13 +177,60 @@ export async function start(MV, root) {
       h('div', { class: 'row' }, h('button', { class: 'btn ghost', onclick: () => (noKeys ? go('link') : openRecorder(ctx)) }, icon('mic'), 'تسجيل مباشر')),
       h('div', { class: 'stack' }, h('h2', { class: 'h-section' }, 'محاضراتي'), list)));
 
-    const items = await db.listLectures().catch(() => []);
+    // تسجيلات مباشرة محفوظة لم تتحوّل بعد، وتحويل انقطع قبل أن يكمل
+    const pendingBox = h('div', { class: 'stack' });
+    list.before(pendingBox);
+    paintPending(pendingBox).catch(() => {});
+
+    const items = await db.listLectures().catch(() => null);
+    if (items === null) {
+      list.append(h('div', { class: 'banner' }, icon('warn'), h('span', null, 'تعذّر قراءة محاضراتك المحفوظة الآن. حدّث الصفحة.'), h('button', { class: 'btn small amber', onclick: () => location.reload() }, 'تحديث')));
+      return;
+    }
     if (!items.length) list.append(h('div', { class: 'empty' }, 'ما عندك محاضرات بعد. ارفع أول تسجيل وتظهر هنا.'));
     for (const it of items) {
       list.append(h('button', { class: 'lec', onclick: () => go('doc', { id: it.id }) },
         h('b', { dir: 'auto' }, it.title || 'محاضرة بدون عنوان'),
         icon('back'),
         h('small', null, [LIST_LABEL[it.mode] || 'نص مفرّغ', it.subject, fmtDuration(it.duration), `${it.words.toLocaleString('en-US')} كلمة`, fmtAgo(it.createdAt)].filter(Boolean).join('  ·  '))));
+    }
+  }
+
+  async function paintPending(box) {
+    clear(box);
+    for (const r of await db.listRecordings().catch(() => [])) {
+      const row = h('div', { class: 'banner info' }, icon('mic'),
+        h('span', null, `تسجيل مباشر محفوظ ما تحوّل بعد (${fmtDuration(r.seconds || r.pieces * 5)}).`),
+        h('button', { class: 'btn small', onclick: async () => {
+          const file = await db.getRecording(r.id).catch(() => null);
+          if (!file) { ctx.toast('تعذّر فتح التسجيل.', 'err'); return; }
+          go('new', { file, recId: r.id });
+        } }, 'تحويله'),
+        h('button', { class: 'btn small ghost', onclick: async () => {
+          const file = await db.getRecording(r.id).catch(() => null);
+          if (!file) return;
+          const a = h('a', { href: URL.createObjectURL(file), download: file.name });
+          document.body.append(a); a.click(); a.remove();
+          setTimeout(() => URL.revokeObjectURL(a.href), 60_000);
+        } }, 'حفظه'),
+        h('button', { class: 'icon-btn', 'aria-label': 'حذف التسجيل', onclick: async () => {
+          if (!(await confirm({ title: 'حذف التسجيل؟', message: 'يُحذف من هذا الجهاز نهائياً.', ok: 'حذف', danger: true }))) return;
+          await db.deleteRecording(r.id).catch(() => {});
+          row.remove();
+        } }, icon('trash')));
+      box.append(row);
+    }
+    const run = await db.getPref('active-run');
+    if (run?.job && !run.recId && (await db.countParts(run.job).catch(() => 0)) > 0) {
+      const row = h('div', { class: 'banner info' }, icon('info'),
+        h('span', null, `تحويل «${run.name || 'التسجيل'}» توقف قبل ما يكمل. اختر نفس الملف ويكمل من مكانه.`),
+        h('button', { class: 'btn small', onclick: pickFile }, 'اختر الملف'),
+        h('button', { class: 'icon-btn', 'aria-label': 'تجاهل', onclick: async () => {
+          await db.setPref('active-run', null);
+          await db.clearParts(run.job).catch(() => {});
+          row.remove();
+        } }, icon('close')));
+      box.append(row);
     }
   }
 

@@ -7,7 +7,12 @@ const SMALL = 640;  // عرض المصغّرة (للفحص بالنظر)
 let lib = null;
 async function pdfjs(build) {
   if (!lib) {
-    lib = await import(`/app/pdfjs.js?v=${encodeURIComponent(build || '')}`);
+    // قارئ PDF يحتاج متصفحاً حديثاً (Safari 16.4 أو أحدث): فشل تحميله يُبلَّغ برسالة واضحة لا بخطأ عام
+    try {
+      lib = await import(`/app/pdfjs.js?v=${encodeURIComponent(build || '')}`);
+    } catch (e) {
+      throw new SlidesError('slides_unsupported', String(e?.message || e));
+    }
     lib.GlobalWorkerOptions.workerSrc = `/app/pdfjs.worker.js?v=${encodeURIComponent(build || '')}`;
   }
   return lib;

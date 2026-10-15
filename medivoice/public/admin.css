@@ -1,6 +1,6 @@
 /* ميدي فويز — لوحة التحكم. الأساس في /shell.css والمكوّنات المشتركة في /app/app.css */
 
-#adm { position: relative; z-index: 1; min-height: 100dvh; display: flex; flex-direction: column; }
+#adm { position: relative; z-index: 1; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; }
 #adm.in { padding-bottom: calc(74px + var(--safe-b)); }
 
 /* ───────── الدخول ───────── */

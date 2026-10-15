@@ -7,6 +7,10 @@ import { parseMarkup, splitInline, fmtTime, isNotes } from './text.js';
 import { fmtDuration } from './pdf.js';
 import * as db from './db.js';
 import { openGame } from './game.js';
+import { keepAwake } from './awake.js';
+
+/** متصفح حديث بما يكفي لقارئ PDF (يحتاج Safari 16.4 أو أحدث): importmap ظهرت مع نفس الجيل */
+const modernJs = () => typeof HTMLScriptElement !== 'undefined' && !!HTMLScriptElement.supports?.('importmap');
 
 /** أنواع الملزمة كما تظهر للمستخدم */
 export const NOTE_TYPES = [
@@ -36,7 +40,7 @@ function toggle(label, hint, checked, onChange) {
 }
 
 // ───────────── تفاصيل المحاضرة ─────────────
-export function viewNew(ctx, el, { file }) {
+export function viewNew(ctx, el, { file, recId = null }) {
   ctx.setBar('sub', { title: 'محاضرة جديدة' });
   ctx.ribbon.set({ alpha: 0 });
   // output: نوع الملزمة (highyield / notes / integrated)، أو 'transcript' نص مفرّغ فقط
@@ -52,6 +56,11 @@ export function viewNew(ctx, el, { file }) {
   const pdfBox = h('div', { class: 'stack', hidden: true });
   function paintPdf() {
     clear(pdfBox);
+    if (!modernJs()) {
+      pdfBox.append(h('div', { class: 'banner' }, icon('warn'), h('span', null, 'قراءة ملف PDF تحتاج نظاماً أحدث (iOS 16.4 أو أحدث). حدّث الجهاز، أو اختر النوع A أو B.')));
+      paintStart();
+      return;
+    }
     if (pdfFile) {
       pdfBox.append(h('div', { class: 'filecard pdf' }, icon('book'), h('div', null, h('b', { dir: 'auto' }, pdfFile.name), h('small', null, `${fmtSize(pdfFile.size)} · ملف PDF المحاضرة`)),
         h('button', { class: 'btn ghost small', onclick: () => pdfInput.click() }, 'تغيير')));
@@ -60,7 +69,7 @@ export function viewNew(ctx, el, { file }) {
     }
     paintStart();
   }
-  function paintStart() { startBtn.disabled = !info || (form.output === 'integrated' && !pdfFile); }
+  function paintStart() { startBtn.disabled = !info || (form.output === 'integrated' && (!pdfFile || !modernJs())); }
   const field = (label, key, attrs = {}, hint) => {
     const input = h(attrs.rows ? 'textarea' : 'input', { type: 'text', value: form[key], dir: 'auto', ...attrs, oninput: () => { form[key] = input.value; } });
     return { input, el: h('label', { class: 'field' }, h('span', null, label), input, hint ? h('small', null, hint) : null) };
@@ -127,7 +136,10 @@ export function viewNew(ctx, el, { file }) {
     paintStart();
   }).catch((e) => {
     fileMeta.textContent = fmtSize(file.size);
-    const msg = e?.code === 'no-audio' ? 'هذا الملف ما بيه صوت.' : 'ما قدرت أقرأ هذا الملف. جرّب صيغة m4a أو mp3 أو wav أو mp4.';
+    const msg = e?.code === 'no-audio' ? 'هذا الملف ما بيه صوت.'
+      : e?.code === 'codec' ? 'ترميز الصوت بهذا الملف ما مدعوم (مثل تسجيلات الآيفون بجودة Lossless أو صيغة AMR القديمة). بالآيفون: الإعدادات ← المذكرات الصوتية ← جودة الصوت ← مضغوط، أو حوّل الملف إلى m4a أو mp3.'
+      : e?.code === 'empty' ? 'الملف فارغ أو التسجيل ما اكتمل.'
+      : 'ما قدرت أقرأ هذا الملف. جرّب صيغة m4a أو mp3 أو wav أو mp4.';
     clear(warn).append(h('div', { class: 'banner' }, icon('warn'), h('span', null, msg), h('button', { class: 'btn small amber', onclick: () => { history.back(); setTimeout(ctx.pickFile, 250); } }, 'ملف آخر')));
   });
 
@@ -138,7 +150,7 @@ export function viewNew(ctx, el, { file }) {
     const meta = { ...rest, mode: isNotes(output) ? output : 'transcript', style: 'verbatim', title: form.title.trim(), subject: form.subject.trim(), lecturer: form.lecturer.trim(), keywords: form.keywords.trim() };
     db.setPref('form', { subject: meta.subject, lecturer: meta.lecturer, output, images: meta.images, glossary: meta.glossary });
     if (meta.subject) db.getPref('subjects', []).then((list) => db.setPref('subjects', [meta.subject, ...(list || []).filter((s) => s !== meta.subject)].slice(0, 12)));
-    ctx.go('run', { file, meta, info, pdfFile: meta.mode === 'integrated' ? pdfFile : null }, { replace: true });
+    ctx.go('run', { file, meta, info, pdfFile: meta.mode === 'integrated' ? pdfFile : null, recId }, { replace: true });
   }
 }
 
@@ -157,6 +169,7 @@ const ERRORS = {
   bad_pdf: ['ما قدرت أقرأ ملف PDF', 'الملف تالف أو مو PDF. جرّب ملفاً ثانياً.', 'home'],
   password: ['ملف PDF مقفول بكلمة مرور', 'فك القفل من برنامج PDF ثم ارفعه مرة ثانية.', 'home'],
   too_many: ['ملف PDF كبير جداً', 'الحد 160 صفحة. قسّم الملف أو ارفع الجزء الذي يخص المحاضرة.', 'home'],
+  slides_unsupported: ['المتصفح قديم على ملف PDF', 'قراءة السلايدات تحتاج iOS 16.4 أو أحدث. حدّث الجهاز أو اختر النوع A أو B.', 'home'],
 };
 
 /** عرض مختصر لكتل نص داخل لوحة المعاينة الحية. */
@@ -183,7 +196,7 @@ function liveNodes(blocks) {
 function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
   ctx.setBar('sub', { title });
   const controller = new AbortController();
-  let running = true, wakeLock = null, waitTimer = null;
+  let running = true, waitTimer = null;
   const t0 = Date.now();
 
   const pct = h('span', null, '0');
@@ -208,25 +221,25 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
   el.append(body);
 
   ctx.ribbon.set({ y: Math.min(0.24, 170 / innerHeight), energy: 1, alpha: 1 });
-  ctx.guard = async () => {
+  const guard = async () => {
     if (!running) return true;
     const yes = await confirm({ title: 'إيقاف التحويل؟', message: 'الأجزاء المكتملة تبقى محفوظة، وإذا رجعت لنفس الملف يكمل من مكانه.', ok: 'إيقاف', cancel: 'أكمل', danger: true });
     if (yes) controller.abort();
     return yes;
   };
+  ctx.guard = guard;
   const beforeUnload = (e) => { e.preventDefault(); e.returnValue = ''; };
   addEventListener('beforeunload', beforeUnload);
-  const grabWake = async () => { try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* غير مدعوم */ } };
+  // الشاشة تبقى مضاءة (وإلا قفل الهاتف يوقف التحويل)، حتى على iPhone الأقدم والتطبيق المثبت
+  const release = keepAwake();
   // الجوال يوقف الصفحات التي في الخلفية، فيتوقف التحويل أو يبطأ كثيراً
   let hiddenAt = 0;
   const onVisible = () => {
     if (document.hidden) { hiddenAt = Date.now(); return; }
     if (!running) return;
-    grabWake();
     if (hiddenAt && Date.now() - hiddenAt > 10_000) ctx.toast('خلّي الصفحة قدّامك لحد ما يخلص: إذا طلعت منها يتوقف التحويل أو يبطأ.');
     hiddenAt = 0;
   };
-  grabWake();
   document.addEventListener('visibilitychange', onVisible);
   // كتابة الجزء طلب واحد طويل بلا تقدم وسيط، فنقدّر تقدمه بالوقت (حتى 85% من حصته) حتى لا تبدو النسبة عالقة
   const writing = { start: new Map(), done: 0, total: 0 };
@@ -383,13 +396,14 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
     clearInterval(tick); clearInterval(waitTimer);
     removeEventListener('beforeunload', beforeUnload);
     document.removeEventListener('visibilitychange', onVisible);
-    wakeLock?.release?.().catch(() => {});
-    ctx.guard = null;
+    release();
+    if (ctx.guard === guard) ctx.guard = null; // لا نمسح حماية شاشة تحويل أحدث
   }
 
   function fail(code, extra = {}) {
     cleanup();
     game?.close();
+    if (!body.isConnected) return; // الطالب ترك الشاشة: لا نغيّر شاشة أخرى
     ctx.ribbon.set({ energy: 0.25, alpha: 0.5 });
     const [title, message, action] = ERRORS[code] || ['توقف التحويل', 'صار خطأ غير متوقع. الأجزاء المكتملة محفوظة، جرّب مرة ثانية.', 'retry'];
     let msg = message;
@@ -403,14 +417,17 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
     ctx.setBar('sub', { title: 'توقف التحويل' });
   }
 
-  async function finish(doc) {
+  /** @param opts.mem المستند نفسه إذا تعذّر حفظه على الجهاز: يُفتح من الذاكرة حتى يُنزَّل PDF ولا يضيع */
+  async function finish(doc, { mem = null } = {}) {
+    const here = running && body.isConnected;
     shown = 100; pct.textContent = '100';
     status.textContent = 'الملزمة جاهزة';
     ctx.ribbon.kick(1);
     cleanup();
+    if (!here) { game?.close(); if (!mem) ctx.toast('ملزمتك الجديدة جاهزة في «محاضراتي».', 'ok'); return; }
     // اللعبة تعلن الجاهزية لحظة، ثم يُفتح المستند (فتح المستند يغلق اللعبة)
     game?.done();
-    setTimeout(() => ctx.go('doc', { id: doc.id, fresh: true }, { replace: true }), game ? 1500 : 650);
+    setTimeout(() => ctx.go('doc', { id: doc.id, fresh: true, mem }, { replace: true }), game ? 1500 : 650);
   }
 
   function failWith(e) {
@@ -421,7 +438,23 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
     ctx.refreshSession().catch(() => {});
   }
 
-  return { emit, signal: controller.signal, finish, failWith };
+  return { emit, signal: controller.signal, finish, failWith, get stopped() { return controller.signal.aborted || !running; } };
+}
+
+/**
+ * صور الملزمة: مصغّرات المرشحات (تبديل الصورة) تُحذف قبل الحفظ، فهي تضاعف حجم الملزمة على الجهاز وتُحمَّل
+ * من جديد عند فتح نافذة التبديل. تبقى بيانات المرشحات نفسها.
+ */
+function slimFigures(doc) {
+  for (const b of doc.blocks || []) if (Array.isArray(b.candidates)) b.candidates = b.candidates.map(({ tiny, ...c }) => c);
+}
+
+/** يحفظ الملزمة؛ وإذا تعذّر (مساحة ممتلئة، اتصال التخزين مغلق) يرجع false ويبقى المستند في الذاكرة. */
+async function saveFinal(doc) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try { await db.saveLecture(doc); return true; } catch { await new Promise((r) => setTimeout(r, 600)); }
+  }
+  return false;
 }
 
 /** مراحل شاشة التحويل حسب نوع الملزمة */
@@ -439,7 +472,7 @@ function slimSlides(doc) {
   if (doc.slides?.pages) doc.slides = { pages: doc.slides.pages.map((p) => ({ page: p.page, text: p.text })), figs: doc.slides.figs || [] };
 }
 
-export function viewRun(ctx, el, { file, meta, info, pdfFile = null }) {
+export function viewRun(ctx, el, { file, meta, info, pdfFile = null, recId = null }) {
   const notes = isNotes(meta.mode);
   const cfg = { chunkSec: ctx.session.config.chunkSec, overlapSec: ctx.session.config.overlapSec };
   const job = hash([file.name, file.size, file.lastModified, meta.speech, meta.style, cfg.chunkSec].join('|'));
@@ -447,16 +480,20 @@ export function viewRun(ctx, el, { file, meta, info, pdfFile = null }) {
     title: 'جارِ التحويل',
     stages: stagesFor(notes ? meta.mode : 'transcript'),
     weights: notes ? { transcribe: 0.55, write: 0.28 } : { transcribe: 0.86, write: 0 },
-    retry: () => ctx.go('run', { file, meta, info, pdfFile }, { replace: true }),
+    retry: () => ctx.go('run', { file, meta, info, pdfFile, recId }, { replace: true }),
   });
 
   (async () => {
     try {
+      // أثر للتحويل الجاري: إذا انقطع (أُغلقت الصفحة أو أُعيد تشغيل الهاتف) تظهر في الرئيسية دعوة لإكماله
+      db.setPref('active-run', { job, name: file.name || '', size: file.size, mode: meta.mode, at: Date.now(), recId }).catch(() => {});
       const caps = ctx.caps || await ctx.loadCaps();
       let slides = null;
       if (meta.mode === 'integrated' && pdfFile) {
         screen.emit({ type: 'stage', name: 'slides' });
-        const { readSlides, SlidesError } = await import(`/app/slides.js?v=${encodeURIComponent(ctx.session.build || '')}`);
+        let mod;
+        try { mod = await import(`/app/slides.js?v=${encodeURIComponent(ctx.session.build || '')}`); } catch { throw new PipelineError('slides_unsupported', 'pdf reader failed to load'); }
+        const { readSlides, SlidesError } = mod;
         try {
           slides = await readSlides(pdfFile, { build: ctx.session.build, signal: screen.signal, onProgress: (i, n) => screen.emit({ type: 'slides', page: i, total: n }) });
         } catch (e) {
@@ -470,12 +507,18 @@ export function viewRun(ctx, el, { file, meta, info, pdfFile = null }) {
         file, meta, cfg, caps, io: ctx.io, emit: screen.emit, signal: screen.signal, slides,
         checkpoint: { get: (i) => db.getPart(job, i).catch(() => null), set: (i, p) => db.setPart(job, i, p).catch(() => {}) },
       });
+      if (screen.stopped) return; // أوقفه الطالب: لا يُحفظ ولا يأخذ الشاشة (الأجزاء المكتملة تبقى للاستئناف)
       doc.partial = false;
       slimSlides(doc);
-      await db.saveLecture(doc);
-      await db.clearParts(job).catch(() => {});
+      slimFigures(doc);
+      const saved = await saveFinal(doc);
+      if (saved) {
+        await db.clearParts(job).catch(() => {});
+        db.setPref('active-run', null).catch(() => {});
+        if (recId) db.deleteRecording(recId).catch(() => {});
+      }
       ctx.api('/api/done', { method: 'POST', body: {} }).then(() => ctx.refreshSession()).catch(() => {});
-      screen.finish(doc);
+      screen.finish(doc, { mem: saved ? null : doc });
     } catch (e) {
       screen.failWith(e);
     }
@@ -501,23 +544,37 @@ export async function viewRewrite(ctx, el, { id, mode = 'notes' }) {
       doc: src, caps, io: ctx.io, emit: screen.emit, signal: screen.signal, mode,
       checkpoint: { get: (k) => db.getPart(job, k).catch(() => null), set: (k, p) => db.setPart(job, k, p).catch(() => {}) },
     });
+    if (screen.stopped) return;
     doc.partial = false;
     slimSlides(doc);
-    await db.saveLecture(doc);
-    await db.clearParts(job).catch(() => {});
-    screen.finish(doc);
+    slimFigures(doc);
+    const saved = await saveFinal(doc);
+    if (saved) await db.clearParts(job).catch(() => {});
+    screen.finish(doc, { mem: saved ? null : doc });
   } catch (e) {
     screen.failWith(e);
   }
 }
 
 // ───────────── تسجيل مباشر ─────────────
+/**
+ * التسجيل يُحفظ على الجهاز قطعة كل 5 ثوانٍ أثناء التسجيل: إغلاق النافذة أو الصفحة أو تعطل الهاتف لا يضيعه،
+ * ويظهر في الرئيسية لإكمال تحويله. لمسة خارج النافذة لا توقف التسجيل، وإغلاقها يحفظه وينتقل لتحويله.
+ */
 export function openRecorder(ctx) {
-  let recorder = null, stream = null, chunks = [], started = 0, timer = null, wake = null, audioCtx = null, raf = 0;
+  let recorder = null, stream = null, chunks = [], started = 0, timer = null, release = null, audioCtx = null, raf = 0;
+  let recId = null, pieces = 0, saving = Promise.resolve(), discarded = false;
+  const beforeUnload = (e) => { e.preventDefault(); e.returnValue = ''; };
   const time = h('div', { class: 'rec-time num' }, '0:00');
-  const hint = h('p', { class: 'dim' }, 'خلّي الشاشة مفتوحة أثناء التسجيل. للمحاضرات الطويلة مسجّل الهاتف أضمن، وبعدها ارفع الملف.');
+  const hint = h('p', { class: 'dim' }, 'خلّي الشاشة مفتوحة أثناء التسجيل. التسجيل يُحفظ على الجهاز أولاً بأول، وللمحاضرات الطويلة مسجّل الهاتف أضمن.');
   const btn = h('button', { class: 'btn', onclick: () => (recorder ? stop(true) : begin()) }, icon('mic'), 'ابدأ التسجيل');
-  const s = sheet({ title: 'تسجيل مباشر', body: h('div', { class: 'rec' }, time, hint, btn), onClose: () => stop(false) });
+  const discardBtn = h('button', { class: 'btn ghost small', hidden: true, onclick: async () => {
+    if (!(await confirm({ title: 'حذف التسجيل؟', message: 'يُحذف التسجيل الحالي نهائياً ولا يتحوّل.', ok: 'حذف', danger: true }))) return;
+    discarded = true;
+    stop(false);
+    s.close();
+  } }, icon('trash'), 'حذف التسجيل');
+  const s = sheet({ title: 'تسجيل مباشر', body: h('div', { class: 'rec' }, time, hint, btn, discardBtn), persistent: () => !!recorder, onClose: () => { if (recorder) stop(!discarded); } });
 
   async function begin() {
     try {
@@ -530,11 +587,22 @@ export function openRecorder(ctx) {
     try { recorder = new MediaRecorder(stream, type ? { mimeType: type, audioBitsPerSecond: 64000 } : undefined); }
     catch { ctx.toast('التسجيل غير مدعوم بهذا المتصفح.', 'err'); stream.getTracks().forEach((t) => t.stop()); return; }
     chunks = [];
-    recorder.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data); };
-    recorder.start(5000);
     started = Date.now();
+    recId = `${started.toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const mime = recorder.mimeType || type || 'audio/webm';
+    const stamp = new Date(started).toLocaleString('en-GB', { hour12: false }).replace(/[/,: ]+/g, '-');
+    const meta = { name: `تسجيل-${stamp}.${/mp4/.test(mime) ? 'm4a' : 'webm'}`, type: mime, startedAt: started };
+    recorder.ondataavailable = (e) => {
+      if (!e.data?.size) return;
+      chunks.push(e.data);
+      const n = pieces++;
+      const seconds = Math.round((Date.now() - started) / 1000);
+      saving = saving.then(() => db.addRecPiece(recId, n, e.data, { ...meta, seconds })).catch(() => {});
+    };
+    recorder.start(5000);
+    addEventListener('beforeunload', beforeUnload);
     timer = setInterval(() => { time.textContent = fmtTime((Date.now() - started) / 1000); }, 500);
-    try { wake = await navigator.wakeLock?.request('screen'); } catch { /* غير مدعوم */ }
+    release = keepAwake();
     // مستوى الصوت يحرّك الشريط
     try {
       audioCtx = new AudioContext();
@@ -552,25 +620,28 @@ export function openRecorder(ctx) {
     } catch { /* اختياري */ }
     clear(btn).append(icon('stop'), 'إنهاء وتحويل');
     btn.classList.add('amber');
-    clear(hint).append(h('span', { class: 'rec-dot' }), 'أسجّل الآن…');
+    discardBtn.hidden = false;
+    clear(hint).append(h('span', { class: 'rec-dot' }), 'أسجّل الآن… يُحفظ على الجهاز أولاً بأول');
   }
 
   function stop(use) {
     clearInterval(timer);
     cancelAnimationFrame(raf);
-    wake?.release?.().catch(() => {});
+    removeEventListener('beforeunload', beforeUnload);
+    release?.();
     audioCtx?.close?.().catch(() => {});
     const rec = recorder;
     recorder = null;
-    const finish = () => {
+    const finish = async () => {
       stream?.getTracks().forEach((t) => t.stop());
-      if (!use || !chunks.length) return;
+      await saving;
+      if (!use || !chunks.length) { if (recId) db.deleteRecording(recId).catch(() => {}); return; }
       const type = rec?.mimeType || chunks[0].type || 'audio/webm';
       const ext = /mp4/.test(type) ? 'm4a' : 'webm';
-      const stamp = new Date().toLocaleString('en-GB', { hour12: false }).replace(/[/,: ]+/g, '-');
-      const file = new File(chunks, `تسجيل-${stamp}.${ext}`, { type, lastModified: Date.now() });
+      const stamp = new Date(started).toLocaleString('en-GB', { hour12: false }).replace(/[/,: ]+/g, '-');
+      const file = new File(chunks, `تسجيل-${stamp}.${ext}`, { type, lastModified: started });
       s.close();
-      ctx.go('new', { file });
+      ctx.go('new', { file, recId });
     };
     if (rec && rec.state !== 'inactive') { rec.onstop = finish; rec.stop(); } else finish();
   }

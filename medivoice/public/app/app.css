@@ -1,6 +1,6 @@
 /* ميدي فويز — أنماط التطبيق (بعد التفعيل). الأساس والألوان في /shell.css */
 
-#app { position: relative; z-index: 1; min-height: 100dvh; display: flex; flex-direction: column; }
+#app { position: relative; z-index: 1; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; }
 
 /* ───────── الشريط العلوي ───────── */
 .bar {
@@ -270,7 +270,7 @@
 /* ───────── النوافذ السفلية ───────── */
 .sheet { position: fixed; inset: 0; z-index: 40; display: flex; align-items: flex-end; justify-content: center; background: rgba(6, 2, 14, 0); transition: background 0.25s; }
 .sheet.open { background: rgba(6, 2, 14, 0.66); }
-.sheet-panel { width: min(100%, 560px); max-height: 90dvh; display: flex; flex-direction: column; background: #170c2e; border-radius: 28px 28px 0 0; box-shadow: 0 -20px 60px rgba(0, 0, 0, 0.6), inset 0 1px 0 var(--line-2); transform: translateY(104%); transition: transform 0.36s var(--ease); }
+.sheet-panel { width: min(100%, 560px); max-height: 86vh; max-height: 90dvh; display: flex; flex-direction: column; background: #170c2e; border-radius: 28px 28px 0 0; box-shadow: 0 -20px 60px rgba(0, 0, 0, 0.6), inset 0 1px 0 var(--line-2); transform: translateY(104%); transition: transform 0.36s var(--ease); }
 .sheet-panel.wide { width: min(100%, 760px); }
 .sheet.open .sheet-panel { transform: none; }
 @media (min-width: 720px) { .sheet { align-items: center; } .sheet-panel { border-radius: 28px; } }
@@ -306,7 +306,7 @@
 .game-progress i { position: absolute; inset-block: 0; inset-inline-start: 0; width: 0; background: linear-gradient(90deg, rgba(84, 51, 236, 0.55), rgba(201, 35, 193, 0.55)); transition: width 0.8s var(--ease); }
 .game-progress b { position: relative; font-size: 0.95rem; color: var(--text); }
 .game-progress small { position: relative; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text-2); font-size: 0.8rem; }
-.game-canvas { display: block; width: 100%; height: min(60dvh, 560px); border-radius: 20px; background: #0d0720; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+.game-canvas { display: block; width: 100%; height: min(56vh, 560px); height: min(60dvh, 560px); border-radius: 20px; background: #0d0720; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
 .game-hint { margin: 0; text-align: center; color: var(--text-3); font-size: 0.8rem; }
 
 /* مقاطع إنجليزية داخل نص عربي: معزولة الاتجاه، والقصيرة لا تنكسر بين سطرين */

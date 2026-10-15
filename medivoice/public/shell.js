@@ -252,7 +252,19 @@ async function openApp(session, fromLock) {
     mod = await import(`/app/main.js?v=${encodeURIComponent(session.build || '')}`);
   } catch (e) {
     console.error(e);
-    toast('تعذّر تحميل التطبيق. حدّث الصفحة.', 'err');
+    // ملف لم يكتمل تحميله (شبكة ضعيفة): بطاقة واضحة بزر إعادة بدل شاشة فارغة
+    $('#lock').hidden = true;
+    appEl.hidden = false;
+    const card = document.createElement('div');
+    card.className = 'load-failed';
+    const msg = document.createElement('p');
+    msg.textContent = 'ما اكتمل تحميل التطبيق، غالباً بسبب ضعف الإنترنت.';
+    const btn = document.createElement('button');
+    btn.className = 'btn';
+    btn.textContent = 'إعادة التحميل';
+    btn.onclick = () => location.reload();
+    card.append(msg, btn);
+    appEl.replaceChildren(card);
     return;
   }
   appEl.hidden = false;
