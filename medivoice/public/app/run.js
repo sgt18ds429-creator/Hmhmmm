@@ -375,6 +375,9 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
       else if (e.code === 'notes_failed') ctx.toast('ما كدرت أكتب الشرح هسه، فبقت الملزمة نصاً مفرّغاً. تقدر تحوّلها لشرح بعدين من خيارات الملزمة.', 'err');
       else if (e.code === 'translate_failed') ctx.toast('ما كدرت أكتب النسخة الثانية (الترجمة) هسه لأن المحرك مضغوط. الملزمة جاهزة بلغتها، وتقدر تعيد كتابتها بعدين.', 'err');
       else if (e.code === 'translate_partial') ctx.toast('أجزاء قليلة من النسخة الثانية بقت بلغتها الأصلية لأن ترجمتها ما اكتملت، ومعلَّمة بملاحظة.');
+      else if (e.code === 'figures_partial') ctx.toast('بعض الصور ما انفحصت (انقطاع أو ضيق وقت) فبقت مواضعها بلا صورة. الشرح كامل.');
+      else if (e.code === 'key_groq_dead') ctx.toast('مفتاح Groq ما عاد يشتغل (انحذف أو انتهى)، فكمّلت بـ Gemini وحده. اربطه من جديد من الإعدادات.', 'err');
+      else if (e.code === 'key_gemini_dead') ctx.toast('مفتاح Gemini ما عاد يشتغل (انحذف أو انتهى)، فكمّلت بـ Groq وحده (دقة المصطلحات أقل). اربطه من جديد من الإعدادات.', 'err');
       else if (e.code === 'gemini_out') ctx.toast('خلصت حصة Gemini اليوم بمفاتيحك، فأكمل بـ Groq (دقة المصطلحات أقل). لحصة جديدة أضف مفتاح Gemini من حساب Google ثاني.', 'err');
     } else if (e.type === 'images') {
       // الصور تُفحص أثناء الكتابة أيضاً: لا نغطي حالة الكتابة، ونعرض العدد فقط

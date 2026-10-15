@@ -179,7 +179,10 @@ export class MediVoiceStore extends DurableObject {
       CREATE TABLE IF NOT EXISTS attempts (key TEXT NOT NULL, ts INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS attempts_key ON attempts(key, ts);
       CREATE TABLE IF NOT EXISTS admin_sessions (id TEXT PRIMARY KEY, exp INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS key_health (code TEXT NOT NULL, k TEXT NOT NULL, until INTEGER NOT NULL, PRIMARY KEY (code, k));
     `);
+    // ثوانٍ قيد الحساب: مقاطع أُذن بها ولم يصل خبر اكتمالها بعد (حتى لا يتجاوز الحد اليومي بمقاطع متوازية)
+    this.pending = new Map();
   }
 
   // ── أدوات داخلية ──
@@ -222,6 +225,7 @@ export class MediVoiceStore extends DurableObject {
     this.sql.exec('DELETE FROM usage WHERE ts < ?', now - 60 * DAY);
     this.sql.exec("DELETE FROM attempts WHERE (ts < ? AND key NOT LIKE 'mv:%') OR ts < ?", now - DAY, now - 31 * DAY);
     this.sql.exec('DELETE FROM admin_sessions WHERE exp < ?', now);
+    this.sql.exec('DELETE FROM key_health WHERE until < ?', now);
     this.sql.exec('DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT 3000)');
     await this.ctx.storage.setAlarm(now + DAY);
   }
@@ -253,6 +257,16 @@ export class MediVoiceStore extends DurableObject {
   #usedSec(code, sinceMs) {
     const r = this.#row("SELECT COALESCE(SUM(sec), 0) AS s FROM usage WHERE code = ? AND kind = 'audio' AND ts > ?", code, Date.now() - sinceMs);
     return r?.s || 0;
+  }
+  /** الثواني المأذون بها لهذا الكود ولم تُسجَّل بعد (طلبات صوت جارية). ما مضى عليه 10 دقائق يُعدّ منتهياً */
+  #pendingSec(code) {
+    const old = Date.now() - 10 * MIN;
+    let sum = 0;
+    for (const [req, p] of this.pending) {
+      if (p.at < old) { this.pending.delete(req); continue; }
+      if (p.code === code) sum += p.sec;
+    }
+    return sum;
   }
 
   // يتحقق من الجهاز والكود. يرجع { ok, dev, code } أو { ok:false, reason }
@@ -331,7 +345,8 @@ export class MediVoiceStore extends DurableObject {
   async activate(deviceId, rawCode, meta) {
     await this.#ensureAlarm();
     const ipKey = `act:${meta.ip || 'x'}`;
-    if (!this.#allow(ipKey, 15 * MIN, 8)) return { ok: false, error: 'too_many', status: 429 };
+    // شبكة واحدة لعشرات الطلاب (واي فاي الكلية): الحد يمنع التخمين الآلي فقط، لا الأخطاء المطبعية لصف كامل
+    if (!this.#allow(ipKey, 15 * MIN, 25)) return { ok: false, error: 'too_many', status: 429 };
     const codeStr = normalizeCode(rawCode);
     const code = codeStr.length === 8 ? this.#row('SELECT * FROM codes WHERE code = ?', codeStr) : null;
     if (!code) {
@@ -379,19 +394,25 @@ export class MediVoiceStore extends DurableObject {
   }
 
   // قبل كل طلب بروكسي: يتأكد من الصلاحية والحد اليومي ويرجع مفاتيح المستخدم
-  async authorize(deviceId, { kind, sec = 0 } = {}) {
+  async authorize(deviceId, { kind, sec = 0, req = '' } = {}) {
     const c = this.#check(deviceId);
     if (!c.ok) return { ok: false, status: 401, error: c.reason === 'none' ? 'locked' : c.reason };
     const code = c.code;
     if (sec > 0 && code.daily_limit_sec > 0) { // 0 = بلا حد يومي
-      const used = this.#usedSec(code.code, DAY);
+      // طلب أُعيد (رده ضاع) لا يُحجز له مرة ثانية
+      const used = this.#usedSec(code.code, DAY) + (req && this.pending.has(req) ? 0 : this.#pendingSec(code.code));
       if (used + sec > code.daily_limit_sec + 30) {
         const oldest = this.#row("SELECT MIN(ts) AS t FROM usage WHERE code = ? AND kind = 'audio' AND ts > ?", code.code, Date.now() - DAY);
         const retry = oldest?.t ? Math.max(60, Math.ceil((oldest.t + DAY - Date.now()) / 1000)) : 3600;
         return { ok: false, status: 429, error: 'daily_limit', retry_after: retry, used_sec: Math.round(used), limit_sec: code.daily_limit_sec };
       }
+      if (req) this.pending.set(req, { code: code.code, sec, at: Date.now() });
     }
     const out = { ok: true, code: code.code };
+    if (kind === 'groq' || kind === 'gemini' || kind === 'both') {
+      // ما تعلّمه الخادم عن مفاتيح هذا الكود (حصة نفدت، مفتاح ملغى) يبقى هنا لا في ذاكرة خادم واحد
+      out.health = this.#all('SELECT k, until FROM key_health WHERE code = ? AND until > ?', code.code, Date.now()).map((r) => [r.k, r.until]);
+    }
     if (kind === 'pdf') {
       const cfg = this.#config();
       const today = this.#row("SELECT COUNT(*) AS n FROM usage WHERE code = ? AND kind = 'pdf' AND ts > ?", code.code, Date.now() - DAY).n;
@@ -419,10 +440,12 @@ export class MediVoiceStore extends DurableObject {
   logUsage(code, kind, sec = 0, req = '') {
     // طلب أُعيد بعد ضياع رده (الطالب طلع من الموقع أثناءه): ثوانيه حُسبت مرة، فلا تُحسب ثانية
     if (req) {
+      this.pending.delete(req);
       this.seenReq ??= new Map();
       if (this.seenReq.has(req)) return;
       this.seenReq.set(req, Date.now());
-      if (this.seenReq.size > 5000) { const old = Date.now() - 3600_000; for (const [k, t] of this.seenReq) if (t < old) this.seenReq.delete(k); }
+      // الأقدم أولاً (ترتيب الإدراج): الحجم محدود مهما كثر الطلاب
+      if (this.seenReq.size > 5000) for (const k of this.seenReq.keys()) { if (this.seenReq.size <= 4000) break; this.seenReq.delete(k); }
     }
     const now = Date.now();
     this.sql.exec('INSERT INTO usage (code, ts, kind, sec) VALUES (?, ?, ?, ?)', code, now, kind, sec);
@@ -431,28 +454,37 @@ export class MediVoiceStore extends DurableObject {
     else if (kind === 'lecture') this.sql.exec('UPDATE codes SET lectures = lectures + 1, last_active = ? WHERE code = ?', now, code);
   }
 
+  /** طلب صوت فشل عند المزوّد: ثوانيه المحجوزة تُحرَّر فوراً */
+  release(req) { if (req) this.pending.delete(req); }
+
+  /** يتذكّر حالة مفتاح+نموذج (حصة نفدت أو مفتاح ملغى) حتى موعدها، لكل خوادم Cloudflare */
+  noteKey(code, k, until) {
+    this.sql.exec('INSERT INTO key_health (code, k, until) VALUES (?, ?, ?) ON CONFLICT(code, k) DO UPDATE SET until = MAX(until, excluded.until)', code, String(k).slice(0, 120), until);
+  }
+
   /**
    * يحفظ مفتاحاً. Gemini يقبل عدة مفاتيح (من حسابات Google مختلفة) تُخزَّن معاً كقائمة JSON مشفرة؛
    * add=true يضيف إلى الموجود بدل استبداله. الحصة اليومية المجانية لكل مفتاح مستقلة، فالخادم يتنقل بينها.
    */
-  async setKey(deviceId, provider, keys, { add = false } = {}) {
+  async setKey(deviceId, provider, keys, opts = {}) {
+    // التشفير ينتظر (والانتظار لا يمنع طلباً متزامناً): إضافتان في وقت واحد تُنفَّذان واحدة بعد الأخرى
+    const prev = this.keyLock || Promise.resolve();
+    let done;
+    this.keyLock = new Promise((r) => { done = r; });
+    try { await prev; return await this.#setKey(deviceId, provider, keys, opts); } finally { done(); }
+  }
+  async #setKey(deviceId, provider, keys, { add = false } = {}) {
     const c = this.#check(deviceId);
     if (!c.ok) return { ok: false, status: 401, error: 'locked' };
     const list = Array.isArray(keys) ? keys : [keys];
     const hintOf = (k) => k.slice(0, 4) + '…' + k.slice(-4);
-    if (provider === 'groq') {
-      // عدة مفاتيح Groq من حسابات مختلفة: لكل حساب حصته اليومية من ساعات الصوت، والخادم يتنقل بينها
-      const current = add ? parseKeys(await this.#open(c.code.groq_enc)) : [];
-      const all = [...new Set([...current, ...list])];
-      if (all.length > MAX_GEMINI_KEYS) return { ok: false, status: 400, error: 'too_many_keys' };
-      this.sql.exec('UPDATE codes SET groq_enc = ?, groq_hint = ? WHERE code = ?', await this.#seal(JSON.stringify(all)), all.map(hintOf).join(' · '), c.code.code);
-    } else {
-      const current = add ? parseKeys(await this.#open(c.code.gemini_enc)) : [];
-      const all = [...new Set([...current, ...list])];
-      if (all.length > MAX_GEMINI_KEYS) return { ok: false, status: 400, error: 'too_many_keys' };
-      const merged = all;
-      this.sql.exec('UPDATE codes SET gemini_enc = ?, gemini_hint = ? WHERE code = ?', await this.#seal(JSON.stringify(merged)), merged.map(hintOf).join(' · '), c.code.code);
-    }
+    const col = provider === 'groq' ? 'groq' : 'gemini';
+    // عدة مفاتيح من حسابات مختلفة: لكل حساب حصته اليومية، والخادم يتنقل بينها
+    const current = add ? parseKeys(await this.#open(c.code[`${col}_enc`])) : [];
+    const all = [...new Set([...current, ...list])];
+    if (all.length > MAX_GEMINI_KEYS) return { ok: false, status: 400, error: 'too_many_keys' };
+    this.sql.exec(`UPDATE codes SET ${col}_enc = ?, ${col}_hint = ? WHERE code = ?`, await this.#seal(JSON.stringify(all)), all.map(hintOf).join(' · '), c.code.code);
+    this.sql.exec('DELETE FROM key_health WHERE code = ?', c.code.code);
     this.#event('key_linked', { code: c.code.code, detail: provider });
     return { ok: true, session: this.#sessionPayload(this.#row('SELECT * FROM codes WHERE code = ?', c.code.code)) };
   }
@@ -462,6 +494,7 @@ export class MediVoiceStore extends DurableObject {
     if (!c.ok) return { ok: false, status: 401, error: 'locked' };
     if (provider === 'groq') this.sql.exec('UPDATE codes SET groq_enc = NULL, groq_hint = NULL WHERE code = ?', c.code.code);
     else this.sql.exec('UPDATE codes SET gemini_enc = NULL, gemini_hint = NULL WHERE code = ?', c.code.code);
+    this.sql.exec('DELETE FROM key_health WHERE code = ?', c.code.code);
     return { ok: true, session: this.#sessionPayload(this.#row('SELECT * FROM codes WHERE code = ?', c.code.code)) };
   }
 
@@ -782,6 +815,28 @@ function remember(map, k, ms) {
   map.set(k, Date.now() + ms);
   if (map.size > 4000) { const now = Date.now(); for (const [x, t] of map) if (t <= now) map.delete(x); }
 }
+/** معرّف مفتاح لا يكشفه (أول وآخر 4 حروف، كما يُعرض للطالب) */
+const hintOf = (k) => k.slice(0, 4) + '…' + k.slice(-4);
+/**
+ * حالة المفاتيح تعيش في قاعدة البيانات (كل خوادم Cloudflare وبعد إعادة التشغيل)، وذاكرة هذا الخادم نسخة سريعة
+ * منها: ما يُتعلَّم هنا يُرسل إليها، وما جاء مع التصريح يُدمج هنا.
+ */
+function mergeHealth(auth) {
+  if (!auth?.health?.length) return;
+  const keys = [...(auth.geminiKeys || []), ...(auth.groqKeys || [])];
+  const byHint = new Map(keys.map((k) => [hintOf(k), k]));
+  for (const [k, until] of auth.health) {
+    const bar = k.indexOf('|');
+    const key = byHint.get(bar < 0 ? k : k.slice(0, bar));
+    if (!key) continue;
+    const model = bar < 0 ? '' : k.slice(bar + 1);
+    const map = model === '*' ? deadKeys : exhausted;
+    const id = model === '*' ? key : `${key}|${model}`;
+    if ((map.get(id) || 0) < until) map.set(id, until);
+  }
+}
+/** يُستدعى عند تعلّم حالة جديدة: تُحفظ في قاعدة البيانات دون انتظار */
+const learn = (ctx, db, code) => (key, model, until) => { try { ctx.waitUntil(db.noteKey(code, `${hintOf(key)}|${model}`, until)); } catch {} };
 
 /** خطأ يخص المفتاح نفسه (لا الطلب ولا النموذج): مفتاح غير صالح أو ملغى أو بلا صلاحية. */
 const keyRejected = (status, text) => status === 401
@@ -795,7 +850,7 @@ const upstreamError = (status, message) => new Response(JSON.stringify({ error: 
  * يرسل طلب Gemini بمفاتيح المستخدم بالتناوب: عند نفاد حصة مفتاح (429) أو رفضه (مفتاح ملغى) يجرّب التالي،
  * فلا يُفشل مفتاحٌ واحد معطوب محاضرةً كاملة ما دام غيره يعمل.
  */
-async function geminiWithKeys(keys, model, body) {
+async function geminiWithKeys(keys, model, body, onLearn = () => {}) {
   const start = Math.floor(Math.random() * keys.length);
   const order = keys.map((_, i) => keys[(i + start) % keys.length]);
   const usable = order.filter((k) => !isDead(k));
@@ -822,14 +877,17 @@ async function geminiWithKeys(keys, model, body) {
     const text = await up.clone().text().catch(() => '');
     if (up.status === 429) {
       // 429 قد تكون حصة الدقيقة (مؤقتة) أو حصة اليوم؛ في الحالتين المفتاح التالي أفضل الآن
-      if (/per_day|PerDay|daily/i.test(text) && !/per_minute|PerMinute/i.test(text)) {
+      // قد يذكر الرد حدّي الدقيقة واليوم معاً: ذكر اليوم يكفي (المفتاح لن ينفع لهذا النموذج حتى التجدد)
+      if (/per_day|PerDay|daily/i.test(text)) {
         const delay = parseFloat((text.match(/"retryDelay"\s*:\s*"([\d.]+)s"/) || [])[1]) || 0;
-        remember(exhausted, `${key}|${model}`, Math.max(EXHAUST_MS, Math.min(delay * 1000, DAY_MS)));
+        const ms = Math.max(EXHAUST_MS, Math.min(delay * 1000, DAY_MS));
+        remember(exhausted, `${key}|${model}`, ms);
+        onLearn(key, model, Date.now() + ms);
       } else minute = up;
       last = up;
       continue;
     }
-    if (keyRejected(up.status, text)) { if (keys.length > 1) remember(deadKeys, key, DEAD_MS); last = up; continue; }
+    if (keyRejected(up.status, text)) { if (keys.length > 1) { remember(deadKeys, key, DEAD_MS); onLearn(key, '*', Date.now() + DEAD_MS); } last = up; continue; }
     return up; // طلب غير صالح (400 عادي): المفتاح الآخر لن يغيّر شيئاً
   }
   // مفتاح في حد الدقيقة (يرجع بعد ثوانٍ) أفضل للمتصفح من خبر نفاد اليوم بمفتاح آخر: ينتظر بدل أن يترك النموذج
@@ -853,11 +911,12 @@ const dayLimitError = (model) => new Response(JSON.stringify({ error: {
 const AUTH_TTL = 60_000;
 const authCache = new Map();
 async function authorizeCached(db, id, opts) {
-  if (opts.sec > 0 || opts.kind === 'pdf') return db.authorize(id, opts);
+  if (opts.sec > 0 || opts.kind === 'pdf') { const v = await db.authorize(id, opts); mergeHealth(v); return v; }
   const k = `${id}|${opts.kind || ''}`;
   const hit = authCache.get(k);
   if (hit && Date.now() - hit.at < AUTH_TTL) return hit.value;
   const value = await db.authorize(id, opts);
+  mergeHealth(value);
   if (value.ok) {
     authCache.set(k, { at: Date.now(), value });
     if (authCache.size > 3000) { const old = Date.now() - AUTH_TTL; for (const [x, v] of authCache) if (v.at < old) authCache.delete(x); }
@@ -871,7 +930,7 @@ const forgetAuth = (id) => { for (const k of authCache.keys()) if (k.startsWith(
  * يُتذكّر لذلك المفتاح والنموذج حتى موعد تجدده، فلا يُضيَّع وقت عليه.
  * @param body ArrayBuffer (يُرسل كما هو لكل مفتاح)
  */
-async function groqWithKeys(keys, url, contentType, body, model = '') {
+async function groqWithKeys(keys, url, contentType, body, model = '', onLearn = () => {}) {
   const start = Math.floor(Math.random() * keys.length);
   const order = keys.map((_, i) => keys[(i + start) % keys.length]);
   const usable = order.filter((k) => !isDead(k));
@@ -900,13 +959,13 @@ async function groqWithKeys(keys, url, contentType, body, model = '') {
       if (/request too large|reduce your message/i.test(text)) return up;
       const wait = parseFloat(up.headers.get('retry-after')) || 0;
       // حد طويل (ساعات الصوت أو رموز اليوم): يُتذكّر لهذا المفتاح والنموذج حتى موعده
-      if (wait > 120 && model) remember(exhausted, `${key}|${tag}`, Math.min(wait, 24 * 3600) * 1000);
+      if (wait > 120 && model) { const ms = Math.min(wait, 24 * 3600) * 1000; remember(exhausted, `${key}|${tag}`, ms); onLearn(key, tag, Date.now() + ms); }
       // يرجع للمتصفح أقرب موعد بين المفاتيح، فينتظر أقصر مدة ممكنة
       if (!soonest || wait < (parseFloat(soonest.headers.get('retry-after')) || 0)) soonest = up;
       last = up;
       continue;
     }
-    if (up.status === 401) { if (keys.length > 1) remember(deadKeys, key, DEAD_MS); last = up; continue; } // مفتاح ملغى أو محذوف
+    if (up.status === 401) { if (keys.length > 1) { remember(deadKeys, key, DEAD_MS); onLearn(key, '*', Date.now() + DEAD_MS); } last = up; continue; } // مفتاح ملغى أو محذوف
     if (up.status === 403) { last = up; continue; } // حساب مقيّد أو نموذج غير متاح له: نجرب حساباً آخر
     return up;
   }
@@ -929,17 +988,22 @@ async function verifyKey(provider, key) {
 
 async function listModels(auth) {
   const out = { groq: [], gemini: [] };
-  const jobs = [];
-  if (auth.groq) {
-    jobs.push(fetch('https://api.groq.com/openai/v1/models', { headers: { authorization: `Bearer ${auth.groq}` }, signal: AbortSignal.timeout(15_000) })
-      .then((r) => (r.ok ? r.json() : null)).then((d) => { if (d?.data) out.groq = d.data.filter((m) => m.active !== false).map((m) => m.id); }).catch(() => {}));
-  }
-  if (auth.gemini) {
-    jobs.push(fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=300', { headers: { 'x-goog-api-key': auth.gemini }, signal: AbortSignal.timeout(15_000) })
-      .then((r) => (r.ok ? r.json() : null)).then((d) => {
-        if (d?.models) out.gemini = d.models.filter((m) => (m.supportedGenerationMethods || []).includes('generateContent')).map((m) => m.name.replace(/^models\//, ''));
-      }).catch(() => {}));
-  }
+  // مفتاح ملغى بين عدة: نجرب التالي حتى يرد واحد (قائمة النماذج ليست لها حصة تُذكر)
+  const firstOk = async (keys, fetchOne) => {
+    for (const key of (keys || []).filter((k) => !isDead(k)).slice(0, 3)) {
+      const d = await fetchOne(key).catch(() => null);
+      if (d) return d;
+    }
+    return null;
+  };
+  const jobs = [
+    firstOk(auth.groqKeys, (key) => fetch('https://api.groq.com/openai/v1/models', { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15_000) })
+      .then((r) => (r.ok ? r.json() : null))).then((d) => { if (d?.data) out.groq = d.data.filter((m) => m.active !== false).map((m) => m.id); }),
+    firstOk(auth.geminiKeys, (key) => fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=300', { headers: { 'x-goog-api-key': key }, signal: AbortSignal.timeout(15_000) })
+      .then((r) => (r.ok ? r.json() : null))).then((d) => {
+      if (d?.models) out.gemini = d.models.filter((m) => (m.supportedGenerationMethods || []).includes('generateContent')).map((m) => m.name.replace(/^models\//, ''));
+    }),
+  ];
   await Promise.all(jobs);
   return out;
 }
@@ -1044,14 +1108,22 @@ async function handleApi(request, env, ctx, url) {
   const sec = Math.min(Math.max(Number(url.searchParams.get('sec')) || 0, 0), 1800);
 
   // تحويل الصوت إلى نص (Groq Whisper) — الجسم multipart يمر كما هو بدون قراءة
+  const req = reqTag(request);
+  // ثوانٍ محجوزة لطلب فشل عند المزوّد تُحرَّر فوراً (لا تبقى محسوبة 10 دقائق على الطالب)
+  const settle = (auth, up) => {
+    if (sec <= 0) return;
+    if (up.ok) ctx.waitUntil(db.logUsage(auth.code, 'audio', sec, req));
+    else if (req) ctx.waitUntil(db.release(req));
+  };
+
   if (path === '/api/stt' && method === 'POST') {
-    const auth = await authorizeCached(db, id, { kind: 'groq', sec });
+    const auth = await authorizeCached(db, id, { kind: 'groq', sec, req });
     if (!auth.ok) return json(auth, auth.status);
-    if (!auth.groq) return json({ error: 'no_key', provider: 'groq' }, 412);
+    if (!auth.groq) { if (sec > 0 && req) ctx.waitUntil(db.release(req)); return json({ error: 'no_key', provider: 'groq' }, 412); }
     // الجسم يُقرأ مرة (نحو 2MB) حتى يُعاد إرساله بمفتاح آخر إذا بلغ الأول حده
     const body = auth.groqKeys.length > 1 ? await request.arrayBuffer() : request.body;
-    const up = await groqWithKeys(auth.groqKeys, 'https://api.groq.com/openai/v1/audio/transcriptions', request.headers.get('content-type') || '', body, url.searchParams.get('m') || '');
-    if (up.ok && sec > 0) ctx.waitUntil(db.logUsage(auth.code, 'audio', sec, reqTag(request)));
+    const up = await groqWithKeys(auth.groqKeys, 'https://api.groq.com/openai/v1/audio/transcriptions', request.headers.get('content-type') || '', body, url.searchParams.get('m') || '', learn(ctx, db, auth.code));
+    settle(auth, up);
     return relay(up);
   }
 
@@ -1060,17 +1132,17 @@ async function handleApi(request, env, ctx, url) {
     if (!auth.ok) return json(auth, auth.status);
     if (!auth.groq) return json({ error: 'no_key', provider: 'groq' }, 412);
     const body = auth.groqKeys.length > 1 ? await request.arrayBuffer() : request.body;
-    return relay(await groqWithKeys(auth.groqKeys, 'https://api.groq.com/openai/v1/chat/completions', 'application/json', body, url.searchParams.get('m') || ''));
+    return relay(await groqWithKeys(auth.groqKeys, 'https://api.groq.com/openai/v1/chat/completions', 'application/json', body, url.searchParams.get('m') || '', learn(ctx, db, auth.code)));
   }
 
   if (path === '/api/gemini' && method === 'POST') {
     const model = url.searchParams.get('model') || '';
     if (!/^[a-z0-9][a-z0-9.-]{2,60}$/.test(model)) return json({ error: 'bad_model' }, 400);
-    const auth = await authorizeCached(db, id, { kind: 'gemini', sec });
+    const auth = await authorizeCached(db, id, { kind: 'gemini', sec, req });
     if (!auth.ok) return json(auth, auth.status);
-    if (!auth.geminiKeys?.length) return json({ error: 'no_key', provider: 'gemini' }, 412);
-    const up = await geminiWithKeys(auth.geminiKeys, model, await request.arrayBuffer());
-    if (up.ok && sec > 0) ctx.waitUntil(db.logUsage(auth.code, 'audio', sec, reqTag(request)));
+    if (!auth.geminiKeys?.length) { if (sec > 0 && req) ctx.waitUntil(db.release(req)); return json({ error: 'no_key', provider: 'gemini' }, 412); }
+    const up = await geminiWithKeys(auth.geminiKeys, model, await request.arrayBuffer(), learn(ctx, db, auth.code));
+    settle(auth, up);
     return relay(up);
   }
 

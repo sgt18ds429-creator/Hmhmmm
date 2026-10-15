@@ -1161,3 +1161,54 @@ test('الرد الناقص لا يضع سطراً مكان غيره: كل سط�
   assert.equal(items[1], '[[AP view]] للمريض اللي ما يوكف.', 'السطر 2 بلا رد: يبقى ولا يأخذ رد غيره');
   assert.equal(items[2], 'كيف يُعرف [[magnification]]؟');
 });
+
+test('مفتاح مزوّد رُفض (ملغى) أثناء العمل: يكمل بالمزوّد الآخر مع تنبيه واحد، ولا يتوقف إلا إذا لم يبقَ غيره', async () => {
+  const rejected = { ok: false, status: 401, data: { error: { message: 'Invalid API Key' } } };
+  const gemOk = { ok: true, status: 200, data: { candidates: [{ content: { parts: [{ text: 'نص من Gemini' }] }, finishReason: 'STOP' }] } };
+  const groqOk = { ok: true, status: 200, data: { choices: [{ message: { content: 'نص من Groq' }, finish_reason: 'stop' }] } };
+  // Groq ملغى و Gemini يعمل
+  let notes = [];
+  let engine = new Engine({ sleep: async () => {}, async gemini() { return gemOk; }, async groq() { return rejected; }, async stt() { return rejected; } },
+    { gemini: true, groq: true, geminiModels: ['gemini-strong'], groqModels: ['openai/gpt-oss-120b'], sttModels: ['whisper-large-v3'] }, (e) => { if (e.type === 'note') notes.push(e.code); });
+  assert.equal((await engine.groq({ system: 's', user: 'u' })), null);
+  assert.equal((await engine.whisper({ blob: new Blob(['x']), index: 0, ext: 'ogg' }, { sec: 10 })), null);
+  assert.equal((await engine.write({ system: 's', user: 'u' })).text, 'نص من Gemini');
+  assert.deepEqual(notes, ['key_groq_dead'], 'تنبيه واحد');
+  assert.equal(engine.hasGroqLlm, false); assert.equal(engine.hasStt, false);
+  // Gemini ملغى و Groq يعمل
+  notes = [];
+  engine = new Engine({ sleep: async () => {}, async gemini() { return { ok: false, status: 400, data: { error: { message: 'API key not valid. Please pass a valid API key.' } } }; }, async groq() { return groqOk; } },
+    { gemini: true, groq: true, geminiModels: ['gemini-strong', 'gemini-x-lite'], groqModels: ['openai/gpt-oss-120b'], sttModels: [] }, (e) => { if (e.type === 'note') notes.push(e.code); });
+  assert.equal((await engine.write({ system: 's', user: 'u' })).text, 'نص من Groq');
+  assert.deepEqual(notes, ['key_gemini_dead']);
+  // المزوّد الوحيد ملغى: خطأ قاطع (شاشة «مفتاح ما يشتغل»)
+  engine = new Engine({ sleep: async () => {}, async gemini() { return rejected; } }, { gemini: true, groq: false, geminiModels: ['gemini-strong'], groqModels: [], sttModels: [] });
+  await assert.rejects(engine.gemini({ system: 's', parts: [] }), (e) => e instanceof PipelineError && e.code === 'key_gemini');
+  // نموذج Groq غير متاح لهذا الحساب (403 يذكر النموذج): يُترك النموذج وحده لا المفتاح
+  engine = new Engine({ sleep: async () => {}, async groq(body) { return body.model === 'a' ? { ok: false, status: 403, data: { error: { message: 'The model `a` is not available for this account' } } } : groqOk; } },
+    { gemini: false, groq: true, geminiModels: [], groqModels: ['a', 'b'], sttModels: [] });
+  assert.equal((await engine.groq({ system: 's', user: 'u' })).text, 'نص من Groq');
+  assert.equal(engine.llm.alive.length, 1);
+});
+
+test('انقطاع الشبكة (حالة 0) لا يُحسب ضغطاً على النموذج الدقيق ولا يهدّئه: بعد رجوع الشبكة يكمل بنفس النموذج', async () => {
+  let calls = 0;
+  const models = [];
+  const io = { sleep: async () => {}, async gemini(model) { models.push(model); return ++calls <= 3 ? { ok: false, status: 0, data: null } : { ok: true, status: 200, data: { candidates: [{ content: { parts: [{ text: 'رجع' }] }, finishReason: 'STOP' }] } }; } };
+  const engine = new Engine(io, { gemini: true, groq: false, geminiModels: ['gemini-strong', 'gemini-x-lite'], groqModels: [], sttModels: [] });
+  const r = await engine.gemini({ system: 's', parts: [] });
+  assert.equal(r.text, 'رجع');
+  assert.deepEqual(models, ['gemini-strong', 'gemini-strong', 'gemini-strong', 'gemini-strong'], 'لم ينزل للخفيف ولم يترك النموذج');
+  assert.equal(engine.strong5xx, 0);
+});
+
+test('حد الدقيقة يتكرر بلا نهاية: الاستدعاء يرجع بعد مدة الصبر بدل أن يدور دقائق', async () => {
+  let t = 0;
+  const minute = { ok: false, status: 429, data: { error: { message: 'quota', details: [{ violations: [{ quotaId: 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier' }] }, { retryDelay: '20s' }] } } };
+  const io = { sleep: async (ms) => { t += ms; }, activeNow: () => t, async gemini() { return minute; } };
+  const engine = new Engine(io, { gemini: true, groq: false, geminiModels: ['gemini-strong'], groqModels: [], sttModels: [] });
+  const r = await engine.gemini({ system: 's', parts: [], patienceMs: 60_000, strongWaitMs: 0 });
+  assert.equal(r, null);
+  assert.ok(t <= 200_000, `توقف خلال الصبر (${t}ms)`);
+  assert.equal(engine.hasGemini, true, 'النموذج لم يُترك (حد دقيقة لا يوم)');
+});

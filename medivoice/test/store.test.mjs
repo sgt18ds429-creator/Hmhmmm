@@ -208,3 +208,95 @@ test('بروكسي Gemini: نفاد حصة اليوم بكل المفاتيح ي
     assert.equal((await worker.fetch(gem('gemini-x-lite'), env, { waitUntil() {} })).status, 200);
   } finally { globalThis.fetch = realFetch; Math.random = realRandom; }
 });
+
+test('الحد اليومي يحسب المقاطع الجارية: 6 مقاطع متوازية لا تتجاوزه، وفشل المقطع يحرّر حجزه', async () => {
+  const { MediVoiceStore } = await loadModule();
+  const store = makeStore(MediVoiceStore);
+  const { token } = await store.adminLogin('admin-pass-123', '10.0.0.9');
+  const made = await store.adminCreateCodes(token, { daily_hours: 1 });
+  await store.activate('dev-p', made.created[0], META);
+  const code = compact(made.created[0]);
+  store.logUsage(code, 'audio', 3000); // بقي 600 ثانية (+30 سماحاً)
+  // ثلاثة مقاطع متوازية من 300 ثانية: الأول والثاني يُقبلان، الثالث يتجاوز الحد وهو محجوز
+  assert.equal((await store.authorize('dev-p', { kind: 'groq', sec: 300, req: 'r1' })).ok, true);
+  assert.equal((await store.authorize('dev-p', { kind: 'groq', sec: 300, req: 'r2' })).ok, true);
+  const third = await store.authorize('dev-p', { kind: 'groq', sec: 300, req: 'r3' });
+  assert.equal(third.ok, false); assert.equal(third.error, 'daily_limit');
+  // نفس الطلب يُعاد (رده ضاع): لا يُحجز مرة ثانية
+  assert.equal((await store.authorize('dev-p', { kind: 'groq', sec: 300, req: 'r2' })).ok, true);
+  // المقطع الثاني فشل عند المزوّد: حجزه يتحرر فيُقبل الثالث
+  store.release('r2');
+  assert.equal((await store.authorize('dev-p', { kind: 'groq', sec: 300, req: 'r3' })).ok, true);
+  // تسجيل الأول يحوّل حجزه إلى استهلاك فعلي: المجموع نفسه، ولا يُحسب مرتين
+  store.logUsage(code, 'audio', 300, 'r1');
+  store.logUsage(code, 'audio', 300, 'r1');
+  assert.equal((await store.authorize('dev-p', { kind: 'groq', sec: 100, req: 'r4' })).ok, false, '3300 فعلي + 300 محجوز = الحد');
+  assert.equal((await store.adminOverview(token)).codes[0].total_sec, 3300);
+});
+
+test('حالة المفاتيح تُحفظ في قاعدة البيانات وتُرجع مع التصريح، وتُمسح عند تغيير المفاتيح', async () => {
+  const { MediVoiceStore } = await loadModule();
+  const store = makeStore(MediVoiceStore);
+  const { token } = await store.adminLogin('admin-pass-123', '10.0.0.9');
+  const made = await store.adminCreateCodes(token, { daily_hours: 8 });
+  await store.activate('dev-h', made.created[0], META);
+  const code = compact(made.created[0]);
+  const k = `AIza${'x'.repeat(30)}`;
+  await store.setKey('dev-h', 'gemini', [k]);
+  const until = Date.now() + 3600_000;
+  store.noteKey(code, 'AIza…xxxx|gemini-strong', until);
+  store.noteKey(code, 'AIza…xxxx|gemini-strong', until - 1000); // الأبعد يبقى
+  store.noteKey(code, 'AIza…xxxx|old', Date.now() - 10);
+  const auth = await store.authorize('dev-h', { kind: 'gemini' });
+  assert.deepEqual(auth.health, [['AIza…xxxx|gemini-strong', until]]);
+  await store.setKey('dev-h', 'gemini', [k], { add: true });
+  assert.deepEqual((await store.authorize('dev-h', { kind: 'gemini' })).health, [], 'ربط مفتاح يمسح ما تُعلِّم');
+});
+
+test('إضافة مفتاحين في وقت واحد لا تضيع أحدهما', async () => {
+  const { MediVoiceStore } = await loadModule();
+  const store = makeStore(MediVoiceStore);
+  const { token } = await store.adminLogin('admin-pass-123', '10.0.0.9');
+  const made = await store.adminCreateCodes(token, { daily_hours: 8 });
+  await store.activate('dev-c', made.created[0], META);
+  const k = (n) => `gsk_${String(n).repeat(30)}`;
+  await store.setKey('dev-c', 'groq', [k(1)]);
+  await Promise.all([store.setKey('dev-c', 'groq', [k(2)], { add: true }), store.setKey('dev-c', 'groq', [k(3)], { add: true })]);
+  const keys = (await store.authorize('dev-c', { kind: 'groq' })).groqKeys;
+  assert.deepEqual([...keys].sort(), [k(1), k(2), k(3)]);
+});
+
+test('بروكسي Gemini: 429 يذكر حدّي الدقيقة واليوم معاً يُعدّ نفاد يوم، والحالة تُرسل لقاعدة البيانات', async () => {
+  const worker = (await loadModule()).default;
+  const realFetch = globalThis.fetch, realRandom = Math.random;
+  Math.random = () => 0;
+  const both = JSON.stringify({ error: { code: 429, message: 'quota', details: [{ '@type': 'type.googleapis.com/google.rpc.QuotaFailure', violations: [{ quotaId: 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier' }, { quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier' }] }, { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '50000s' }] } });
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; return new Response(both, { status: 429, headers: { 'content-type': 'application/json' } }); };
+  const noted = [];
+  const gem = () => new Request('https://mv.test/api/gemini?model=gemini-mixed&sec=0', { method: 'POST', headers: { cookie: `mv_dev=${'e'.repeat(40)}`, 'x-mv': '1', 'content-type': 'application/json' }, body: '{}' });
+  try {
+    const env = proxyEnv(['k1'], { noteKey: async (code, k, until) => noted.push([code, k, until > Date.now() + 3600_000]) });
+    const r1 = await worker.fetch(gem(), env, { waitUntil(p) { p.catch(() => {}); } });
+    assert.equal(r1.status, 429); assert.equal(calls, 1);
+    await new Promise((r) => setTimeout(r, 5));
+    assert.deepEqual(noted, [['c', 'k1…k1|gemini-mixed', true]]);
+    const r2 = await worker.fetch(gem(), env, { waitUntil(p) { p.catch(() => {}); } });
+    assert.equal(r2.status, 429); assert.equal(calls, 1, 'يُتذكّر: لا طلب ثانٍ');
+  } finally { globalThis.fetch = realFetch; Math.random = realRandom; }
+});
+
+test('بروكسي: حالة مفتاح جاءت من قاعدة البيانات (خادم آخر تعلّمها) تُطبَّق بلا طلب', async () => {
+  const worker = (await loadModule()).default;
+  const realFetch = globalThis.fetch, realRandom = Math.random;
+  Math.random = () => 0;
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }); };
+  const gem = () => new Request('https://mv.test/api/gemini?model=gemini-remembered&sec=0', { method: 'POST', headers: { cookie: `mv_dev=${'f'.repeat(40)}`, 'x-mv': '1', 'content-type': 'application/json' }, body: '{}' });
+  try {
+    const env = { STORE: { idFromName: () => 'x', get: () => ({ authorize: async () => ({ ok: true, code: 'c', gemini: 'zz9', geminiKeys: ['zz9'], health: [['zz9…zz9|gemini-remembered', Date.now() + 3600_000]] }), logUsage: async () => {} }) } };
+    const r = await worker.fetch(gem(), env, { waitUntil() {} });
+    assert.equal(r.status, 429); assert.equal(calls, 0);
+    assert.match(await r.text(), /PerDay/);
+  } finally { globalThis.fetch = realFetch; Math.random = realRandom; }
+});

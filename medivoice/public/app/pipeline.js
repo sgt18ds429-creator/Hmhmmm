@@ -113,6 +113,18 @@ export class Engine {
       this.emit({ type: 'note', code: 'gemini_out' });
     }
   }
+  /**
+   * المزوّد رفض المفتاح (ملغى أو محذوف): نكمل بالمزوّد الآخر بدل إيقاف المحاضرة، ويُبلَّغ الطالب مرة واحدة.
+   * إذا لم يبقَ مزوّد آخر فالخطأ قاطع (شاشة «مفتاح ما يشتغل»).
+   */
+  dropProvider(provider) {
+    const lanes = provider === 'groq' ? [this.stt, this.llm] : [this.gem, this.tx];
+    for (const l of lanes) for (const m of l.items) m.dead = true;
+    const left = provider === 'groq' ? this.hasGemini : (this.hasGroqLlm || this.hasStt);
+    if (!left) throw new PipelineError(`key_${provider}`, `${provider} key rejected`);
+    this.dropped ??= new Set();
+    if (!this.dropped.has(provider)) { this.dropped.add(provider); this.emit({ type: 'note', code: `key_${provider}_dead` }); }
+  }
   get hasGroqLlm() { return this.llm.alive.length > 0; }
   get hasStt() { return this.stt.alive.length > 0; }
   get hasTx() { return this.tx.alive.length > 0; }
@@ -179,7 +191,8 @@ export class Engine {
       if (res.ok && res.data && (res.data.words || res.data.segments || typeof res.data.text === 'string')) return res.data;
       const fatal = fatalFromServer(res, 'groq');
       if (fatal) throw fatal;
-      if (res.status === 401 || res.status === 403) throw new PipelineError('key_groq', 'groq key rejected');
+      if (res.status === 403 && /model/i.test(JSON.stringify(res.data || ''))) { m.dead = true; continue; } // النموذج غير متاح لهذا الحساب
+      if (res.status === 401 || res.status === 403) { this.dropProvider('groq'); continue; }
       if (res.status === 429) { this.stt.cool(m, Math.max(2, res.retryAfter || 20) * 1000); continue; }
       if (res.status === 404 || res.status === 400 && /model/i.test(JSON.stringify(res.data || ''))) { m.dead = true; continue; }
       if (res.status === 413 || res.status === 400) return null; // ملف غير مقبول عند Groq — نعتمد على Gemini
@@ -221,6 +234,7 @@ export class Engine {
         const wait = this.gem.waitMs();
         if (wait === null) return null;
         if (wait > 90_000) return null;
+        if (this.now() - started > Math.max(patience, 150_000) + strongWaitMs) return null;
         await this.pause(wait + 500, 'gemini');
         continue;
       }
@@ -236,7 +250,8 @@ export class Engine {
       if (system) body.systemInstruction = { parts: [{ text: system }] };
       const res = await this.io.gemini(m.id, body, { sec, signal: this.signal });
       this.tally(m.id, res);
-      const overloaded = [500, 502, 503, 504, 0].includes(res.status);
+      const netDown = res.status === 0; // انقطاع الشبكة (لا يخص النموذج): لا نهدّئه ولا نعدّه ضغطاً
+      const overloaded = [500, 502, 503, 504].includes(res.status);
       if (!isLite) this.strong5xx = overloaded ? this.strong5xx + 1 : res.ok ? 0 : this.strong5xx;
       if (res.ok && res.data) {
         m.fails = 0;
@@ -257,11 +272,20 @@ export class Engine {
         const details = Array.isArray(err.details) ? err.details : [];
         const perDay = details.some((d) => (d.violations || []).some((v) => /PerDay/i.test(v.quotaId || ''))) || /per day|daily/i.test(msg);
         const retry = details.map((d) => parseFloat(d.retryDelay)).find((x) => x > 0) || res.retryAfter || 20;
-        if (perDay) this.retire(m); else this.gem.cool(m, (retry + 1) * 1000);
+        // تأخير طويل بلا تصنيف: حصة اليوم عملياً، فلا ننتظره (يترك النموذج لباقي المحاضرة)
+        if (perDay || retry >= 600) this.retire(m); else this.gem.cool(m, (retry + 1) * 1000 + Math.random() * 1500);
+        // حدود الدقيقة تتكرر بلا نهاية عند الضغط: بعد مدة الصبر نرجع للمستدعي (له بديل أو يعيد لاحقاً)
+        if (this.now() - started > Math.max(patience, 150_000) + strongWaitMs) return null;
+        continue;
+      }
+      if (netDown) {
+        netFails++;
+        if (netFails > 12 || this.now() - started > patience + 120_000) return null;
+        await this.pause(Math.min(15_000, 2000 * netFails), 'net');
         continue;
       }
       if (res.status === 400 && /API key not valid|API_KEY_INVALID/i.test(msg) || res.status === 401 || res.status === 403 && /key|permission/i.test(msg)) {
-        throw new PipelineError('key_gemini', 'gemini key rejected');
+        this.dropProvider('gemini'); continue;
       }
       if (res.status === 400 && /thinking/i.test(msg) && !m.plain) {
         // «MINIMAL is not supported»: نعيد بمستوى low (بدون إعداد التفكير يفكّر النموذج طويلاً ويبطئ)
@@ -330,7 +354,8 @@ export class Engine {
       }
       const fatal = fatalFromServer(res, 'groq');
       if (fatal) throw fatal;
-      if (res.status === 401 || res.status === 403) throw new PipelineError('key_groq', 'groq key rejected');
+      if (res.status === 403 && /model/i.test(JSON.stringify(res.data?.error || ''))) { m.dead = true; continue; }
+      if (res.status === 401 || res.status === 403) { this.dropProvider('groq'); continue; }
       if (res.status === 413 || (res.status === 429 && /request too large|reduce your message/i.test(JSON.stringify(res.data?.error || '')))) {
         // الانتظار لا يفيد طلباً أكبر من حد النموذج: نجرب نموذجاً آخر، وإذا رفضه الكل نرجع فوراً
         tooLarge.add(m.id);
@@ -419,13 +444,16 @@ async function refineChunk(engine, chunk, draft, meta, { first, last, exact, wea
   let txJob = null;
   const startTx = () => {
     if (!txJob && engine.hasTx && chunk.blob.size <= GEMINI_MAX_INLINE) {
-      txJob = audioData().then((data) => engine.transcribe(chunk, { data })).catch((e) => { if (e instanceof PipelineError && FATAL.includes(e.code)) throw e; return null; });
+      // الوعد لا يُرفض أبداً (قد لا ينتظره أحد): الخطأ القاطع يُحفظ ويُرمى عند الطلب
+      txJob = audioData().then((data) => engine.transcribe(chunk, { data })).catch((e) => { if (e instanceof PipelineError && FATAL.includes(e.code)) txFatal = e; return null; });
     }
     return txJob;
   };
+  let txFatal = null;
   const reference = async (waitMs) => {
     if (!startTx()) return null;
     const r = await Promise.race([txJob, io.sleep(waitMs, engine.signal).then(() => undefined)]);
+    if (txFatal) throw txFatal;
     if (!r || countWords(r.text) < 30) return null;
     if (repetitionScore(r.text) > 0.3) return null; // النسخ الحرفي في حلقة تكرار: لا يصلح مرجعاً
     return { ...r, text: collapseMarkup(r.text).text };
@@ -1355,6 +1383,8 @@ export async function enrich(doc, engine, { io, emit = () => {} }) {
         const found = await queue.results();
         doc.blocks = doc.blocks.map((b) => (b.t === 'figreq' && found.has(b.id) ? figBlock(found.get(b.id)) : b));
         doc.stats.figures = queue.stats();
+        // صور لم تُفحص بسبب انقطاع أو ضيق وقت (لا لغياب صورة مناسبة): يُبلَّغ الطالب بدل أن تنقص بصمت
+        if (doc.stats.figures.failed + doc.stats.figures.skipped > 0 && doc.stats.figures.requested > 0) emit({ type: 'note', code: 'figures_partial' });
         return;
       }
       const textWords = doc.stats?.words || doc.blocks.reduce((n, b) => n + countWords(blockText(b)), 0);

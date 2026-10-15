@@ -123,84 +123,186 @@ export function createRace(canvas, { emit = () => {}, best = 0, reduced = false 
     return c;
   }
 
-  function carSprite(color, len, kind) {
-    const w = carW(1.08), hh = w * (0.62 / 0.36) * len;
+  /** مضلّع من نقاط [x, y] بنسب من عرض الجسم وارتفاعه */
+  function poly(x, pts, w, hh) {
+    x.beginPath();
+    pts.forEach(([px, py], i) => (i ? x.lineTo(px * w, py * hh) : x.moveTo(px * w, py * hh)));
+    x.closePath();
+  }
+
+  /** إطار واحد من الخلف: مطاط أسود مع نقش رمادي وحافة الجنط */
+  function wheel(x, left, top, w, hh) {
+    rrect(x, left, top, w, hh, w * 0.28); x.fillStyle = '#0b0a12'; x.fill();
+    x.fillStyle = 'rgba(255, 255, 255, 0.07)';
+    for (let i = 1; i < 4; i++) x.fillRect(left + w * 0.12, top + hh * i / 4, w * 0.76, Math.max(1, hh * 0.05));
+    x.fillStyle = 'rgba(0, 0, 0, 0.5)'; x.fillRect(left, top + hh * 0.85, w, hh * 0.15);
+  }
+
+  /** ضوء خلفي أحمر متوهّج مع انعكاس زجاجي */
+  function lamp(x, left, top, w, hh, color = '#ff3b57') {
+    x.save();
+    x.shadowColor = color; x.shadowBlur = w * 0.6;
+    const gr = x.createLinearGradient(0, top, 0, top + hh);
+    gr.addColorStop(0, shade(color, 0.35)); gr.addColorStop(0.5, color); gr.addColorStop(1, shade(color, -0.35));
+    x.fillStyle = gr; rrect(x, left, top, w, hh, hh * 0.3); x.fill();
+    x.shadowBlur = 0;
+    x.fillStyle = 'rgba(255, 255, 255, 0.55)'; rrect(x, left + w * 0.08, top + hh * 0.12, w * 0.84, hh * 0.22, hh * 0.1); x.fill();
+    x.restore();
+  }
+
+  /** لوحة أرقام */
+  function plate(x, cx, top, w, hh) {
+    x.fillStyle = '#efe9d6'; rrect(x, cx - w / 2, top, w, hh, hh * 0.15); x.fill();
+    x.fillStyle = '#5a5570';
+    for (let i = 0; i < 4; i++) x.fillRect(cx - w * 0.36 + i * w * 0.2, top + hh * 0.3, w * 0.1, hh * 0.4);
+  }
+
+  /**
+   * سيارة مرور من الخلف (كما يراها اللاعب): سقف، زجاج خلفي، صندوق، أضواء، صدّام، إطارات.
+   * body: sedan (منخفضة) أو suv (أعلى وصندوقية).
+   */
+  function carSprite(color, body) {
+    const w = carW(1.08), suv = body === 'suv', hh = w * (suv ? 0.92 : 0.8);
     const pad = w * 0.32;
     const c = surface((w + pad * 2) * dpr, (hh + pad * 2) * dpr);
     const x = c.getContext('2d');
     x.scale(dpr, dpr); x.translate(pad, pad);
+    x.lineJoin = 'round';
+    const dark = shade(color, -0.45), mid = shade(color, -0.18), light = shade(color, 0.25);
     // ظل على الطريق
-    x.fillStyle = 'rgba(0, 0, 0, 0.42)';
-    x.beginPath(); x.ellipse(w / 2, hh * 0.98, w * 0.6, Math.min(hh * 0.12, w * 0.2), 0, 0, TAU); x.fill();
-    // العجلات
-    x.fillStyle = '#06030c';
-    for (const wy of [0.14, 0.68]) { rrect(x, -w * 0.06, hh * wy, w * 0.2, hh * 0.18, w * 0.05); x.fill(); rrect(x, w * 0.86, hh * wy, w * 0.2, hh * 0.18, w * 0.05); x.fill(); }
-    if (kind === 'truck') {
-      // مقصورة ثم صندوق شحن
-      const cab = x.createLinearGradient(0, 0, w, 0);
-      cab.addColorStop(0, shade(color, -0.4)); cab.addColorStop(0.2, color); cab.addColorStop(0.8, color); cab.addColorStop(1, shade(color, -0.4));
-      x.fillStyle = cab; rrect(x, w * 0.04, 0, w * 0.92, hh * 0.3, w * 0.22); x.fill();
-      x.fillStyle = 'rgba(160, 190, 255, 0.4)'; rrect(x, w * 0.18, hh * 0.05, w * 0.64, hh * 0.1, w * 0.06); x.fill();
-      const box = x.createLinearGradient(0, 0, w, 0);
-      box.addColorStop(0, '#9c93b8'); box.addColorStop(0.15, '#e9e4f7'); box.addColorStop(0.85, '#e9e4f7'); box.addColorStop(1, '#9c93b8');
-      x.fillStyle = box; rrect(x, 0, hh * 0.27, w, hh * 0.73, w * 0.08); x.fill();
-      x.fillStyle = color; x.fillRect(0, hh * 0.52, w, hh * 0.06);
-      x.strokeStyle = 'rgba(40, 30, 70, 0.35)'; x.lineWidth = 1;
-      for (let i = 1; i < 4; i++) { x.beginPath(); x.moveTo(w * i / 4, hh * 0.62); x.lineTo(w * i / 4, hh * 0.95); x.stroke(); }
-    } else {
-      const body = x.createLinearGradient(0, 0, w, 0);
-      body.addColorStop(0, shade(color, -0.42)); body.addColorStop(0.16, color); body.addColorStop(0.84, color); body.addColorStop(1, shade(color, -0.42));
-      x.fillStyle = body; rrect(x, 0, 0, w, hh, w * 0.3); x.fill();
-      const hl = x.createLinearGradient(0, 0, 0, hh);
-      hl.addColorStop(0, 'rgba(255, 255, 255, 0.38)'); hl.addColorStop(0.28, 'rgba(255, 255, 255, 0)');
-      x.fillStyle = hl; rrect(x, 0, 0, w, hh, w * 0.3); x.fill();
-      // سقف وزجاج
-      x.fillStyle = shade(color, -0.2); rrect(x, w * 0.14, hh * 0.24, w * 0.72, hh * 0.48, w * 0.2); x.fill();
-      x.fillStyle = 'rgba(170, 200, 255, 0.42)'; rrect(x, w * 0.2, hh * 0.26, w * 0.6, hh * 0.12, w * 0.08); x.fill();
-      const glass = x.createLinearGradient(0, hh * 0.56, 0, hh * 0.72);
-      glass.addColorStop(0, '#221a3f'); glass.addColorStop(1, '#0a0716');
-      x.fillStyle = glass; rrect(x, w * 0.18, hh * 0.56, w * 0.64, hh * 0.15, w * 0.08); x.fill();
-      x.fillStyle = 'rgba(255, 255, 255, 0.22)'; x.fillRect(w * 0.24, hh * 0.585, w * 0.3, hh * 0.018);
-    }
-    // أضواء خلفية متوهجة ولوحة
-    x.shadowColor = '#ff2d55'; x.shadowBlur = w * 0.3; x.fillStyle = '#ff5470';
-    rrect(x, w * 0.07, hh * 0.875, w * 0.25, hh * 0.055, 2); x.fill();
-    rrect(x, w * 0.68, hh * 0.875, w * 0.25, hh * 0.055, 2); x.fill();
-    x.shadowBlur = 0;
-    x.fillStyle = 'rgba(255, 255, 255, 0.6)'; x.fillRect(w * 0.4, hh * 0.9, w * 0.2, hh * 0.045);
+    x.fillStyle = 'rgba(0, 0, 0, 0.45)';
+    x.beginPath(); x.ellipse(w / 2, hh * 0.97, w * 0.56, w * 0.11, 0, 0, TAU); x.fill();
+    // الإطارات الخلفية (تظهر أسفل الصدّام وجانبيه)
+    wheel(x, -w * 0.04, hh * 0.68, w * 0.2, hh * 0.32);
+    wheel(x, w * 0.84, hh * 0.68, w * 0.2, hh * 0.32);
+    // جسم السيارة: الكتفان أعرض من السقف، ويتسع للأسفل حتى الصدّام
+    const roofW = suv ? 0.74 : 0.64, roofY = suv ? 0.0 : 0.04, shoulderY = suv ? 0.5 : 0.42;
+    const bodyG = x.createLinearGradient(0, 0, w, 0);
+    bodyG.addColorStop(0, dark); bodyG.addColorStop(0.12, mid); bodyG.addColorStop(0.3, light); bodyG.addColorStop(0.55, color); bodyG.addColorStop(0.88, mid); bodyG.addColorStop(1, dark);
+    x.fillStyle = bodyG;
+    poly(x, [[(1 - roofW) / 2 + 0.04, roofY], [(1 + roofW) / 2 - 0.04, roofY], [(1 + roofW) / 2, roofY + 0.06], [0.98, shoulderY], [1, 0.62], [0.985, 0.89], [0.015, 0.89], [0, 0.62], [0.02, shoulderY], [(1 - roofW) / 2, roofY + 0.06]], w, hh);
+    x.fill();
+    // الزجاج الخلفي: أغمق من الجسم مع لمعة في الأعلى
+    const glassTop = roofY + 0.07, glassBot = suv ? 0.4 : 0.34;
+    const glass = x.createLinearGradient(0, glassTop * hh, 0, glassBot * hh);
+    glass.addColorStop(0, '#9fb6d8'); glass.addColorStop(0.25, '#2b2d4a'); glass.addColorStop(1, '#131427');
+    x.fillStyle = glass;
+    poly(x, [[(1 - roofW) / 2 + 0.07, glassTop], [(1 + roofW) / 2 - 0.07, glassTop], [(1 + roofW) / 2 + 0.03, glassBot], [(1 - roofW) / 2 - 0.03, glassBot]], w, hh);
+    x.fill();
+    x.fillStyle = 'rgba(255, 255, 255, 0.25)';
+    poly(x, [[(1 - roofW) / 2 + 0.09, glassTop + 0.01], [(1 + roofW) / 2 - 0.2, glassTop + 0.01], [(1 + roofW) / 2 - 0.26, glassTop + 0.07], [(1 - roofW) / 2 + 0.1, glassTop + 0.07]], w, hh);
+    x.fill();
+    // حافة السقف (لمعة) وخط الصندوق
+    x.fillStyle = 'rgba(255, 255, 255, 0.35)'; x.fillRect(((1 - roofW) / 2 + 0.06) * w, roofY * hh, (roofW - 0.12) * w, Math.max(1, hh * 0.015));
+    x.fillStyle = 'rgba(0, 0, 0, 0.18)'; x.fillRect(w * 0.06, (shoulderY + 0.14) * hh, w * 0.88, Math.max(1, hh * 0.012));
+    // الأضواء الخلفية
+    const ly = (suv ? 0.55 : 0.5), lh = suv ? 0.11 : 0.1;
+    lamp(x, w * 0.05, ly * hh, w * 0.24, lh * hh);
+    lamp(x, w * 0.71, ly * hh, w * 0.24, lh * hh);
+    x.fillStyle = 'rgba(255, 255, 255, 0.7)'; x.fillRect(w * 0.23, (ly + 0.03) * hh, w * 0.05, lh * 0.4 * hh); x.fillRect(w * 0.72, (ly + 0.03) * hh, w * 0.05, lh * 0.4 * hh);
+    // الصدّام
+    const bumper = x.createLinearGradient(0, hh * 0.7, 0, hh * 0.93);
+    bumper.addColorStop(0, shade(color, -0.1)); bumper.addColorStop(0.5, shade(color, -0.3)); bumper.addColorStop(1, shade(color, -0.55));
+    x.fillStyle = bumper; rrect(x, 0, hh * 0.7, w, hh * 0.19, w * 0.07); x.fill();
+    x.fillStyle = 'rgba(0, 0, 0, 0.45)'; rrect(x, w * 0.1, hh * 0.82, w * 0.8, hh * 0.055, 2); x.fill();
+    plate(x, w / 2, hh * 0.735, w * 0.26, hh * 0.085);
+    // عادم
+    x.fillStyle = '#2c2a38'; x.beginPath(); x.ellipse(w * 0.8, hh * 0.875, w * 0.035, hh * 0.02, 0, 0, TAU); x.fill();
     return { img: c, w: w + pad * 2, h: hh + pad * 2, cw: w, ch: hh, pad };
   }
 
+  /** شاحنة صندوقية من الخلف: باب متحرك بخطوط، صدّام فولاذي، إطارات مزدوجة، أضواء تحذير على السقف */
+  function truckSprite(color) {
+    const w = carW(1.08), hh = w * 1.3;
+    const pad = w * 0.32;
+    const c = surface((w + pad * 2) * dpr, (hh + pad * 2) * dpr);
+    const x = c.getContext('2d');
+    x.scale(dpr, dpr); x.translate(pad, pad);
+    x.fillStyle = 'rgba(0, 0, 0, 0.48)';
+    x.beginPath(); x.ellipse(w / 2, hh * 0.985, w * 0.58, w * 0.1, 0, 0, TAU); x.fill();
+    // إطارات مزدوجة
+    wheel(x, -w * 0.03, hh * 0.84, w * 0.13, hh * 0.16); wheel(x, w * 0.1, hh * 0.84, w * 0.13, hh * 0.16);
+    wheel(x, w * 0.77, hh * 0.84, w * 0.13, hh * 0.16); wheel(x, w * 0.9, hh * 0.84, w * 0.13, hh * 0.16);
+    // الصندوق
+    const box = x.createLinearGradient(0, 0, w, 0);
+    box.addColorStop(0, '#a9a3bd'); box.addColorStop(0.08, '#ddd8ea'); box.addColorStop(0.5, '#f3f0fa'); box.addColorStop(0.92, '#ddd8ea'); box.addColorStop(1, '#a9a3bd');
+    x.fillStyle = box; rrect(x, 0, hh * 0.04, w, hh * 0.76, w * 0.04); x.fill();
+    // إطار الباب وخطوطه
+    x.fillStyle = 'rgba(70, 60, 100, 0.22)';
+    x.fillRect(w * 0.05, hh * 0.08, w * 0.9, Math.max(1, hh * 0.012));
+    for (let i = 1; i < 7; i++) x.fillRect(w * 0.08, hh * (0.1 + i * 0.095), w * 0.84, Math.max(1, hh * 0.008));
+    x.fillStyle = 'rgba(70, 60, 100, 0.35)'; x.fillRect(w * 0.49, hh * 0.1, Math.max(1, w * 0.012), hh * 0.66);
+    // شريط ملوّن (لون الشركة) ومقبض الباب
+    x.fillStyle = color; x.fillRect(0, hh * 0.56, w, hh * 0.07);
+    x.fillStyle = '#3a3550'; rrect(x, w * 0.42, hh * 0.68, w * 0.16, hh * 0.04, 2); x.fill();
+    // أضواء التحذير على السقف
+    for (const px of [0.1, 0.3, 0.5, 0.7, 0.9]) { x.fillStyle = '#ffb547'; x.beginPath(); x.ellipse(w * px, hh * 0.035, w * 0.025, hh * 0.012, 0, 0, TAU); x.fill(); }
+    // الصدّام الفولاذي والأضواء
+    const steel = x.createLinearGradient(0, hh * 0.8, 0, hh * 0.92);
+    steel.addColorStop(0, '#6d6885'); steel.addColorStop(0.5, '#3b3752'); steel.addColorStop(1, '#201d30');
+    x.fillStyle = steel; rrect(x, -w * 0.01, hh * 0.8, w * 1.02, hh * 0.12, 3); x.fill();
+    lamp(x, w * 0.03, hh * 0.815, w * 0.14, hh * 0.06);
+    lamp(x, w * 0.83, hh * 0.815, w * 0.14, hh * 0.06);
+    lamp(x, w * 0.19, hh * 0.815, w * 0.06, hh * 0.06, '#ffb547');
+    lamp(x, w * 0.75, hh * 0.815, w * 0.06, hh * 0.06, '#ffb547');
+    plate(x, w / 2, hh * 0.825, w * 0.22, hh * 0.05);
+    // رفارف الطين
+    x.fillStyle = '#15121f'; x.fillRect(w * 0.02, hh * 0.92, w * 0.2, hh * 0.06); x.fillRect(w * 0.78, hh * 0.92, w * 0.2, hh * 0.06);
+    return { img: c, w: w + pad * 2, h: hh + pad * 2, cw: w, ch: hh, pad };
+  }
+
+  /** سيارة اللاعب من الخلف: رياضية منخفضة بلون ميدي فويز، جناح خلفي، شريط أضواء، عادمان */
   function playerSprite() {
-    const w = carW(PLAYER_Z), hh = w * (0.62 / 0.36);
+    const w = carW(PLAYER_Z) * 1.18, hh = w * 0.74;
     const pad = w * 0.35;
     const c = surface((w + pad * 2) * dpr, (hh + pad * 2) * dpr);
     const x = c.getContext('2d');
     x.scale(dpr, dpr); x.translate(pad, pad);
-    x.fillStyle = 'rgba(0, 0, 0, 0.45)';
-    x.beginPath(); x.ellipse(w / 2, hh * 0.98, w * 0.62, w * 0.2, 0, 0, TAU); x.fill();
-    x.fillStyle = '#06030c';
-    for (const wy of [0.12, 0.68]) { rrect(x, -w * 0.07, hh * wy, w * 0.21, hh * 0.19, w * 0.05); x.fill(); rrect(x, w * 0.86, hh * wy, w * 0.21, hh * 0.19, w * 0.05); x.fill(); }
-    const body = x.createLinearGradient(0, 0, w, hh);
-    body.addColorStop(0, '#5433ec'); body.addColorStop(0.55, '#8521d5'); body.addColorStop(1, '#c923c1');
-    x.fillStyle = body; rrect(x, 0, 0, w, hh, w * 0.32); x.fill();
-    const side = x.createLinearGradient(0, 0, w, 0);
-    side.addColorStop(0, 'rgba(0, 0, 0, 0.35)'); side.addColorStop(0.18, 'rgba(0, 0, 0, 0)'); side.addColorStop(0.82, 'rgba(0, 0, 0, 0)'); side.addColorStop(1, 'rgba(0, 0, 0, 0.35)');
-    x.fillStyle = side; rrect(x, 0, 0, w, hh, w * 0.32); x.fill();
-    // خطا السباق
+    x.lineJoin = 'round';
+    x.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    x.beginPath(); x.ellipse(w / 2, hh * 0.97, w * 0.6, w * 0.12, 0, 0, TAU); x.fill();
+    // إطارات عريضة
+    wheel(x, -w * 0.05, hh * 0.66, w * 0.22, hh * 0.34);
+    wheel(x, w * 0.83, hh * 0.66, w * 0.22, hh * 0.34);
+    // الجناح الخلفي على دعامتين
+    x.fillStyle = '#1a1030'; x.fillRect(w * 0.24, hh * 0.1, w * 0.05, hh * 0.2); x.fillRect(w * 0.71, hh * 0.1, w * 0.05, hh * 0.2);
+    const wing = x.createLinearGradient(0, hh * 0.04, 0, hh * 0.13);
+    wing.addColorStop(0, '#3c2a66'); wing.addColorStop(1, '#120b24');
+    x.fillStyle = wing; rrect(x, -w * 0.03, hh * 0.04, w * 1.06, hh * 0.09, 3); x.fill();
+    x.fillStyle = 'rgba(255, 255, 255, 0.3)'; x.fillRect(w * 0.02, hh * 0.045, w * 0.96, Math.max(1, hh * 0.012));
+    // الجسم: سقف ضيق، أكتاف عريضة، مؤخرة منخفضة
+    const bodyG = x.createLinearGradient(0, 0, w, 0);
+    bodyG.addColorStop(0, '#2a1570'); bodyG.addColorStop(0.15, '#5433ec'); bodyG.addColorStop(0.4, '#8a5cff'); bodyG.addColorStop(0.6, '#8521d5'); bodyG.addColorStop(0.88, '#6a1aa8'); bodyG.addColorStop(1, '#3a0f5e');
+    x.fillStyle = bodyG;
+    poly(x, [[0.22, 0.14], [0.78, 0.14], [0.86, 0.2], [0.99, 0.5], [1, 0.66], [0.985, 0.9], [0.015, 0.9], [0, 0.66], [0.01, 0.5], [0.14, 0.2]], w, hh);
+    x.fill();
+    // الزجاج الخلفي المائل
+    const glass = x.createLinearGradient(0, hh * 0.18, 0, hh * 0.4);
+    glass.addColorStop(0, '#b9c8ec'); glass.addColorStop(0.3, '#2a2650'); glass.addColorStop(1, '#100d22');
+    x.fillStyle = glass;
+    poly(x, [[0.26, 0.18], [0.74, 0.18], [0.84, 0.4], [0.16, 0.4]], w, hh); x.fill();
+    x.fillStyle = 'rgba(255, 255, 255, 0.22)';
+    poly(x, [[0.28, 0.19], [0.6, 0.19], [0.55, 0.26], [0.29, 0.26]], w, hh); x.fill();
+    // خطا السباق على الصندوق
     x.fillStyle = 'rgba(244, 240, 255, 0.85)';
-    x.fillRect(w * 0.4, 0, w * 0.07, hh); x.fillRect(w * 0.53, 0, w * 0.07, hh);
-    // زجاج أمامي (أعلى) وخلفي
-    x.fillStyle = 'rgba(244, 240, 255, 0.9)'; rrect(x, w * 0.16, hh * 0.2, w * 0.68, hh * 0.13, w * 0.1); x.fill();
-    const glass = x.createLinearGradient(0, hh * 0.6, 0, hh * 0.74);
-    glass.addColorStop(0, '#2a1d55'); glass.addColorStop(1, '#0d0820');
-    x.fillStyle = glass; rrect(x, w * 0.18, hh * 0.6, w * 0.64, hh * 0.13, w * 0.08); x.fill();
-    // جناح خلفي
-    x.fillStyle = '#1a0f38'; rrect(x, -w * 0.04, hh * 0.84, w * 1.08, hh * 0.07, 3); x.fill();
-    x.shadowColor = '#ff2d55'; x.shadowBlur = w * 0.32; x.fillStyle = '#ff5470';
-    rrect(x, w * 0.06, hh * 0.92, w * 0.26, hh * 0.05, 2); x.fill();
-    rrect(x, w * 0.68, hh * 0.92, w * 0.26, hh * 0.05, 2); x.fill();
-    x.shadowBlur = 0;
+    x.fillRect(w * 0.43, hh * 0.41, w * 0.055, hh * 0.19); x.fillRect(w * 0.515, hh * 0.41, w * 0.055, hh * 0.19);
+    // شريط الأضواء الممتد
+    x.save(); x.shadowColor = '#ff2d55'; x.shadowBlur = w * 0.25;
+    x.fillStyle = '#ff3b57'; rrect(x, w * 0.06, hh * 0.6, w * 0.88, hh * 0.07, hh * 0.03); x.fill();
+    x.shadowBlur = 0; x.restore();
+    x.fillStyle = 'rgba(255, 255, 255, 0.75)'; rrect(x, w * 0.08, hh * 0.61, w * 0.2, hh * 0.025, 1); x.fill(); rrect(x, w * 0.72, hh * 0.61, w * 0.2, hh * 0.025, 1); x.fill();
+    // الصدّام والناشر (diffuser) والعادمان
+    const bumper = x.createLinearGradient(0, hh * 0.7, 0, hh * 0.9);
+    bumper.addColorStop(0, '#4a2a8e'); bumper.addColorStop(1, '#1b0f36');
+    x.fillStyle = bumper; rrect(x, 0, hh * 0.7, w, hh * 0.2, w * 0.06); x.fill();
+    x.fillStyle = '#0d0818'; rrect(x, w * 0.12, hh * 0.8, w * 0.76, hh * 0.09, 2); x.fill();
+    x.fillStyle = 'rgba(255, 255, 255, 0.12)';
+    for (let i = 0; i < 5; i++) x.fillRect(w * (0.2 + i * 0.15), hh * 0.8, Math.max(1, w * 0.012), hh * 0.09);
+    plate(x, w / 2, hh * 0.715, w * 0.24, hh * 0.075);
+    for (const px of [0.17, 0.83]) {
+      x.fillStyle = '#8f8aa6'; x.beginPath(); x.ellipse(w * px, hh * 0.86, w * 0.045, hh * 0.03, 0, 0, TAU); x.fill();
+      x.fillStyle = '#17131f'; x.beginPath(); x.ellipse(w * px, hh * 0.86, w * 0.028, hh * 0.018, 0, 0, TAU); x.fill();
+    }
     return { img: c, w: w + pad * 2, h: hh + pad * 2, cw: w, ch: hh, pad };
   }
 
@@ -282,7 +384,7 @@ export function createRace(canvas, { emit = () => {}, best = 0, reduced = false 
   function buildSprites() {
     sky = makeSky();
     const cars = {};
-    for (const color of CAR_COLORS) { cars[color] = carSprite(color, 1, 'car'); cars[`t${color}`] = carSprite(color, 1.7, 'truck'); }
+    CAR_COLORS.forEach((color, i) => { cars[color] = carSprite(color, i % 2 ? 'suv' : 'sedan'); cars[`t${color}`] = truckSprite(color); });
     sprites = {
       cars, cone: coneSprite(), player: playerSprite(), beam: beamSprite(),
       star: itemSprite('star'), shield: itemSprite('shield'), magnet: itemSprite('magnet'), nitro: itemSprite('nitro'),
@@ -521,7 +623,7 @@ export function createRace(canvas, { emit = () => {}, best = 0, reduced = false 
       g.fillRect(W / 2 - hr - 36 * k, y - 76 * k, 12 * k, 4 * k); g.fillRect(W / 2 + hr + 24 * k, y - 76 * k, 12 * k, 4 * k);
     }
     // ضوء مصابيح اللاعب على الطريق (تحت السيارات كلها)
-    const pcx = W / 2 + st.x * halfRoad(PLAYER_Z), pBottom = yOf(PLAYER_Z) + sprites.player.ch * 0.5;
+    const pcx = W / 2 + st.x * halfRoad(PLAYER_Z), pBottom = yOf(PLAYER_Z) + sprites.player.ch * 0.22;
     const beam = sprites.beam;
     g.globalCompositeOperation = 'lighter';
     g.drawImage(beam.img, pcx - beam.w / 2, pBottom - sprites.player.ch - beam.h, beam.w, beam.h);
@@ -552,9 +654,8 @@ export function createRace(canvas, { emit = () => {}, best = 0, reduced = false 
   function drawCar(c) {
     const k = scaleOf(c.z);
     const sp = c.kind === 'cone' ? sprites.cone : sprites.cars[c.kind === 'truck' ? `t${c.color}` : c.color];
-    // أسفل السيارة عند عمقها، ونصف طولها خلفه
-    const len = carW(c.z) * (0.62 / 0.36) * c.len;
-    drawSprite(sp, xOf(c.lane, c.z), yOf(c.z) + len * 0.5, k);
+    // مؤخرة السيارة (ما يراه اللاعب) عند عمقها على الطريق
+    drawSprite(sp, xOf(c.lane, c.z), yOf(c.z) + carW(c.z) * 0.08, k);
   }
 
   function drawItem(it) {
@@ -592,7 +693,7 @@ export function createRace(canvas, { emit = () => {}, best = 0, reduced = false 
     const cx = W / 2 + st.x * halfRoad(PLAYER_Z);
     const tilt = (laneOffset(st.lane) - st.x) * 0.9;
     const sp = sprites.player;
-    const bottom = yOf(PLAYER_Z) + sp.ch * 0.5;
+    const bottom = yOf(PLAYER_Z) + sp.ch * 0.22;
     drawSprite(sp, cx, bottom, k, tilt);
     if (nitro()) {
       g.fillStyle = 'rgba(255, 122, 138, 0.8)';
