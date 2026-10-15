@@ -300,9 +300,10 @@ export class Engine {
         await this.pause(Math.min(15_000, 2000 * netFails), 'net');
         continue;
       }
-      if (res.status === 400 && /API key not valid|API_KEY_INVALID/i.test(msg) || res.status === 401 || res.status === 403 && /key|permission/i.test(msg)) {
-        this.dropProvider('gemini'); continue;
-      }
+      // المفتاح نفسه مرفوض (كل المفاتيح، فالخادم يجرّبها قبل أن يرد): يكمل المزوّد الآخر.
+      // 403 بلا ذكر المفتاح قد يخص هذا النموذج وحده (نموذج غير متاح للحساب): يُترك النموذج فقط
+      if (res.status === 401 || /API key not valid|API_KEY_INVALID|API key expired|API_KEY_/i.test(msg)) { this.dropProvider('gemini'); continue; }
+      if (res.status === 403) { this.retire(m); continue; }
       if (res.status === 400 && /thinking/i.test(msg) && !m.plain) {
         // «MINIMAL is not supported»: نعيد بمستوى low (بدون إعداد التفكير يفكّر النموذج طويلاً ويبطئ)
         if (/minimal/i.test(msg) && !m.noMinimal) m.noMinimal = true; else m.plain = true;

@@ -1186,6 +1186,13 @@ test('مفتاح مزوّد رُفض (ملغى) أثناء العمل: يكمل 
   // المزوّد الوحيد ملغى: خطأ قاطع (شاشة «مفتاح ما يشتغل»)
   engine = new Engine({ sleep: async () => {}, async gemini() { return rejected; } }, { gemini: true, groq: false, geminiModels: ['gemini-strong'], groqModels: [], sttModels: [] });
   await assert.rejects(engine.gemini({ system: 's', parts: [] }), (e) => e instanceof PipelineError && e.code === 'key_gemini');
+  // نموذج Gemini محجوب عن الحساب (403 بلا ذكر المفتاح): يُترك ذلك النموذج وحده ويكمل الباقي
+  notes = [];
+  engine = new Engine({ sleep: async () => {}, async gemini(model) { return model === 'gemini-strong' ? { ok: false, status: 403, data: { error: { code: 403, message: 'Permission denied on resource project for model gemini-strong.', status: 'PERMISSION_DENIED' } } } : gemOk; } },
+    { gemini: true, groq: false, geminiModels: ['gemini-strong', 'gemini-b'], groqModels: [], sttModels: [] }, (e) => { if (e.type === 'note') notes.push(e.code); });
+  assert.equal((await engine.gemini({ system: 's', parts: [] })).text, 'نص من Gemini');
+  assert.equal(engine.gem.alive.length, 1);
+  assert.deepEqual(notes, [], 'لا تنبيه: Gemini ما زال يعمل');
   // نموذج Groq غير متاح لهذا الحساب (403 يذكر النموذج): يُترك النموذج وحده لا المفتاح
   engine = new Engine({ sleep: async () => {}, async groq(body) { return body.model === 'a' ? { ok: false, status: 403, data: { error: { message: 'The model `a` is not available for this account' } } } : groqOk; } },
     { gemini: false, groq: true, geminiModels: [], groqModels: ['a', 'b'], sttModels: [] });

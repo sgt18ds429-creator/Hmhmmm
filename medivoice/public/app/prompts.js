@@ -384,7 +384,7 @@ export function notesSectionPrompt(meta, s, { lang = 'ar', outline = [], source 
   const lines = [];
   const info = metaLine(meta);
   if (info) lines.push(info);
-  if (outline.length > 1) {
+  if (outline.length > 1 && !s.untitled) {
     lines.push(`${en ? 'Full lecture plan (so you know where this part fits and leave other topics to their own sections)' : 'خطة المحاضرة كاملة (حتى تعرف موقع هذا الجزء وتترك المواضيع الأخرى لأقسامها)'}:\n${outline.map((t, i) => `${i + 1}. ${t}${i === s.index ? (en ? '   ← current section' : '   ← القسم الحالي') : ''}`).join('\n')}`);
   }
   lines.push(en
