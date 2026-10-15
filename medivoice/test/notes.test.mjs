@@ -799,6 +799,8 @@ test('المقاطع الإنجليزية المربوطة تبقى معاً ف�
   assert.deepEqual(runs('نطلب [[CT]]/[[MRI]] حسب الحالة'), ['CT/MRI']);
   assert.deepEqual(runs('نطلب [[CT]] scan للمريض'), ['CT scan']);
   assert.deepEqual(runs('نطلب [[CT]] أو [[MRI]]'), ['CT', 'MRI'], 'كلمة عربية بينهما: يبقيان منفصلين');
+  assert.deepEqual(runs('قاعدة 3-6-9 والمدى 70 - 100 للسكر'), ['3-6-9', '70 - 100'], 'الأرقام المربوطة بشرطة بترتيبها');
+  assert.deepEqual(parseMarkup('- > لتشخيص الانثقاب نطلب [[erect chest X-ray]]')[0].items, ['لتشخيص الانثقاب نطلب [[erect chest X-ray]]']);
   const html = buildPdfHtml({ meta: { title: 'x', mode: 'notes' }, blocks: [{ id: 'a', t: 'p', text: 'نطلب [[CT]]/[[MRI]] حسب الحالة' }], stats: {}, terms: [] });
   assert.match(html, /<span class="lt nw"><span class="t nw">CT<\/span>\/<span class="t nw">MRI<\/span><\/span>/);
 });
@@ -896,4 +898,50 @@ test('المراجعة لا تضيف كلام المحاضر بلهجته ولا
   const text = blocks.map(blockText).join('\n');
   assert.match(text, /Ogilvie syndrome/);
   assert.ok(!/هسة|يروح للـ|الجاية/.test(text), text);
+});
+
+test('High-Yield: الأسئلة تُكتب بالتوازي، وتُعاد من الشرح المصحَّح فقط إذا غيّرته المراجعة', async () => {
+  for (const [fixes, expected] of [[[], 1], [[{ find: 'دخول الهواء إلى المسافة الجنبية', replace: 'تجمّع الهواء في المسافة الجنبية' }], 2]]) {
+    const { io, calls } = makeIO({ review: () => ({ fixes, missing: [], verdict: 'جيدة' }) });
+    const doc = transcriptDoc({ mode: 'highyield' });
+    const engine = new Engine(io, CAPS);
+    assert.equal(await writeNotes(doc, engine), true);
+    await complete(doc, engine, { io, review: true });
+    assert.equal(calls.mcq, expected, `mcq calls with ${fixes.length} fixes`);
+    assert.ok(doc.blocks.some((b) => b.t === 'mcq'));
+  }
+});
+
+test('أسئلة MCQ بالإنجليزية حصراً: إذا كتبها النموذج بالعربية يعيدها، ثم يترجمها إن لزم', async () => {
+  const arabic = { questions: Array.from({ length: 8 }, (_, i) => ({ q: `ما هي العلامة رقم ${i + 1} في [[pneumothorax]]؟`, options: ['خط الجنبة', 'خطوط كيرلي', 'هواء القصبات', 'علامة الهلال'], answer: i % 4, why: 'لأنها مذكورة في الشرح' })) };
+  const english = { questions: Array.from({ length: 8 }, (_, i) => ({ q: `Which sign number ${i + 1} indicates [[pneumothorax]]?`, options: ['Pleural line', 'Kerley lines', 'Air bronchogram', 'Meniscus sign'], answer: i % 4, why: 'Because the notes say so' })) };
+  // 1) الإعادة بتنبيه تكفي
+  {
+    const { io } = makeIO({ mcq: (user) => (/previous answer was in Arabic/.test(user) ? english : arabic) });
+    const doc = transcriptDoc({ mode: 'highyield' });
+    const engine = new Engine(io, CAPS);
+    assert.equal(await writeNotes(doc, engine), true);
+    await complete(doc, engine, { io });
+    const qs = doc.blocks.filter((b) => b.t === 'mcq');
+    assert.equal(qs.length, 8);
+    assert.ok(qs.every((q) => /^Which sign/.test(q.q)), qs[0].q);
+  }
+  // 2) يصرّ على العربية: تُترجم الأسئلة نفسها ويبقى مفتاح الإجابة
+  {
+    const { io } = makeIO({ mcq: () => arabic });
+    const orig = io.gemini;
+    io.gemini = async (model, body) => {
+      const system = body.systemInstruction?.parts?.[0]?.text || '';
+      if (/translate exam MCQs/.test(system)) return gemResponse(JSON.stringify(english));
+      return orig(model, body);
+    };
+    const doc = transcriptDoc({ mode: 'highyield' });
+    const engine = new Engine(io, CAPS);
+    assert.equal(await writeNotes(doc, engine), true);
+    await complete(doc, engine, { io });
+    const qs = doc.blocks.filter((b) => b.t === 'mcq');
+    assert.equal(qs.length, 8);
+    assert.ok(qs.every((q) => /^Which sign/.test(q.q)));
+    assert.deepEqual(qs.map((q) => q.ans), arabic.questions.map((q) => q.answer));
+  }
 });

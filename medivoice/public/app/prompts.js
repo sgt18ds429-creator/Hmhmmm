@@ -19,11 +19,17 @@ export function whisperPrompt(meta, prevTail = '') {
   return clip(`${base} ${prevTail}`.trim(), 420);
 }
 
-function metaLine(meta) {
+function metaLine(meta, lang = 'ar') {
   const parts = [];
+  const kws = keywordList(meta);
+  if (lang === 'en') {
+    if (meta.subject) parts.push(`Subject: ${meta.subject}`);
+    if (meta.title) parts.push(`Lecture title: ${meta.title}`);
+    if (kws.length) parts.push(`Expected terms: ${kws.join(', ')}`);
+    return parts.length ? `About the lecture — ${parts.join(' | ')}` : '';
+  }
   if (meta.subject) parts.push(`المادة: ${meta.subject}`);
   if (meta.title) parts.push(`عنوان المحاضرة: ${meta.title}`);
-  const kws = keywordList(meta);
   if (kws.length) parts.push(`مصطلحات متوقعة: ${kws.join('، ')}`);
   return parts.length ? `معلومات عن المحاضرة — ${parts.join(' | ')}` : '';
 }
@@ -456,20 +462,21 @@ ${notes}
 }
 
 /** أسئلة اختيار من متعدد من الملزمة. يرجع JSON. */
-export function mcqPrompt(meta, notes, { lang = 'ar', count = 12 } = {}) {
+export function mcqPrompt(meta, notes, { lang = 'ar', count = 12, insist = false } = {}) {
   const en = lang === 'en';
   const system = en
-    ? `You are a medical school examiner who writes high-quality single-best-answer MCQs that test understanding of a lecture, in the style of university exams. Answer in JSON only.`
+    ? `You are a medical school examiner who writes high-quality single-best-answer MCQs in English that test understanding of a lecture, in the style of university exams. You always write the questions in English, whatever the language of the notes. Answer in JSON only.`
     : `أنت أستاذ ممتحن في كلية طبية تكتب أسئلة اختيار من متعدد (أفضل إجابة واحدة) عالية الجودة تختبر فهم المحاضرة بأسلوب امتحانات الجامعة. أجب بصيغة JSON فقط.`;
   const user = en
-    ? `${metaLine(meta)}
+    ? `${metaLine(meta, 'en')}
 
-The lecture notes:
+The lecture notes (they may be written in Arabic):
 <<<
 ${notes}
 >>>
 
 Write ${count} MCQs covering the most examinable points of the notes, spread across its topics (facts, definitions, distinguishing signs, numbers, mechanisms, "which of the following" and short clinical scenarios). Each question: "q" the question, "options" exactly 4 options of similar length with one correct answer and three plausible distractors (no "all of the above"), "answer" the index of the correct option (0 to 3), "why" one sentence explaining the answer from the notes. Vary the position of the correct answer. Only from the notes; do not invent facts. Terms in [[ ]].
+LANGUAGE: write every question, option and explanation in clear exam English, even if the notes are in Arabic — translate the facts accurately. Not a single Arabic word in the output.${insist ? ' Your previous answer was in Arabic, which is not accepted: English only.' : ''}
 Output: {"questions":[{"q":"...","options":["...","...","...","..."],"answer":0,"why":"..."}]}`
     : `${metaLine(meta)}
 
@@ -649,5 +656,16 @@ export function translateExtrasPrompt({ title = '', captions = [] }, { to = 'en'
   const user = `Translate the title into ${name(titleTo)} and each figure caption into ${name(to)} (keep the order; same count). A short cover title, not a sentence.
 ${JSON.stringify({ title, captions }, null, 1)}
 Output: {"title":"...","captions":["...", ...]}`;
+  return { system, user };
+}
+
+/** ترجمة أسئلة اختيار من متعدد إلى الإنجليزية مع بقاء ترتيب الخيارات (مفتاح الإجابة لا يتغيّر). */
+export function mcqTranslatePrompt(questions) {
+  const system = 'You are an expert medical translator. You translate exam MCQs into clear exam English without changing their meaning or the order of options. Answer in JSON only.';
+  const user = `Translate these multiple-choice questions into English. Keep the same number of questions, the same 4 options per question in the same order, and medical terms in [[ ]]. Do not add, drop or reorder anything.
+
+${JSON.stringify({ questions })}
+
+Output: {"questions":[{"q":"...","options":["...","...","...","..."],"why":"..."}]}`;
   return { system, user };
 }

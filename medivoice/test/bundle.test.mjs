@@ -18,7 +18,10 @@ async function loadWorker() {
   return (await import(join(dir, 'worker.mjs'))).default;
 }
 
-const env = (active) => ({ STORE: { idFromName: () => 'x', get: () => ({ isActive: async () => active }) } });
+const env = (active) => ({ STORE: { idFromName: () => 'x', get: () => ({
+  isActive: async () => active,
+  authorize: async () => (active ? { ok: true, code: 'x' } : { ok: false, status: 401, error: 'locked' }),
+}) } });
 
 test('يخدم كل الملفات العامة كما هي', async () => {
   const worker = await loadWorker();

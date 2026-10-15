@@ -11,7 +11,7 @@ import {
 import {
   whisperPrompt, audioPrompt, cleanupPrompt, glossaryPrompt, figuresPrompt, translatePrompt, translateExtrasPrompt,
   notesPlanPrompt, notesSectionPrompt, reviewPrompt, proofreadPrompt, figureTextPickPrompt,
-  reviewNotesPrompt, mcqPrompt, figuresBatchPrompt, slideFiguresPrompt,
+  reviewNotesPrompt, mcqPrompt, mcqTranslatePrompt, figuresBatchPrompt, slideFiguresPrompt,
 } from './prompts.js';
 import { findCandidates } from './images.js';
 
@@ -1165,18 +1165,9 @@ export async function complete(doc, engine, { io, emit = () => {}, review = fals
   // المراجعة النهائية مقابل التسجيل تعمل بالتوازي مع الترجمة والصور والقاموس (كانت قبلها، فتطيل الانتظار)
   const audit = review && isNotes(mode) ? safe(reviewNotes(doc, engine, { emit })) : Promise.resolve(null);
   const points = mode === 'notes' || mode === 'integrated' ? safe(keyPoints(engine, doc.meta, doc.blocks, lang)) : null;
-  // الأسئلة بالإنجليزية دائماً (أسلوب الامتحانات). تُكتب بعد المراجعة ما أمكن حتى تتبع أجوبتها الشرح المصحَّح،
-  // دون انتظار أكثر من دقيقة ونصف
-  let mcqAfterReview = false;
-  const mcq = mode === 'highyield' ? safe((async () => {
-    let timer = null;
-    const waited = await Promise.race([audit.then(() => true), new Promise((r) => { timer = setTimeout(() => r(false), 90_000); })]);
-    clearTimeout(timer);
-    mcqAfterReview = waited;
-    engine.check();
-    emit({ type: 'stage', name: 'mcq' });
-    return mcqBlocks(engine, doc.meta, doc.blocks, 'en');
-  })()) : null;
+  // الأسئلة بالإنجليزية دائماً (أسلوب الامتحانات)، تُكتب بالتوازي؛ وإذا صحّحت المراجعة الشرح تُكتب من جديد
+  // من الشرح المصحَّح (حتى لا يخالف مفتاحُ الإجابات الملزمة)
+  const mcq = mode === 'highyield' ? safe((async () => { emit({ type: 'stage', name: 'mcq' }); return mcqBlocks(engine, doc.meta, doc.blocks, 'en'); })()) : null;
   // النسخة الثانية: الشرح يُترجم بالتوازي مع القاموس والصور. ما غيّرته المراجعة يُترجم من جديد فور انتهائها
   // (المجموعات التي تغيّرت فقط، بالنماذج السريعة)، ثم تُلحق بالترجمة النقاط والصور
   const translating = isNotes(mode) && doc.meta.bilingual !== false;
@@ -1186,11 +1177,12 @@ export async function complete(doc, engine, { io, emit = () => {}, review = fals
     if (tr && rev?.applied) await retranslate(doc, engine, tr);
     return tr;
   })()) : null;
-  const [kp, qs, tr, , rev] = await Promise.all([points, mcq, alt, enrich(doc, engine, { io, emit }), audit]);
-  // تصحيحات المراجعة تصل أيضاً للنقاط وللأسئلة التي كُتبت من الشرح قبل تصحيحه
-  if (rev?.parsed) {
-    const extraBefore = [...(kp || []), ...(qs && !mcqAfterReview ? qs : [])];
-    if (extraBefore.length) applyReview(extraBefore, rev.parsed, { additions: false, lang });
+  let [kp, qs, tr, , rev] = await Promise.all([points, mcq, alt, enrich(doc, engine, { io, emit }), audit]);
+  // تصحيحات المراجعة تصل أيضاً للنقاط التي كُتبت من الشرح قبل تصحيحه، والأسئلة تُعاد من الشرح المصحَّح
+  if (rev?.parsed && kp) applyReview(kp, rev.parsed, { additions: false, lang });
+  if (rev?.applied && qs) {
+    const again = await safe(mcqBlocks(engine, doc.meta, doc.blocks.filter((b) => b.t !== 'fig'), 'en'));
+    if (again) { qs = again; doc.stats.mcqAfterReview = true; }
   }
   doc.blocks = doc.blocks.filter((b) => b.t !== 'slidereq'); // طلبات سلايدات بلا صورة
   const body = doc.blocks.slice(); // متن الشرح بصوره، قبل النقاط والأسئلة
@@ -1996,15 +1988,34 @@ async function mcqBlocks(engine, meta, blocks, lang) {
   if (!engine.hasGemini && text.length > 14_000) return null;
   const words = countWords(text);
   const count = Math.min(20, Math.max(8, Math.round(words / 110)));
-  const { system, user } = mcqPrompt(meta, text.slice(0, 160_000), { lang, count });
-  const parsed = await engine.json({ system, user, maxTokens: 9000, groqTokens: 4000, prefer: 'gemini' });
-  const qs = (Array.isArray(parsed?.questions) ? parsed.questions : [])
+  const clean = (parsed) => (Array.isArray(parsed?.questions) ? parsed.questions : [])
     .map((q) => ({ q: squash(q?.q), opts: (Array.isArray(q?.options) ? q.options : []).map(squash).filter(Boolean).slice(0, 4), ans: parseInt(q?.answer, 10), why: squash(q?.why) }))
     .filter((q) => q.q && q.opts.length === 4 && q.ans >= 0 && q.ans < 4)
     .slice(0, count);
+  // الأسئلة بالإنجليزية حصراً: النموذج الخفيف يكتبها أحياناً بلغة الملزمة (العربية)، فنتحقق ونعيد أو نترجم
+  const inLang = (q) => langOf([q.q, ...q.opts, q.why].join(' ')) === lang;
+  const ok = (list) => list.length >= 3 && list.filter(inLang).length >= list.length * 0.8;
+  let qs = clean(await engine.json({ ...mcqPrompt(meta, text.slice(0, 160_000), { lang, count }), maxTokens: 9000, groqTokens: 4000, prefer: 'gemini' }));
+  if (qs.length >= 3 && !ok(qs)) {
+    const again = clean(await engine.json({ ...mcqPrompt(meta, text.slice(0, 160_000), { lang, count, insist: true }), maxTokens: 9000, groqTokens: 4000, prefer: 'gemini' }));
+    if (ok(again)) qs = again;
+    else {
+      // آخر محاولة: ترجمة الأسئلة نفسها (الإجابات بنفس الترتيب)
+      const tr = await engine.json({ ...mcqTranslatePrompt(qs.map((q) => ({ q: q.q, options: q.opts, why: q.why }))), maxTokens: 9000, groqTokens: 4000, prefer: 'gemini' });
+      const list = Array.isArray(tr?.questions) && tr.questions.length === qs.length ? tr.questions : [];
+      const translated = qs.map((q, i) => {
+        const t = list[i];
+        const opts = (Array.isArray(t?.options) ? t.options : []).map(squash);
+        return t && squash(t.q) && opts.length === 4 && opts.every(Boolean) ? { ...q, q: squash(t.q), opts, why: squash(t.why) || q.why } : q;
+      }).filter(inLang);
+      qs = translated;
+    }
+  }
+  qs = qs.filter(inLang);
   if (qs.length < 3) return null;
   return [
     { id: uid(), t: 'h', level: 2, text: lang === 'en' ? 'Self-assessment MCQs' : 'أسئلة اختيار من متعدد للمراجعة' },
     ...qs.map((q) => ({ id: uid(), t: 'mcq', ...q })),
   ];
 }
+

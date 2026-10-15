@@ -358,9 +358,11 @@ export function parseMarkup(raw) {
       const ordered = /^[\d٠-٩]/.test(line);
       const last = blocks[blocks.length - 1];
       const kind = ordered ? 'ol' : 'ul';
-      if (last?.t === kind && last._open) last.items.push(fixInline(m[1]));
+      // «- > نص»: علامة الملاحظة داخل بند لا تُعرض حرفياً
+      const item = fixInline(m[1]).replace(/^>\s*/, '');
+      if (last?.t === kind && last._open) last.items.push(item);
       else {
-        const b = { t: kind, items: [fixInline(m[1])], _open: true };
+        const b = { t: kind, items: [item], _open: true };
         // قائمة مرقمة تقطعها فقرة ثم تكمل (2. 3. …): يبقى ترقيمها متصلاً
         if (ordered) {
           const n = parseInt(line.match(/^[\d٠-٩]+/)[0].replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d))), 10);
@@ -406,7 +408,8 @@ export function blocksToMarkup(blocks) {
 const LATIN_TAIL = "(?:[A-Za-z0-9'’]|[-–.:](?=[A-Za-z0-9]))*";
 // كلمات إنجليزية متتالية، والمربوطة بـ / & + = × تبقى مقطعاً واحداً (AP/PA، T1/T2، mg/dL، H&E)
 // وإلا قلب اتجاه السطر العربي ترتيبها
-const LATIN_RUN = new RegExp(`\\((?=\\s*[A-Za-z])[^()\\u0600-\\u06FF]{1,140}\\)|[A-Za-z]${LATIN_TAIL}(?:(?:[ ]+|[ ]*[/&+=×][ ]*)[A-Za-z0-9]${LATIN_TAIL})*`, 'g');
+// وأرقام مربوطة بشرطة (قاعدة 3-6-9، المدى 70-100) تبقى بترتيبها كما تُكتب بالإنجليزية
+const LATIN_RUN = new RegExp(`\\((?=\\s*[A-Za-z])[^()\\u0600-\\u06FF]{1,140}\\)|[A-Za-z]${LATIN_TAIL}(?:(?:[ ]+|[ ]*[/&+=×][ ]*)[A-Za-z0-9]${LATIN_TAIL})*|\\d+(?:[.,]\\d+)?(?:[ ]?[-–][ ]?\\d+(?:[.,]\\d+)?)+`, 'g');
 export function splitLatin(text) {
   const s = String(text || '');
   const out = [];

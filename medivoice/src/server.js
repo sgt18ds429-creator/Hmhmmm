@@ -806,6 +806,27 @@ async function geminiWithKeys(keys, model, body) {
   return last;
 }
 
+/**
+ * تصريح الطلبات المتكررة يُحفظ دقيقة في ذاكرة الـ Isolate: محاضرة واحدة ترسل نحو 150 طلباً، وكل تصريح طلبٌ على
+ * قاعدة البيانات (Durable Object) التي حصتها المجانية 100 ألف طلب يومياً للموقع كله. طلبات الصوت (عليها الحد اليومي)
+ * و PDF تُفحص دائماً من جديد. ربط مفتاح أو فكّه يمسح نسخة الجهاز.
+ */
+const AUTH_TTL = 60_000;
+const authCache = new Map();
+async function authorizeCached(db, id, opts) {
+  if (opts.sec > 0 || opts.kind === 'pdf') return db.authorize(id, opts);
+  const k = `${id}|${opts.kind || ''}`;
+  const hit = authCache.get(k);
+  if (hit && Date.now() - hit.at < AUTH_TTL) return hit.value;
+  const value = await db.authorize(id, opts);
+  if (value.ok) {
+    authCache.set(k, { at: Date.now(), value });
+    if (authCache.size > 3000) { const old = Date.now() - AUTH_TTL; for (const [x, v] of authCache) if (v.at < old) authCache.delete(x); }
+  }
+  return value;
+}
+const forgetAuth = (id) => { for (const k of authCache.keys()) if (k.startsWith(`${id}|`)) authCache.delete(k); };
+
 async function verifyKey(provider, key) {
   try {
     const signal = AbortSignal.timeout(15_000);
@@ -909,6 +930,7 @@ async function handleApi(request, env, ctx, url) {
       if (!v.ok) return json({ error: v.error, provider, hint: key.slice(0, 4) + '…' + key.slice(-4) }, v.error === 'bad_key' ? 400 : 502);
     }
     const r = await db.setKey(id, provider, keys, { add: body.add === true });
+    forgetAuth(id);
     return r.ok ? json({ ...r.session, linked: provider }) : json({ error: r.error }, r.status);
   }
 
@@ -916,11 +938,12 @@ async function handleApi(request, env, ctx, url) {
     const provider = url.searchParams.get('provider');
     if (provider !== 'groq' && provider !== 'gemini') return json({ error: 'bad_request' }, 400);
     const r = await db.removeKey(id, provider);
+    forgetAuth(id);
     return r.ok ? json(r.session) : json({ error: r.error }, r.status);
   }
 
   if (path === '/api/fetch' && method === 'GET') {
-    if (!(await db.isActive(id))) return json({ error: 'locked' }, 401);
+    if (!(await authorizeCached(db, id, { kind: 'active' })).ok) return json({ error: 'locked' }, 401);
     let target;
     try { target = new URL(url.searchParams.get('u') || ''); } catch { return json({ error: 'bad_request' }, 400); }
     if (!fetchAllowed(target)) return json({ error: 'forbidden' }, 403);
@@ -928,7 +951,7 @@ async function handleApi(request, env, ctx, url) {
   }
 
   if (path === '/api/models' && method === 'GET') {
-    const auth = await db.authorize(id, { kind: 'both' });
+    const auth = await authorizeCached(db, id, { kind: 'both' });
     if (!auth.ok) return json({ error: auth.error }, auth.status);
     return json(await listModels(auth));
   }
@@ -937,7 +960,7 @@ async function handleApi(request, env, ctx, url) {
 
   // تحويل الصوت إلى نص (Groq Whisper) — الجسم multipart يمر كما هو بدون قراءة
   if (path === '/api/stt' && method === 'POST') {
-    const auth = await db.authorize(id, { kind: 'groq', sec });
+    const auth = await authorizeCached(db, id, { kind: 'groq', sec });
     if (!auth.ok) return json(auth, auth.status);
     if (!auth.groq) return json({ error: 'no_key', provider: 'groq' }, 412);
     let up;
@@ -956,7 +979,7 @@ async function handleApi(request, env, ctx, url) {
   }
 
   if (path === '/api/groq' && method === 'POST') {
-    const auth = await db.authorize(id, { kind: 'groq' });
+    const auth = await authorizeCached(db, id, { kind: 'groq' });
     if (!auth.ok) return json(auth, auth.status);
     if (!auth.groq) return json({ error: 'no_key', provider: 'groq' }, 412);
     let up;
@@ -976,7 +999,7 @@ async function handleApi(request, env, ctx, url) {
   if (path === '/api/gemini' && method === 'POST') {
     const model = url.searchParams.get('model') || '';
     if (!/^[a-z0-9][a-z0-9.-]{2,60}$/.test(model)) return json({ error: 'bad_model' }, 400);
-    const auth = await db.authorize(id, { kind: 'gemini', sec });
+    const auth = await authorizeCached(db, id, { kind: 'gemini', sec });
     if (!auth.ok) return json(auth, auth.status);
     if (!auth.geminiKeys?.length) return json({ error: 'no_key', provider: 'gemini' }, 412);
     const up = await geminiWithKeys(auth.geminiKeys, model, await request.arrayBuffer());
@@ -1052,7 +1075,7 @@ export default {
       if (request.headers.get('if-none-match') === `"${BUILD}"`) return serveAsset(request, asset);
       if (asset.gated) {
         const id = await deviceId(request);
-        if (!id || !(await store(env).isActive(id))) return new Response('Locked', { status: 403, headers: SECURITY_HEADERS });
+        if (!id || !(await authorizeCached(store(env), id, { kind: 'active' })).ok) return new Response('Locked', { status: 403, headers: SECURITY_HEADERS });
       }
       return serveAsset(request, asset);
     } catch (e) {
