@@ -754,7 +754,11 @@ test('حارس التكرار يبقي القيم الحقيقية المتكر�
   for (const t of ['APGAR scored 2, 2, 2, 1, 2 = 9.', 'BP was 90/60, 90/60, 90/60 despite fluids.', 'Reflexes graded + + + on the right.', '| MCV | ↓ | ↓ | ↓ | N |']) {
     assert.equal(collapseRepeats(t), t, t);
   }
-  assert.equal(collapseRepeats('«إنت، إنت، إنت، إنت»'), '«إنت»');
+  assert.equal(collapseRepeats('إنت، إنت، إنت، إنت، إنت'), 'إنت');
+  // الأقواس جزء من الكلمة: لا يُطوى المصطلح مع كلمة بلا أقواس فيضيع قوس الإغلاق
+  assert.equal(collapseRepeats('الـ [[pneumothorax]] pneumothorax pneumothorax هو'), 'الـ [[pneumothorax]] pneumothorax pneumothorax هو');
+  assert.equal(collapseRepeats('[[X]] [[X]] [[X]] و'), '[[X]] و');
+  assert.equal(collapseRepeats('إنت إنت إنت روح، إنت إنت إنت روح، إنت إنت إنت روح.'), 'إنت روح.', 'حلقة متداخلة');
   assert.equal(collapseRepeats('قال: إنت، إنت، إنت. ثم سكت.'), 'قال: إنت. ثم سكت.');
   const clause = 'الألم يكون في منتصف البطن ويخف بعد التبرز ويزداد بعد الأكل';
   assert.equal(collapseRepeats(`${Array.from({ length: 15 }, () => clause).join('، ')}.`), `${clause}.`);

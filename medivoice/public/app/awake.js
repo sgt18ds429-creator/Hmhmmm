@@ -36,6 +36,8 @@ export function keepAwake() {
     if ('wakeLock' in navigator) {
       try { lock = await navigator.wakeLock.request('screen'); ok = true; } catch { /* مرفوض أو غير مدعوم */ }
     }
+    // انتهى العمل أثناء انتظار الطلب: نحرر القفل فوراً ولا نشغّل الفيديو
+    if (released) { lock?.release?.().catch?.(() => {}); lock = null; return; }
     if (!ok || (isIOS() && standalone())) playVideo();
   };
   grab();

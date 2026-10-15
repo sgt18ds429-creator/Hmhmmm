@@ -9,6 +9,10 @@ import { brandAssets } from '../brand.js';
 import { findCandidates, creditLine } from './images.js';
 import * as db from './db.js';
 
+/** مصغّرات نافذة تبديل الصورة: في الذاكرة فقط، فلا تُحفظ داخل الملزمة فتثقلها */
+const thumbs = new WeakMap();
+const thumbOf = (c) => thumbs.get(c) || c.tiny || '';
+
 function fill(el, text) {
   clear(el);
   // في النص العربي تُعزل المقاطع الإنجليزية حتى لا تنقلب أقواسها عند التفاف السطر،
@@ -322,7 +326,7 @@ export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
       clear(grid);
       for (const c of cands) {
         const btn = h('button', { class: 'pick', 'aria-pressed': String(b.pick?.id === c.id), onclick: () => choose(c, btn) },
-          h('img', { src: c.tiny || c.small, alt: c.title || '', loading: 'lazy', referrerPolicy: 'no-referrer' }),
+          h('img', { src: thumbOf(c) || c.small, alt: c.title || '', loading: 'lazy', referrerPolicy: 'no-referrer' }),
           h('small', null, `${c.title || ''} · ${c.license || ''}`));
         grid.append(btn);
       }
@@ -353,8 +357,8 @@ export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
         const kind = /x-?ray|radiograph|ct\b|mri|ultrasound|scan/i.test(query) ? 'radiograph' : /histolog|microscop|stain|micrograph/i.test(query) ? 'micrograph' : 'diagram';
         const cands = await findCandidates({ query, alt: '', kind }, ctx.io.net, 8);
         // مصغّرات محمّلة مسبقاً حتى تظهر حتى لو منع المصدر العرض المباشر
-        await Promise.all(cands.map(async (c) => { try { c.tiny = (await ctx.io.loadImage(c, 'small')).dataUrl; } catch { c.tiny = ''; } }));
-        b.candidates = cands.filter((c) => c.tiny);
+        await Promise.all(cands.map(async (c) => { try { thumbs.set(c, (await ctx.io.loadImage(c, 'small')).dataUrl); } catch { /* بلا مصغّرة */ } }));
+        b.candidates = cands.filter((c) => thumbOf(c));
         paint(b.candidates);
       } catch {
         state.textContent = 'تعذّر البحث الآن. تأكد من الإنترنت.';
@@ -367,11 +371,11 @@ export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
     if (b.candidates?.length) {
       paint(b.candidates);
       // المصغّرات لا تُحفظ مع الملزمة (تثقلها): تُحمَّل عند فتح النافذة
-      const missing = b.candidates.filter((c) => !c.tiny);
+      const missing = b.candidates.filter((c) => !thumbOf(c));
       if (missing.length) {
         state.textContent = 'أحمّل الصور البديلة…';
-        Promise.all(missing.map(async (c) => { try { c.tiny = (await ctx.io.loadImage(c, 'small')).dataUrl; } catch { c.tiny = ''; } }))
-          .then(() => { if (s.panel.isConnected) paint(b.candidates.filter((c) => c.tiny)); });
+        Promise.all(missing.map(async (c) => { try { thumbs.set(c, (await ctx.io.loadImage(c, 'small')).dataUrl); } catch { /* بلا مصغّرة */ } }))
+          .then(() => { if (s.panel.isConnected) paint(b.candidates.filter((c) => thumbOf(c))); });
       }
     } else if (b.query) search();
   }

@@ -183,8 +183,9 @@ export class Engine {
     const order = lite
       ? [...this.gem.items.filter((x) => /lite/.test(x.id)), ...this.gem.items.filter((x) => !/lite/.test(x.id)).reverse()]
       : this.gem.items;
-    // بلا بديل (Groq) نصبر على ضغط Google أطول: الاستسلام هنا يعني مقطعاً أو قسماً ضائعاً
-    const patience = patienceMs || 300_000;
+    // مدة الصبر على ضغط Google (503): دقيقة ونصف للمهام العادية، والأطول يطلبه المستدعي صراحة
+    // (الاستماع والكتابة بلا بديل Groq: الاستسلام هناك يعني مقطعاً أو قسماً ضائعاً)
+    const patience = patienceMs || 90_000;
     let netFails = 0, blocked = 0;
     for (let attempt = 0; attempt < 60; attempt++) {
       this.check();
@@ -259,7 +260,6 @@ export class Engine {
         netFails++;
         m.fails = (m.fails || 0) + 1;
         this.gem.cool(m, Math.min(30_000, 6000 * m.fails));
-        // patienceMs: من له بديل (Groq) لا ينتظر طويلاً؛ ومن لا بديل له يصبر حتى 5 دقائق
         if (netFails > 40 || Date.now() - started > patience) return null;
         continue;
       }
@@ -323,11 +323,12 @@ export class Engine {
    * كتابة نص طويل (الشرح المفصل): أدق نماذج Gemini أولاً، ثم Groq.
    * @returns {Promise<{text, model, truncated}|{blocked:true}|null>} null = لا يوجد محرك متاح الآن
    */
-  async write({ system, user, maxTokens = 16000, groqTokens = 4000, temperature = 0.2, groq = true, gemini = true, thinking = null, lite = false }) {
+  async write({ system, user, maxTokens = 16000, groqTokens = 4000, temperature = 0.2, groq = true, gemini = true, thinking = null, lite = false, patienceMs = null }) {
     let blocked = null;
     if (gemini && this.hasGemini) {
-      // عند التأخر لا ننتظر النماذج الدقيقة إذا كانت في تهدئة: الخفيفة أسرع ولها حدود أعلى
-      const r = await this.gemini({ system, parts: [{ text: user }], maxTokens, temperature, thinking, lite, strongWaitMs: lite || this.late(0.6) ? 0 : 40_000, patienceMs: this.hasGroqLlm ? 90_000 : 0 });
+      // عند التأخر لا ننتظر النماذج الدقيقة إذا كانت في تهدئة: الخفيفة أسرع ولها حدود أعلى.
+      // من له بديل (Groq) لا ينتظر ضغط Google طويلاً؛ ومن لا بديل له يصبر حتى 4 دقائق
+      const r = await this.gemini({ system, parts: [{ text: user }], maxTokens, temperature, thinking, lite, strongWaitMs: lite || this.late(0.6) ? 0 : 40_000, patienceMs: patienceMs ?? (this.hasGroqLlm ? 90_000 : 240_000) });
       if (r && !r.blocked) return r;
       if (r?.blocked) blocked = r;
     }
@@ -398,6 +399,7 @@ async function refineChunk(engine, chunk, draft, meta, { first, last, exact, wea
   const eff = (text) => countWords(text) * (1 - Math.min(1, repetitionScore(text)));
 
   // 1) Gemini يستمع للصوت
+  let blockedListen = false; // رفض دائم (حجب أو طلب غير مقبول): إعادة المقطع لن تغيّر شيئاً
   if (engine.hasGemini && chunk.blob.size <= GEMINI_MAX_INLINE) {
     emit({ type: 'chunk', index: chunk.index, stage: 'listen' });
     const audio = { inline_data: { mime_type: MIME[chunk.ext] || chunk.mime, data: await audioData() } };
@@ -408,6 +410,7 @@ async function refineChunk(engine, chunk, draft, meta, { first, last, exact, wea
       // بعد حلقة تكرار نعيد بحرارة خفيفة: الحرارة صفر هي التي تُبقي النموذج في الحلقة
       // مع مسودة Whisper موثوقة لا ننتظر ضغط Google أكثر من دقيقتين ونصف (المسودة المنقّحة بديل)
       const r = await engine.gemini({ system, parts: [audio, { text: user }], sec, maxTokens: 16000, thinking: 'minimal', temperature: looped ? 0.3 : 0, patienceMs: trusted ? 150_000 : 300_000 });
+      if (r?.blocked) blockedListen = true;
       if (!r || r.blocked) break;
       sec = 0;
       // حلقة تكرار في الاستماع: نطويها، ونعيد الاستماع مرة بدون المسودة (غالباً هي التي جرّته إليها)
@@ -476,7 +479,7 @@ async function refineChunk(engine, chunk, draft, meta, { first, last, exact, wea
   if (draft === '') return { markup: '', engine: 'none', review: false };
   // لا مسودة ولا استماع الآن، لكن نماذج Gemini ما زالت حية (ضغط مؤقت لا نفاد حصة): ننتظر ونعيد المقطع
   // بدل أن تفشل المحاضرة كلها بعد أن اكتمل أغلبها
-  if ((engine.hasGemini || engine.hasTx) && retry < 2) {
+  if ((engine.hasGemini || engine.hasTx) && retry < 2 && !blockedListen) {
     await engine.pause(20_000 * (retry + 1), 'gemini');
     return refineChunk(engine, chunk, draft, meta, { first, last, exact, weak, known, retry: retry + 1 });
   }
@@ -1472,17 +1475,22 @@ function figureQueue(engine, { lang, emit }) {
   let active = 0, limit = 1 + engine.par, total = 0, picked = 0, cancelled = false;
   const stat = { requested: 0, candidates: 0, noCandidates: 0, rounds: 0, vision: 0, text: 0, skipped: 0, failed: 0, similar: 0, missed: [] };
   const take = async () => { while (active >= limit) await new Promise((r) => waiting.push(r)); active++; };
-  // طلبات صور متشابهة في أقسام مختلفة (نفس الصورة الشعاعية مرتين): تُطلب مرة واحدة
-  const asked = [];
-  const similar = (f) => {
-    const t = new Set(tokens(`${f.query} ${f.alt || ''}`));
-    if (!t.size) return false;
+  // الصورة نفسها مطلوبة في قسمين (مثل صورة الصدر الواقفة للهواء الحر مرتين): تُطلب مرة واحدة. المقارنة على
+  // عبارة البحث وحدها بلا الكلمات العامة، والتشابه احتواء كامل أو شبه تطابق، وبين أقسام مختلفة فقط
+  // (صورتا AP وجانبية للركبة، أو Colles و Smith، صورتان مختلفتان)
+  const GENERIC = new Set(['x', 'ray', 'xray', 'radiograph', 'radiography', 'radiographic', 'view', 'views', 'image', 'images', 'scan', 'diagram', 'anatomy', 'photo', 'micrograph', 'histology', 'showing', 'shows', 'of', 'the', 'and', 'a', 'an', 'in', 'on', 'with', 'film', 'plain']);
+  const asked = []; // [{ words:Set, section }]
+  const similar = (f, section) => {
+    const words = new Set(tokens(f.query).filter((w) => !GENERIC.has(w)));
+    if (words.size < 2) return false;
     for (const prev of asked) {
+      if (prev.section === section) continue;
       let both = 0;
-      for (const w of t) if (prev.has(w)) both++;
-      if (both / (t.size + prev.size - both) >= 0.6) return true;
+      for (const w of words) if (prev.words.has(w)) both++;
+      const contained = both === Math.min(words.size, prev.words.size);
+      if (contained || both / (words.size + prev.words.size - both) >= 0.85) return true;
     }
-    asked.push(t);
+    asked.push({ words, section });
     return false;
   };
   const release = () => { active--; waiting.shift()?.(); };
@@ -1492,7 +1500,7 @@ function figureQueue(engine, { lang, emit }) {
       const words = blocks.reduce((n, b) => n + countWords(blockText(b)), 0);
       const cap = Math.min(4, Math.max(1, Math.round(words / 250)));
       const reqs = blocks.map((b, i) => [b, i]).filter(([b]) => b.t === 'figreq').slice(0, cap).filter(([b]) => {
-        if (!similar(b)) return true;
+        if (!similar(b, section)) return true;
         stat.similar++;
         return false;
       });
@@ -1652,7 +1660,7 @@ async function translateGroup(engine, text, { to, meta, strong = false }) {
   for (let attempt = 0; attempt < 2; attempt++) {
     engine.check();
     const { system, user } = translatePrompt(markup, { to, meta });
-    const r = await engine.write({ system, user, maxTokens: 12000, groqTokens: 5000, thinking: 'minimal', lite: !strong });
+    const r = await engine.write({ system, user, maxTokens: 12000, groqTokens: 5000, thinking: 'minimal', lite: !strong, patienceMs: 60_000 });
     if (!r?.text || r.blocked) continue;
     if (repetitionScore(r.text) > 0.3 && attempt === 0) continue; // حلقة تكرار: محاولة ثانية
     const out = parseMarkup(collapseMarkup(cleanModelText(r.text)).text).filter((b) => TEXT_TYPES.has(b.t)).map((b) => ({ id: uid(), ...b }));
@@ -1721,20 +1729,24 @@ export async function translateBlocks(doc, engine, { emit = () => {} }) {
   emit({ type: 'stage', name: 'translate', to });
   const groups = sections.map(sectionGroups);
   const all = groups.flat();
-  let done = 0;
+  let done = 0, streak = 0, tripped = false;
   const run = (strong) => async (g) => {
+    // المحرك مضغوط بلا انقطاع (3 أجزاء متتالية فشلت) أو تجاوزنا ضعف الوقت المسموح: لا نبدأ أجزاء جديدة،
+    // فتبقى بلغتها مع تنبيه بدل أن تنتظر الملزمة كلها ساعة
+    if (tripped || engine.late(2)) return;
     try {
       g.out = await translateGroup(engine, g.src, { to, meta: doc.meta, strong });
     } catch (e) {
       if (isFatal(e)) throw e;
       g.out = null;
     }
-    if (g.out) emit({ type: 'translate', to, done: ++done, total: all.length });
+    if (g.out) { streak = 0; emit({ type: 'translate', to, done: ++done, total: all.length }); }
+    else if (++streak >= 3) tripped = true;
   };
   await mapLimit(all, engine.hasGemini ? Math.min(8, 2 + 2 * engine.par) : 2, run(false));
   // جولة ثانية لما تعذّر: بالنموذج الأقوى المتاح، بالتوازي (كانت قسماً قسماً)
   const failed = all.filter((g) => !g.out);
-  if (failed.length) await mapLimit(failed, 3, run(true));
+  if (failed.length && !tripped) await mapLimit(failed, 3, run(true));
   return { to, groups };
 }
 
@@ -1799,7 +1811,7 @@ export async function finishAlt(doc, engine, tr, kp, body) {
         // يبقى بلغته الأصلية مع تنبيه واضح (بعد عنوانه إن بدأ بعنوان)، ومواضع كتله معروفة بالضبط للصور
         partial = true;
         const copy = g.src.map(copyOf);
-        const note = { id: uid(), t: 'note', text: noteText };
+        const note = { id: uid(), t: 'note', sys: true, text: noteText };
         const lead = copy[0]?.t === 'h' ? 1 : 0;
         out.push(...copy.slice(0, lead), note, ...copy.slice(lead));
         g.map = copy.map((_, k) => (k < lead ? k : k + 1));
@@ -1963,7 +1975,7 @@ export async function reviewNotes(doc, engine, { emit = () => {} } = {}) {
     // محاولتان: النماذج الخفيفة (عند نفاد حصة الأقوى) تقطع JSON الطويل أحياناً
     let r = null, parsed = null;
     for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
-      r = await engine.gemini({ system, parts: [{ text: attempt ? `${user}\n\n${lang === 'en' ? 'Keep the JSON short: at most 25 fixes and 10 additions.' : 'اجعل JSON مختصراً: 25 تصحيحاً و10 إضافات كحد أقصى.'}` : user }], json: true, maxTokens: 14000, thinking: 'low', strongWaitMs: 45_000 });
+      r = await engine.gemini({ system, parts: [{ text: attempt ? `${user}\n\n${lang === 'en' ? 'Keep the JSON short: at most 25 fixes and 10 additions.' : 'اجعل JSON مختصراً: 25 تصحيحاً و10 إضافات كحد أقصى.'}` : user }], json: true, maxTokens: 14000, thinking: 'low', strongWaitMs: 45_000, patienceMs: 120_000 });
       parsed = r?.text ? parseJsonLoose(r.text) : null;
       if (!r) break; // لا نموذج متاح الآن
     }

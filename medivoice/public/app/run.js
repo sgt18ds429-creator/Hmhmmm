@@ -634,7 +634,8 @@ export function openRecorder(ctx) {
     recorder = null;
     const finish = async () => {
       stream?.getTracks().forEach((t) => t.stop());
-      await saving;
+      // آخر القطع تُكتب على الجهاز، لكن لا ننتظر تخزيناً عالقاً أكثر من 3 ثوانٍ (التسجيل نفسه في الذاكرة)
+      await Promise.race([saving, new Promise((r) => setTimeout(r, 3000))]);
       if (!use || !chunks.length) { if (recId) db.deleteRecording(recId).catch(() => {}); return; }
       const type = rec?.mimeType || chunks[0].type || 'audio/webm';
       const ext = /mp4/.test(type) ? 'm4a' : 'webm';

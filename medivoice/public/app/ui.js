@@ -88,13 +88,36 @@ export function svgEl(tag, attrs = {}, ...kids) {
   return el;
 }
 
+// ───────────── سجل التصفح ─────────────
+// كل نافذة تأخذ خطوة في السجل (زر الرجوع في الهاتف يغلقها بدل أن يغادر الموقع)، وإغلاقها من داخلها يحذف
+// خطوتها (history.back). الرجوع غير متزامن، فأي خطوة جديدة تُطلب أثناءه تنتظره حتى لا تُحذف هي بدلاً منه.
+const H = { own: 0, queue: [], timer: null, stack: [] };
+function flushHistory() {
+  clearTimeout(H.timer); H.timer = null; H.own = 0;
+  for (const [kind, state] of H.queue.splice(0)) {
+    try { (kind === 'push' ? history.pushState : history.replaceState).call(history, state, ''); } catch { /* */ }
+  }
+}
+export function histPush(state) { if (H.own) H.queue.push(['push', state]); else history.pushState(state, ''); }
+export function histReplace(state) { if (H.own) H.queue.push(['replace', state]); else history.replaceState(state, ''); }
+function histBack() {
+  H.own++;
+  history.back();
+  clearTimeout(H.timer);
+  H.timer = setTimeout(flushHistory, 3000); // احتياط: إذا لم يصل حدث الرجوع لا تبقى الخطوات معلّقة
+}
+/** يستدعيه مستمع popstate أولاً: true إذا كان هذا الرجوع من إغلاق نافذة بزرها (ليس ضغطة رجوع من الطالب). */
+export function ownPop() {
+  if (!H.own) return false;
+  if (--H.own === 0) flushHistory();
+  return true;
+}
+
 // ───────────── نافذة سفلية ─────────────
 const openSheets = [];
 let sheetHistory = false;
-/**
- * التطبيق يفعّلها: كل نافذة تأخذ خطوة في سجل التصفح، فزر الرجوع في الهاتف يغلقها بدل أن يغادر الموقع
- * (كان الرجوع والنافذة مفتوحة في الرئيسية يغلق التطبيق كله).
- */
+let sheetSeq = 0;
+/** التطبيق يفعّلها (لوحة المدير لا تحتاجها). */
 export function enableSheetHistory() { sheetHistory = true; }
 
 /** @param persistent نافذة لا تُغلق بلمسة خارجها ولا بـ Esc (مثل التسجيل الجاري)؛ قيمة أو دالة */
@@ -106,12 +129,23 @@ export function sheet({ title, body, wide = false, onClose, persistent = false }
     h('div', { class: 'sheet-body' }, body));
   const root = h('div', { class: 'sheet', onclick: (e) => { if (e.target === root && !api.locked()) api.close(); } }, panel);
   let closed = false;
+  const id = ++sheetSeq;
   const api = {
     el: root, panel,
     locked: () => (typeof persistent === 'function' ? !!persistent() : !!persistent),
-    close(result) {
+    /** @param via 'ui' (زر/لمسة: تُحذف خطوتها من السجل)، 'history' (زر الرجوع حذفها)، 'silent' (التنقل يستبدلها) */
+    close(result, via = 'ui') {
       if (closed) return;
       closed = true;
+      if (sheetHistory) {
+        const at = H.stack.lastIndexOf(id);
+        if (at >= 0) {
+          H.stack.splice(at, 1);
+          const queued = H.queue.findIndex(([kind, st]) => kind === 'push' && st?.sheet === id);
+          if (queued >= 0) H.queue.splice(queued, 1); // خطوتها لم تُكتب بعد
+          else if (via === 'ui' && at === H.stack.length) histBack(); // خطوتها في أعلى السجل
+        }
+      }
       const i = openSheets.indexOf(api);
       if (i >= 0) openSheets.splice(i, 1);
       root.classList.remove('open');
@@ -121,16 +155,24 @@ export function sheet({ title, body, wide = false, onClose, persistent = false }
   };
   document.body.append(root);
   openSheets.push(api);
-  if (sheetHistory) { try { history.pushState({ ...(history.state || {}), sheet: true }, ''); } catch { /* السجل غير متاح */ } }
+  if (sheetHistory) {
+    try { histPush({ v: history.state?.v, sheet: id }); H.stack.push(id); } catch { /* السجل غير متاح */ }
+  }
   requestAnimationFrame(() => root.classList.add('open'));
   return api;
 }
-/** يغلق أعلى نافذة مفتوحة. يرجع true إذا أغلق شيئاً (يستخدمه زر الرجوع). */
-export function closeTopSheet() {
+/** يغلق أعلى نافذة مفتوحة. يرجع true إذا أغلق شيئاً. via: انظر close. */
+export function closeTopSheet(via = 'ui') {
   const top = openSheets[openSheets.length - 1];
   if (!top) return false;
-  top.close();
+  top.close(undefined, via);
   return true;
+}
+/** يغلق كل النوافذ عند الانتقال لشاشة أخرى (خطواتها في السجل تستبدلها الشاشة الجديدة). يرجع عددها. */
+export function closeAllSheets() {
+  let n = 0;
+  while (closeTopSheet('silent')) n++;
+  return n;
 }
 addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;

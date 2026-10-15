@@ -1,6 +1,6 @@
 // main.js — التطبيق بعد التفعيل: التنقل، الرئيسية، ربط المفاتيح، الإعدادات.
 
-import { h, icon, clear, sheet, closeTopSheet, confirm, fmtHM, fmtAgo, svgEl, enableSheetHistory } from './ui.js';
+import { h, icon, clear, sheet, closeTopSheet, closeAllSheets, confirm, fmtHM, fmtAgo, svgEl, enableSheetHistory, histPush, histReplace, ownPop } from './ui.js';
 import { makeIO } from './api.js';
 import * as db from './db.js';
 import { fmtDuration } from './pdf.js';
@@ -114,10 +114,11 @@ export async function start(MV, root) {
 
   // ── التنقل ──
   async function go(name, params = {}, { replace = false } = {}) {
-    closeTopSheet();
+    // نوافذ ما زالت مفتوحة: تُغلق، وخطوة أعلاها في السجل تصير خطوة الشاشة الجديدة (لا خطوات ميتة)
+    const onSheet = closeAllSheets() > 0 && history.state?.sheet;
     ctx.view = name;
     ctx.guard = null;
-    if (name !== 'home') { replace ? history.replaceState({ v: name }, '') : history.pushState({ v: name }, ''); }
+    if (name !== 'home') { replace || onSheet ? histReplace({ v: name }) : histPush({ v: name }); }
     clear(main);
     scrollTo(0, 0);
     const el = h('main', { class: 'view' });
@@ -131,10 +132,11 @@ export async function start(MV, root) {
   }
   function back() { history.back(); }
   addEventListener('popstate', async () => {
+    if (ownPop()) return; // رجوع أطلقناه نحن عند إغلاق نافذة بزرها
     // لكل نافذة خطوتها في السجل: الرجوع يغلقها فقط
-    if (closeTopSheet()) return;
+    if (closeTopSheet('history')) return;
     if (ctx.guard) {
-      history.pushState({ v: ctx.view }, '');
+      histPush({ v: ctx.view });
       if (!(await ctx.guard())) return;
       history.back();
       ctx.guard = null;

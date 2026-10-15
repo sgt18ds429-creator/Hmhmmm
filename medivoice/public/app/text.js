@@ -70,10 +70,11 @@ export function repetitionScore(text, n = 5) {
   return dup / (w.length - n + 1);
 }
 
-// مفتاح مقارنة كلمة: مطبّعة وبلا علامات ترقيم على طرفيها («إنت،» = «إنت»). الرمز الخالص يُقارن كما هو
-const EDGE_PUNCT = /^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu;
+// مفتاح مقارنة كلمة: مطبّعة وبلا علامات ترقيم الجملة على طرفيها («إنت،» = «إنت»). الأقواس وعلامات التنصيص
+// تبقى جزءاً من الكلمة («[[X]]» غير «X»)، وإلا طُويت الكلمة مع نظيرتها وضاع قوس الإغلاق. الرمز الخالص يُقارن كما هو
+const EDGE_PUNCT = /^[.,،؛;:!?؟…]+|[.,،؛;:!?؟…]+$/g;
 const wordKey = (w) => normalize(w).replace(EDGE_PUNCT, '') || w;
-const TRAIL_PUNCT = /[^\p{L}\p{N}]+$/u;
+const TRAIL_PUNCT = /[.,،؛;:!?؟…]+$/;
 const HAS_LETTER = /\p{L}/u;
 
 /**
@@ -140,7 +141,12 @@ function collapseRuns(s) {
 export function collapseRepeats(text) {
   let t = String(text || '');
   if (!t.trim()) return t;
-  t = collapseRuns(t);
+  // حلقات متداخلة («إنت إنت إنت روح» ثلاث مرات) تحتاج أكثر من مرور
+  for (let pass = 0; pass < 3; pass++) {
+    const before = t;
+    t = collapseRuns(t);
+    if (t === before) break;
+  }
   // جمل مكررة داخل الفقرة
   const parts = splitSentences(t, /[.!؟?]/);
   if (parts.length > 1) {
@@ -722,6 +728,7 @@ export function qualityGate(doc) {
  * حلقة «عنوان + فقرة» أو جدول/سؤال يتكرر.
  */
 const blockKey = (b) => {
+  if (b.sys) return ''; // ملاحظة من النظام (مثل «تعذّرت الترجمة»): تتكرر عمداً عند كل جزء
   if (b.t === 'p' || b.t === 'note') return textKey(b.text);
   if (b.t === 'ul' || b.t === 'ol') return textKey(b.items.join(' | '));
   if (b.t === 'h') { const k = textKey(b.text); return k && `h${b.level === 3 ? 3 : 2} ${k}`; }
@@ -789,7 +796,7 @@ export function cleanBlockList(blocks, stat = { repeats: 0, duplicates: 0, empty
     if (b.t === 'p' || b.t === 'note') {
       const k = textKey(b.text);
       if (!k) { stat.empty++; continue; }
-      if (k.split(' ').length >= 6) {
+      if (k.split(' ').length >= 6 && !b.sys) {
         if (seen.has(k)) { stat.duplicates++; continue; }
         seen.add(k);
       }
