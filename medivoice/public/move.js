@@ -233,14 +233,21 @@ export async function leave(home, ui) {
     const path = pull === null ? location.pathname : '/';
     location.replace(`${home}${path}?mv-pulled=${encodeURIComponent(pull || location.host)}${tokens.length ? `#mv-move=${tokens.join(',')}` : ''}`);
   };
-  let data = { stores: {}, ls: {} };
-  try { data = await collect(); } catch (e) { console.warn('move: collect', e); }
+  let data = { stores: {}, ls: {} }, err = '';
+  try { data = await collect(); } catch (e) { console.warn('move: collect', e); err = `collect ${e?.name || ''} ${e?.message || e}`; }
   const rows = STORES.reduce((n, s) => n + (data.stores[s]?.length || 0), 0) + Object.keys(data.ls).length;
-  let pkg = rows ? pack(data) : null;
-  if (pkg && pkg.size > MAX) {
-    // كبير جداً: ملفات تحويلات لم تكتمل (فيديو مثلاً) تُترك، ونقاط استئنافها تنتقل فيكمل الطالب برفع نفس الملف
-    data.stores.parts = (data.stores.parts || []).filter(([k]) => !String(k).startsWith('src:'));
-    pkg = pack(data);
+  let pkg = null;
+  try {
+    pkg = rows ? pack(data) : null;
+    if (pkg && pkg.size > MAX) {
+      // كبير جداً: ملفات تحويلات لم تكتمل (فيديو مثلاً) تُترك، ونقاط استئنافها تنتقل فيكمل الطالب برفع نفس الملف
+      data.stores.parts = (data.stores.parts || []).filter(([k]) => !String(k).startsWith('src:'));
+      pkg = pack(data);
+    }
+  } catch (e) {
+    console.warn('move: pack', e);
+    err = `pack ${e?.name || ''} ${e?.message || e}`;
+    pkg = null;
   }
   const sig = pkg ? `${pkg.size}:${STORES.map((s) => data.stores[s]?.length || 0).join('.')}` : '';
   // نفس البيانات انتقلت قبل ووصلت: ما نرفعها مرة ثانية
@@ -251,7 +258,9 @@ export async function leave(home, ui) {
   }
   let start = null;
   try {
-    start = await callJson('/api/move/start', { method: 'POST' });
+    const info = new URLSearchParams({ n: String(data.stores.lectures?.length || 0), b: String(pkg?.size || 0), pull: pull === null ? '0' : '1' });
+    if (err) info.set('err', err.slice(0, 120));
+    start = await callJson(`/api/move/start?${info}`, { method: 'POST' });
   } catch (e) {
     console.warn('move: start', e);
   }

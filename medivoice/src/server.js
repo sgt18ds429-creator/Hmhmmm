@@ -32,7 +32,7 @@ const homeUrl = (env) => new URL(env?.MV_HOME || HOME);
 // كل الروابط التي استُعمل عليها الموقع. أول فتح للرابط الرئيسي من متصفح يمر عليها بسرعة (تحويل واحد لكل رابط، مرة
 // واحدة لكل متصفح) فيسحب منها تسجيل دخوله ومحاضراته تلقائياً، حتى لو ما فتح الرابط القديم بنفسه. محلياً: MV_OLD
 const OLD_ORIGINS = ['https://medivoice.nukhba-uni.workers.dev', 'https://medivoice.pages.dev'];
-const PULL_COOKIE = 'mv_pull'; // على الرئيسي: الروابط القديمة التي سُحب منها هذا المتصفح
+const PULL_COOKIE = 'mv_pull2'; // على الرئيسي: الروابط القديمة التي سُحب منها هذا المتصفح (تغيير الاسم يعيد السحب للكل مرة)
 const MOVE_CHUNK = 1024 * 1024; // قطعة نقل واحدة (حد SQLite للقيمة الواحدة 2 ميغا)
 const MOVE_MAX = 600 * 1024 * 1024; // أقصى حجم لنقلة واحدة
 const MOVE_TOKEN = /^[\w-]{20,80}$/;
@@ -349,14 +349,20 @@ export class MediVoiceStore extends DurableObject {
   // ── النقل من رابط قديم للرابط الرئيسي (public/move.js) ──
 
   /** الرابط القديم يبدأ النقل: رمز لمرة واحدة، ومعه سر جهازه مشفّراً إذا كان مفعّلاً، حتى يدخل الرابط الرئيسي بلا كود */
-  async moveStart(deviceId, secret, ip) {
+  async moveStart(deviceId, secret, ip, info = {}) {
     await this.#ensureAlarm();
     const key = `move:${ip || 'x'}`;
     if (!this.#allow(key, HOUR, 30)) return { ok: false, status: 429, error: 'too_many' };
     this.#hit(key);
     const token = randomToken(24);
-    const live = !!deviceId && this.#check(deviceId).ok && /^[\w-]{30,80}$/.test(secret || '');
+    const c = deviceId ? this.#check(deviceId) : { ok: false };
+    const live = c.ok && /^[\w-]{30,80}$/.test(secret || '');
     this.sql.exec('INSERT INTO moves (token, secret, ip, created) VALUES (?, ?, ?, ?)', token, live ? await this.#seal(secret) : null, ip || '', Date.now());
+    // للتشخيص (لا يظهر في نشاط اللوحة): ماذا وجد المتصفح على الرابط القديم
+    const n = (v) => Math.max(0, Math.min(1e9, Math.round(Number(v) || 0)));
+    const detail = [`${n(info.n)} محاضرة`, `${(n(info.b) / 1048576).toFixed(1)} ميغا`, info.pull ? 'سحب تلقائي' : 'فتح الرابط القديم',
+      deviceId ? (live ? 'مفعّل' : 'تفعيل منتهي') : 'بلا تفعيل', info.err ? `خطأ: ${String(info.err).slice(0, 80)}` : ''].filter(Boolean).join(' · ');
+    this.#event('move_start', { code: c.ok ? c.code.code : null, ip, detail });
     return { ok: true, token, session: live };
   }
   #move(token, maxAge) {
@@ -679,6 +685,8 @@ export class MediVoiceStore extends DurableObject {
       codes: list, events,
       settings: this.#config(),
       password_changed: !!this.#setting('admin_pw'),
+      // تشخيص النقل بين الروابط (لا يظهر في اللوحة)
+      moves: this.#all('SELECT created, size, claimed, done, ip FROM moves ORDER BY created DESC LIMIT 40'),
     };
   }
 
@@ -1237,7 +1245,9 @@ async function handleApi(request, env, ctx, url) {
     const n = Number(url.searchParams.get('n'));
     const reply = (r) => json(r, r.ok === false ? r.status || 400 : 200);
     if (path === '/api/move/start' && method === 'POST') {
-      return reply(await db.moveStart(await deviceId(request), cookies(request)[DEVICE_COOKIE] || '', request.headers.get('cf-connecting-ip') || ''));
+      const q = url.searchParams;
+      const info = { n: q.get('n'), b: q.get('b'), pull: q.get('pull') === '1', err: q.get('err') || '' };
+      return reply(await db.moveStart(await deviceId(request), cookies(request)[DEVICE_COOKIE] || '', request.headers.get('cf-connecting-ip') || '', info));
     }
     if (path === '/api/move/part' && method === 'PUT') {
       if (Number(request.headers.get('content-length') || 0) > MOVE_CHUNK) return json({ error: 'too_large' }, 413);
@@ -1435,10 +1445,9 @@ export default {
             const step = pullStep(request, env, home, url);
             if (step.redirect) return step.redirect;
             cookie = step.cookie || '';
-          } else if (url.searchParams.has('mv-pull') && !cookies(request)[DEVICE_COOKIE]) {
-            // الرئيسي جاء يسحب: متصفح ما فعّل على هذا الرابط أبداً ما عنده شي هنا، يرجع فوراً بلا تحميل صفحة
-            return bounce(`${home.origin}/?mv-pulled=${encodeURIComponent(url.searchParams.get('mv-pull') || url.host)}`);
           }
+          // الرابط القديم تُخدم صفحته دائماً (حتى للسحب): سفاري ما يرسل كوكي الرابط القديم مع التحويل من رابط ثاني،
+          // فالقرار من الصفحة نفسها حسب ما محفوظ فعلاً في المتصفح
         }
         return serveHtml(request, asset, env, ctx, { home: home.origin, move: foreign && path === '/index.html', cookie });
       }

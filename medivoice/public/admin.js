@@ -470,7 +470,7 @@ function tabActivity(view) {
   const events = h('div');
   if (!d.events.length) events.append(h('div', { class: 'empty' }, 'السجل فارغ.'));
   for (const e of d.events) {
-    if (e.type === 'client_error') continue; // للتشخيص فقط
+    if (e.type === 'client_error' || e.type === 'move_start') continue; // للتشخيص فقط
     const [ic, tone, parts] = eventView(e, byCode);
     const where = [ago(e.ts), country(e.country), tone === 'bad' && e.ip ? e.ip : ''].filter(Boolean).join('، ');
     events.append(h('div', { class: `ev ${tone}` }, h('span', { class: 'dot' }, icon(ic)), h('p', null, parts), h('small', null, where)));

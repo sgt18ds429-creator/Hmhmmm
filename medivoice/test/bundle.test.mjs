@@ -100,7 +100,7 @@ test('رابط ثاني للموقع: صفحة التطبيق تنقل زائر�
   // بلا MV_HOME: الرابط الرئيسي هو رابط Pages، وworkers.dev ينقل زائره له
   const prod = await (await worker.fetch(new Request('https://medivoice.nukhba-uni.workers.dev/'), { STORE: store(false) }, {})).text();
   assert.match(prod, /<meta name="mv-move" content="https:\/\/medivoice\.pages\.dev">/);
-  const main = await (await worker.fetch(new Request('https://medivoice.pages.dev/', { headers: { cookie: 'mv_pull=medivoice.nukhba-uni.workers.dev' } }), { STORE: store(false) }, {})).text();
+  const main = await (await worker.fetch(new Request('https://medivoice.pages.dev/', { headers: { cookie: 'mv_pull2=medivoice.nukhba-uni.workers.dev' } }), { STORE: store(false) }, {})).text();
   assert.doesNotMatch(main, /mv-move/);
 });
 
@@ -113,25 +113,23 @@ test('الرئيسي يسحب من الروابط القديمة تلقائيا�
   const r1 = await get('https://home.test/');
   assert.equal(r1.status, 302);
   assert.equal(r1.headers.get('location'), 'https://a.test/?mv-pull=a.test');
-  assert.equal(jar(r1), 'mv_pull=a.test');
-  // القديم: متصفح ما فعّل هناك يرجع فوراً بلا صفحة
-  const r2 = await get('https://a.test/?mv-pull=a.test');
-  assert.equal(r2.status, 302);
-  assert.equal(r2.headers.get('location'), 'https://home.test/?mv-pulled=a.test');
-  // ومتصفح مفعّل هناك ياخذ صفحة النقل
-  const r2b = await get('https://a.test/?mv-pull=a.test', 'mv_dev=' + 'z'.repeat(40));
-  assert.equal(r2b.status, 200);
-  assert.match(await r2b.text(), /name="mv-move"/);
+  assert.equal(jar(r1), 'mv_pull2=a.test');
+  // القديم يخدم صفحة النقل دائماً (سفاري ما يرسل كوكي القديم مع التحويل، فالصفحة تقرر حسب ما محفوظ عندها)
+  for (const cookie of ['', 'mv_dev=' + 'z'.repeat(40)]) {
+    const r2 = await get('https://a.test/?mv-pull=a.test', cookie);
+    assert.equal(r2.status, 200);
+    assert.match(await r2.text(), /name="mv-move" content="https:\/\/home\.test"/);
+  }
   // رجع: يكمل للقديم الثاني
-  const r3 = await get('https://home.test/?mv-pulled=a.test', 'mv_pull=a.test');
+  const r3 = await get('https://home.test/?mv-pulled=a.test', 'mv_pull2=a.test');
   assert.equal(r3.headers.get('location'), 'https://b.test/?mv-pull=a.test%7Cb.test');
-  assert.equal(jar(r3), 'mv_pull=a.test|b.test');
+  assert.equal(jar(r3), 'mv_pull2=a.test|b.test');
   // رجع من الأخير: الصفحة نفسها، والكوكي يحفظ الاثنين
-  const r4 = await get('https://home.test/?mv-pulled=a.test%7Cb.test', 'mv_pull=a.test|b.test');
+  const r4 = await get('https://home.test/?mv-pulled=a.test%7Cb.test', 'mv_pull2=a.test|b.test');
   assert.equal(r4.status, 200);
-  assert.equal(jar(r4), 'mv_pull=a.test|b.test');
+  assert.equal(jar(r4), 'mv_pull2=a.test|b.test');
   // بعدها: لا مرور
-  assert.equal((await get('https://home.test/', 'mv_pull=a.test|b.test')).status, 200);
+  assert.equal((await get('https://home.test/', 'mv_pull2=a.test|b.test')).status, 200);
   // كوكيز ممنوعة: القائمة تمشي مع الدورة فتنتهي بعد المرور على الكل
   const n1 = await get('https://home.test/?mv-pulled=a.test');
   assert.equal(n1.headers.get('location'), 'https://b.test/?mv-pull=a.test%7Cb.test');
