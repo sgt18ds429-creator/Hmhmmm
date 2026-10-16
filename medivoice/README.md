@@ -128,6 +128,10 @@ npm run build     # dist/worker.js
 CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... npm run deploy
 ```
 
+الرابط القصير **https://medivoice.pages.dev** مشروع Cloudflare Pages صغير (`tools/pages/_worker.js`) يمرّر كل طلب كما هو
+للعامل عبر ربط خدمة، فالموقع وقاعدة بياناته واحدة والرابطان يعملان معاً. يُنشأ ويُحدَّث بـ `node tools/deploy-pages.mjs`
+(التوكن يحتاج صلاحية Cloudflare Pages: Edit). كل رابط له تخزينه بالجهاز، فالأفضل أن يستعمل الطالب رابطاً واحداً.
+
 للتجربة محلياً: `npm run build` ثم `npx wrangler dev -c wrangler.dev.jsonc` (توليد PDF على الخادم غير متاح محلياً فتُستخدم نافذة الطباعة).
 
 التوكن يحتاج صلاحية **Workers Scripts: Edit** (قالب «Edit Cloudflare Workers» يكفي). في جلسات Claude السحابية يجب أن يكون

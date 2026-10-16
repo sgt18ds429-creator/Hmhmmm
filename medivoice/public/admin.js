@@ -10,6 +10,8 @@ applyTheme();
 ripples();
 
 const DAY = 86400000;
+// رابط الموقع في رسالة التفعيل: الرابط القصير دائماً، حتى لو فُتحت اللوحة من الرابط القديم
+const SITE = 'https://medivoice.pages.dev';
 const TABS = [['codes', 'الأكواد', 'key'], ['activity', 'النشاط', 'pulse'], ['design', 'التصميم', 'palette'], ['settings', 'الإعدادات', 'gear']];
 
 const root = document.getElementById('adm');
@@ -98,7 +100,7 @@ function inviteText(c) {
     '',
     c.display,
     '',
-    `1) افتح الرابط من متصفح موبايلك (Chrome أو Safari): ${location.origin}`,
+    `1) افتح الرابط من متصفح موبايلك (Chrome أو Safari): ${SITE}`,
     '2) اكتب الكود واضغط «تفعيل».',
     '3) اربط مفاتيحك المجانية من داخل الموقع، دقيقتين ومرة وحدة.',
     '',
