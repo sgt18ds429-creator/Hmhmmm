@@ -3,6 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
@@ -25,10 +26,13 @@ async function loadModule() {
 /** ctx.storage بقاعدة SQLite في الذاكرة بنفس واجهة Cloudflare (exec → toArray). */
 function makeStore(Store) {
   const db = new DatabaseSync(':memory:');
+  // مثل Cloudflare: BLOB يدخل ويخرج ArrayBuffer (node:sqlite يتعامل بـ Uint8Array)
+  const toDb = (v) => (v instanceof ArrayBuffer ? new Uint8Array(v) : v);
+  const fromDb = (v) => (v instanceof Uint8Array ? v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength) : v);
   const sql = {
     exec(query, ...args) {
       if (!args.length && /;\s*\S/.test(query.trim().replace(/;\s*$/, ''))) { db.exec(query); return { toArray: () => [] }; }
-      const rows = db.prepare(query).all(...args).map((r) => ({ ...r }));
+      const rows = db.prepare(query).all(...args.map(toDb)).map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, fromDb(v)])));
       return { toArray: () => rows };
     },
   };
@@ -316,4 +320,75 @@ test('بروكسي: حالة مفتاح جاءت من قاعدة البيانا�
     assert.equal(r.status, 429); assert.equal(calls, 0);
     assert.match(await r.text(), /PerDay/);
   } finally { globalThis.fetch = realFetch; Math.random = realRandom; }
+});
+
+test('الحد اليومي يتجدد منتصف الليل بتوقيت بغداد، لا بعد 24 ساعة من الاستعمال', async () => {
+  const { MediVoiceStore } = await loadModule();
+  const store = makeStore(MediVoiceStore);
+  const { token } = await store.adminLogin('admin-pass-123', '10.0.0.9');
+  const made = await store.adminCreateCodes(token, { label: 'طالب', daily_hours: 2 });
+  await store.activate('dev-1', made.created[0], META);
+  const code = compact(made.created[0]);
+  const DAY = 86400000, TZ = 3 * 3600000;
+  const midnight = Math.floor((Date.now() + TZ) / DAY) * DAY - TZ;
+  // البارحة قبل منتصف الليل بدقيقة: ساعة ونص لا تُحسب اليوم
+  store.sql.exec("INSERT INTO usage (code, ts, kind, sec) VALUES (?, ?, 'audio', ?)", code, midnight - 60_000, 5400);
+  assert.equal(store.session('dev-1', META).usage.used_sec, 0);
+  // اليوم بعد منتصف الليل: نص ساعة
+  store.sql.exec("INSERT INTO usage (code, ts, kind, sec) VALUES (?, ?, 'audio', ?)", code, midnight + 60_000, 1800);
+  assert.equal(store.session('dev-1', META).usage.used_sec, 1800);
+  // ساعة و40 دقيقة زيادة تتجاوز الساعتين: يرفض، والرصيد يرجع منتصف الليل الجاي
+  const r = await store.authorize('dev-1', { kind: 'gemini', sec: 6000 });
+  assert.equal(r.error, 'daily_limit');
+  const left = Math.max(60, Math.ceil((midnight + DAY - Date.now()) / 1000));
+  assert.ok(Math.abs(r.retry_after - left) <= 2, `${r.retry_after} ≈ ${left}`);
+  // لوحة التحكم تعرض نفس الحساب
+  const ov = await store.adminOverview(token);
+  assert.equal(ov.codes[0].used_sec, 1800);
+});
+
+test('النقل لرابط ثاني: رمز لمرة واحدة، يدخل بنفس التفعيل إذا ما عنده تفعيل، والبيانات تنزل كاملة ثم تنمسح', async () => {
+  const { MediVoiceStore } = await loadModule();
+  const store = makeStore(MediVoiceStore);
+  const { token } = await store.adminLogin('admin-pass-123', '10.0.0.9');
+  const made = await store.adminCreateCodes(token, { label: 'طالب' });
+  const secret = 'S'.repeat(43);
+  const dev = createHash('sha256').update(secret).digest('hex');
+  assert.equal((await store.activate(dev, made.created[0], META)).ok, true);
+
+  // الرابط القديم مفعّل: الرمز يحمل دخوله
+  const st = await store.moveStart(dev, secret, '1.2.3.4');
+  assert.equal(st.ok, true);
+  assert.equal(st.session, true);
+  assert.equal(store.movePut(st.token, 0, new Uint8Array(1024 * 1024).fill(7).buffer).ok, true);
+  assert.equal(store.movePut(st.token, 1, new Uint8Array(10).fill(9).buffer).ok, true);
+  assert.equal(store.movePut(st.token, 2, new ArrayBuffer(1024 * 1024 + 1)).ok, false, 'قطعة أكبر من 1 ميغا');
+  assert.equal(store.movePut('x'.repeat(30), 0, new ArrayBuffer(4)).ok, false, 'رمز غير موجود');
+  assert.equal(store.moveGet(st.token, 0), null, 'لا تنزيل قبل الاستلام');
+
+  // الرابط الرئيسي بلا تفعيل: يستلم السر ويدخل بنفس الجهاز
+  const c = await store.moveClaim(st.token, null);
+  assert.equal(c.ok, true);
+  assert.equal(c.parts, 2);
+  assert.equal(c.size, 1024 * 1024 + 10);
+  assert.equal(c.secret, secret);
+  assert.equal(store.movePut(st.token, 2, new ArrayBuffer(4)).ok, false, 'لا رفع بعد الاستلام');
+  assert.equal(new Uint8Array(store.moveGet(st.token, 1))[0], 9);
+  assert.equal(store.moveGet(st.token, 0).byteLength, 1024 * 1024);
+
+  // متصفح عنده تفعيل صالح على الرئيسي: تفعيله لا يُستبدل
+  const st2 = await store.moveStart(dev, secret, '1.2.3.4');
+  assert.equal((await store.moveClaim(st2.token, dev)).secret, null);
+
+  // وصلت: البيانات تنمسح، والحالة «وصلت» تبقى للرابط القديم، والرمز ما يُستعمل مرة ثانية
+  assert.equal(store.moveDone(st.token).ok, true);
+  assert.equal(store.moveGet(st.token, 0), null);
+  assert.equal(store.moveStatus(st.token).done, true);
+  assert.equal((await store.moveClaim(st.token, null)).ok, false);
+  assert.equal(store.moveStatus(st2.token).done, false);
+
+  // رابط قديم انتهى تفعيله (أو انتقل): ينقل البيانات بلا دخول
+  const st3 = await store.moveStart('no-such-device', secret, '1.2.3.4');
+  assert.equal(st3.session, false);
+  assert.equal((await store.moveClaim(st3.token, null)).secret, null);
 });

@@ -436,7 +436,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry, auto = 
     ctx.ribbon.set({ energy: 0.25, alpha: 0.5 });
     const [title, message, action] = ERRORS[code] || ['توقف التحويل', 'صار خطأ غير متوقع. الأجزاء المكتملة محفوظة، جرّب مرة ثانية.', 'retry'];
     let msg = message;
-    if (code === 'daily_limit' && extra.retryAfter) msg += ` يتجدد الرصيد تدريجياً خلال ${fmtHM(extra.retryAfter)} ساعة.`;
+    if (code === 'daily_limit' && extra.retryAfter) msg += ` يرجع رصيدك كامل الساعة 12 بالليل (بعد ${fmtHM(extra.retryAfter)} ساعة).`;
     const actions = [];
     const want = action.split('+');
     const sup = ctx.session.support;

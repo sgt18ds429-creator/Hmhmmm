@@ -309,6 +309,55 @@ async function openApp(session, fromLock) {
 
 // ───────────── الإقلاع ─────────────
 /**
+ * سطر حالة صغير تحت اسم الافتتاحية أثناء نقل البيانات من رابط قديم (move.js). يظهر فقط إذا طالت العملية،
+ * فالنقل السريع (بلا محاضرات) يمر بدون أن يلاحظه أحد.
+ */
+function introNote(intro) {
+  const center = intro?.querySelector('.intro-center');
+  let el = null, bar = null, text = '', pct = 0.03, timer = 0;
+  const make = () => {
+    if (el || !center) return;
+    el = document.createElement('div');
+    el.className = 'intro-note';
+    el.setAttribute('role', 'status');
+    const p = document.createElement('p');
+    p.textContent = text;
+    const track = document.createElement('div');
+    track.className = 'intro-track';
+    bar = document.createElement('i');
+    bar.style.transform = `scaleX(${pct})`;
+    track.append(bar);
+    el.append(p, track);
+    center.append(el);
+    intro.removeAttribute('aria-hidden');
+  };
+  return {
+    show(t) { text = t; if (el) el.querySelector('p').textContent = t; else if (!timer) timer = setTimeout(make, 450); },
+    progress(v) { pct = Math.max(0.03, Math.min(1, v)); if (bar) bar.style.transform = `scaleX(${pct})`; },
+    fail(t, actions = []) {
+      text = t;
+      clearTimeout(timer);
+      make();
+      if (!el) return;
+      el.querySelector('p').textContent = t;
+      el.querySelector('.intro-track')?.remove();
+      const row = document.createElement('div');
+      row.className = 'intro-actions';
+      for (const a of actions) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = a.primary ? 'btn small' : 'btn small ghost';
+        b.textContent = a.label;
+        b.addEventListener('click', a.run);
+        row.append(b);
+      }
+      el.append(row);
+    },
+    done() { clearTimeout(timer); el?.remove(); el = null; },
+  };
+}
+
+/**
  * خروج الافتتاحية: خلفيتها تتلاشى والاسم يختفي، والشعار يطير ويصغر حتى يستقر مكان شعار الشاشة التالية
  * (شعار القفل أو شعار الشريط العلوي) ثم يتبادل معه. تحريك وشفافية فقط، فتبقى ناعمة وحادة على الهواتف.
  */
@@ -347,6 +396,17 @@ async function leaveIntro(intro, dest) {
   // شريط المتصفح بلون الافتتاحية أثناءها
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.content = getComputedStyle(document.documentElement).getPropertyValue('--splash-1').trim() || '#3a0ca3';
+  // رابط ثاني للموقع (الخادم يعلّمه بـ mv-move): الصفحة تنقل زائرها ومعه تسجيل دخوله ومحاضراته للرابط الرئيسي
+  const moveTo = document.querySelector('meta[name="mv-move"]')?.content;
+  if (moveTo) {
+    try {
+      await (await import('/move.js')).leave(moveTo, introNote(intro));
+    } catch (e) {
+      console.error(e);
+      location.replace(`${moveTo}${location.pathname}${location.search}`);
+    }
+    return;
+  }
   // الافتتاحية بمدتها الكاملة أول فتح (حسب لوحة التحكم)؛ وإذا فُتح الموقع خلال آخر 12 ساعة فنسخة أقصر
   let lastIntro = 0;
   try { lastIntro = Number(localStorage.getItem('mv-intro-at')) || 0; } catch { /* تخزين ممنوع */ }
@@ -354,6 +414,15 @@ async function leaveIntro(intro, dest) {
   if (!quick) try { localStorage.setItem('mv-intro-at', String(Date.now())); } catch { /* تخزين ممنوع */ }
   const ms = quick ? Math.min(1500, DESIGN.splashMs) : DESIGN.splashMs;
   const introDone = sleep(reduced ? 350 : ms);
+  // وصل من رابط قديم: نستلم تسجيل دخوله ومحاضراته قبل فحص الجلسة (الخادم يدخله بنفس تفعيله)
+  const moveToken = /(?:^#|&)mv-move=([\w-]{20,80})/.exec(location.hash)?.[1];
+  let moved = null;
+  if (moveToken) {
+    history.replaceState(null, '', location.pathname + location.search);
+    const note = introNote(intro);
+    moved = await import('/move.js').then((m) => m.arrive(moveToken, note)).catch((e) => { console.error(e); return null; });
+    note.done();
+  }
   const sessionReq = api(`/api/session?fp=${encodeURIComponent(JSON.stringify(fingerprint()))}`);
   // الكود مفعّل: التطبيق يُحمَّل بالتوازي مع الافتتاحية
   sessionReq.then((r) => { if (r.data?.active) preloadApp(r.data); }).catch(() => {});
@@ -367,4 +436,6 @@ async function leaveIntro(intro, dest) {
     setupLock(data);
     await leaveIntro(intro, $('#lock .brand-tile'));
   }
+  if (moved?.lectures) toast('وصلت محاضراتك من الرابط القديم.', 'ok');
+  else if (moved && !moved.ok) toast('ما وصلت كل محاضراتك من الرابط القديم. افتح الرابط القديم مرة ثانية حتى تكمل.', 'err');
 })();

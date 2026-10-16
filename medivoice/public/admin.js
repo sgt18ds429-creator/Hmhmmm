@@ -10,8 +10,8 @@ applyTheme();
 ripples();
 
 const DAY = 86400000;
-// رابط الموقع في رسالة التفعيل: الرابط القصير دائماً، حتى لو فُتحت اللوحة من الرابط القديم
-const SITE = 'https://medivoice.pages.dev';
+// رابط الموقع في رسالة التفعيل: الرابط الرئيسي الذي يحقنه الخادم (HOME في src/server.js)
+const SITE = document.querySelector('meta[name="mv-home"]')?.content || location.origin;
 const TABS = [['codes', 'الأكواد', 'key'], ['activity', 'النشاط', 'pulse'], ['design', 'التصميم', 'palette'], ['settings', 'الإعدادات', 'gear']];
 
 const root = document.getElementById('adm');
@@ -148,7 +148,7 @@ function hoursControl(sec, label = 'الساعات المسموحة باليوم
     input.hidden = unlimited;
     hint.textContent = unlimited
       ? 'الموقع ما يوقفه. يبقى حد مفاتيحه المجانية، وكل مفتاح يضيفه يزيد حصته.'
-      : 'تتجدد الساعات كل 24 ساعة.';
+      : 'تتجدد الساعات كل يوم الساعة 12 بالليل بتوقيت بغداد.';
   };
   paint();
   return { el: h('div', { class: 'field' }, h('span', null, label), seg, input, hint), get value() { return unlimited ? 0 : Number(input.value) || 8; } };
@@ -248,7 +248,7 @@ function tabCodes(view) {
   view.append(h('div', { class: 'stack lg' },
     h('div', { class: 'stats' },
       stat(String(t.activated || 0), ` / ${t.codes}`, 'كود مفعّل'),
-      stat(fmtHM(t.today_sec), '', 'ساعة في آخر 24 ساعة'),
+      stat(fmtHM(t.today_sec), '', 'ساعة اليوم'),
       stat(String(t.today_users || 0), '', 'مستخدم نشط اليوم'),
       stat(String(t.lectures || 0), '', 'محاضرة محوّلة')),
     h('button', { class: 'btn wide', onclick: openCreate }, icon('plus'), 'كود جديد'),

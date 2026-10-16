@@ -20,12 +20,15 @@ async function loadWorker() {
 
 // البناء يضيف رقم الإصدار لروابط الوحدات والتنسيقات (?v=test في الاختبار)، والخادم يحقن التصميم في <head>
 // صفحات HTML: يُزالان قبل المقارنة بالأصل
-const unversion = (text) => text.replaceAll('?v=test', '').replace(/<style id="mv-theme">[\s\S]*?<\/style>\n(?=<\/head>)/, '');
+const unversion = (text) => text.replaceAll('?v=test', '').replace(/<meta name="mv-(?:home|move)" content="[^"]*">/g, '')
+  .replace(/<style id="mv-theme">[\s\S]*?<\/style>\n(?=<\/head>)/, '');
 
-const env = (active) => ({ STORE: { idFromName: () => 'x', get: () => ({
+const store = (active) => ({ idFromName: () => 'x', get: () => ({
   isActive: async () => active,
   authorize: async () => (active ? { ok: true, code: 'x' } : { ok: false, status: 401, error: 'locked' }),
-}) } });
+}) });
+// mv.test هو الرابط الرئيسي في هذه الاختبارات
+const env = (active) => ({ STORE: store(active), MV_HOME: 'https://mv.test' });
 
 test('يخدم كل الملفات العامة كما هي', async () => {
   const worker = await loadWorker();
@@ -76,4 +79,27 @@ test('روابط الوحدات تحمل رقم الإصدار، والرابط 
   assert.equal(font.status, 200);
   assert.equal(font.headers.get('content-type'), 'font/woff2');
   assert.deepEqual(Buffer.from(await font.arrayBuffer()), readFileSync(join(root, 'public', 'fonts', 'el-messiri-arabic.woff2')));
+});
+
+test('رابط ثاني للموقع: صفحة التطبيق تنقل زائرها للرابط الرئيسي، ولوحة التحكم تتحول له مباشرة', async () => {
+  const worker = await loadWorker();
+  const e = { STORE: store(false), MV_HOME: 'https://home.test' };
+  const html = await (await worker.fetch(new Request('https://old.test/'), e, {})).text();
+  assert.match(html, /<meta name="mv-move" content="https:\/\/home\.test">/);
+  assert.match(html, /<meta name="mv-home" content="https:\/\/home\.test">/);
+  const home = await (await worker.fetch(new Request('https://home.test/'), e, {})).text();
+  assert.doesNotMatch(home, /mv-move/);
+  assert.match(home, /<meta name="mv-home" content="https:\/\/home\.test">/);
+  const adm = await worker.fetch(new Request('https://old.test/admin'), e, {});
+  assert.equal(adm.status, 302);
+  assert.equal(adm.headers.get('location'), 'https://home.test/admin');
+  // السكربت الذي ينقل يُخدم على الرابط الثاني بلا تفعيل
+  const mv = await worker.fetch(new Request('https://old.test/move.js'), e, {});
+  assert.equal(mv.status, 200);
+  assert.match(await mv.text(), /export async function leave/);
+  // بلا MV_HOME: الرابط الرئيسي هو رابط Pages، وworkers.dev ينقل زائره له
+  const prod = await (await worker.fetch(new Request('https://medivoice.nukhba-uni.workers.dev/'), { STORE: store(false) }, {})).text();
+  assert.match(prod, /<meta name="mv-move" content="https:\/\/medivoice\.pages\.dev">/);
+  const main = await (await worker.fetch(new Request('https://medivoice.pages.dev/'), { STORE: store(false) }, {})).text();
+  assert.doesNotMatch(main, /mv-move/);
 });

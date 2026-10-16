@@ -21,6 +21,17 @@ const CODE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 const DEVICE_COOKIE = 'mv_dev';
 const ADMIN_COOKIE = 'mv_adm';
 const TZ_OFFSET = 3 * HOUR; // بغداد، لتجميع الإحصائيات اليومية
+/** بداية اليوم الحالي بتوقيت بغداد: الساعات اليومية وملفات PDF اليومية تتجدد منتصف الليل، لا بعد 24 ساعة من الاستعمال */
+const dayStart = (now = Date.now()) => Math.floor((now + TZ_OFFSET) / DAY) * DAY - TZ_OFFSET;
+
+// الرابط الرئيسي للموقع. أي رابط ثاني يوصل لنفس العامل (workers.dev، رابط Pages، دومين قديم) ينقل زائره إليه ومعه
+// تسجيل دخوله وكل ما حفظه متصفحه على ذاك الرابط (public/move.js): المتصفح يفصل تخزين كل رابط عن غيره، فبدون النقل
+// يطلب الرابط الثاني الكود من جديد وتبدو المحاضرات محذوفة. التشغيل المحلي يحدده بالمتغير MV_HOME.
+const HOME = 'https://medivoice.pages.dev';
+const homeUrl = (env) => new URL(env?.MV_HOME || HOME);
+const MOVE_CHUNK = 1024 * 1024; // قطعة نقل واحدة (حد SQLite للقيمة الواحدة 2 ميغا)
+const MOVE_MAX = 600 * 1024 * 1024; // أقصى حجم لنقلة واحدة
+const MOVE_TOKEN = /^[\w-]{20,80}$/;
 
 const DEFAULT_SETTINGS = {
   support: { label: '', url: '' },
@@ -185,6 +196,8 @@ export class MediVoiceStore extends DurableObject {
       CREATE INDEX IF NOT EXISTS attempts_key ON attempts(key, ts);
       CREATE TABLE IF NOT EXISTS admin_sessions (id TEXT PRIMARY KEY, exp INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS key_health (code TEXT NOT NULL, k TEXT NOT NULL, until INTEGER NOT NULL, PRIMARY KEY (code, k));
+      CREATE TABLE IF NOT EXISTS moves (token TEXT PRIMARY KEY, secret TEXT, ip TEXT, created INTEGER NOT NULL, size INTEGER NOT NULL DEFAULT 0, claimed INTEGER, done INTEGER);
+      CREATE TABLE IF NOT EXISTS move_parts (token TEXT NOT NULL, n INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (token, n));
     `);
     // ثوانٍ قيد الحساب: مقاطع أُذن بها ولم يصل خبر اكتمالها بعد (حتى لا يتجاوز الحد اليومي بمقاطع متوازية)
     this.pending = new Map();
@@ -234,6 +247,10 @@ export class MediVoiceStore extends DurableObject {
     this.sql.exec('DELETE FROM admin_sessions WHERE exp < ?', now);
     this.sql.exec('DELETE FROM key_health WHERE until < ?', now);
     this.sql.exec('DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT 3000)');
+    // نقلات قديمة: بياناتها تُحذف بعد يوم، وسجلها (هل وصلت؟) بعد شهر
+    this.sql.exec('DELETE FROM move_parts WHERE token IN (SELECT token FROM moves WHERE created < ? OR done IS NOT NULL)', now - DAY);
+    this.sql.exec('UPDATE moves SET secret = NULL WHERE created < ?', now - DAY);
+    this.sql.exec('DELETE FROM moves WHERE created < ?', now - 31 * DAY);
     await this.ctx.storage.setAlarm(now + DAY);
   }
 
@@ -261,8 +278,9 @@ export class MediVoiceStore extends DurableObject {
     }
   }
 
-  #usedSec(code, sinceMs) {
-    const r = this.#row("SELECT COALESCE(SUM(sec), 0) AS s FROM usage WHERE code = ? AND kind = 'audio' AND ts > ?", code, Date.now() - sinceMs);
+  /** ثواني الصوت المحوّلة اليوم (من منتصف الليل بتوقيت بغداد) */
+  #usedToday(code) {
+    const r = this.#row("SELECT COALESCE(SUM(sec), 0) AS s FROM usage WHERE code = ? AND kind = 'audio' AND ts >= ?", code, dayStart());
     return r?.s || 0;
   }
   /** الثواني المأذون بها لهذا الكود ولم تُسجَّل بعد (طلبات صوت جارية). ما مضى عليه 10 دقائق يُعدّ منتهياً */
@@ -312,7 +330,7 @@ export class MediVoiceStore extends DurableObject {
         gemini: { linked: !!code.gemini_enc, hint: code.gemini_hint || '', count: keyCount(code.gemini_hint) },
       },
       usage: {
-        used_sec: Math.round(this.#usedSec(code.code, DAY)),
+        used_sec: Math.round(this.#usedToday(code.code)),
         limit_sec: code.daily_limit_sec,
         total_sec: Math.round(code.total_sec),
         lectures: code.lectures,
@@ -322,6 +340,67 @@ export class MediVoiceStore extends DurableObject {
         sttModels: cfg.sttModels, geminiModels: cfg.geminiModels, groqModels: cfg.groqModels, transcribeModels: cfg.transcribeModels || [],
       },
     };
+  }
+
+  // ── النقل من رابط قديم للرابط الرئيسي (public/move.js) ──
+
+  /** الرابط القديم يبدأ النقل: رمز لمرة واحدة، ومعه سر جهازه مشفّراً إذا كان مفعّلاً، حتى يدخل الرابط الرئيسي بلا كود */
+  async moveStart(deviceId, secret, ip) {
+    await this.#ensureAlarm();
+    const key = `move:${ip || 'x'}`;
+    if (!this.#allow(key, HOUR, 30)) return { ok: false, status: 429, error: 'too_many' };
+    this.#hit(key);
+    const token = randomToken(24);
+    const live = !!deviceId && this.#check(deviceId).ok && /^[\w-]{30,80}$/.test(secret || '');
+    this.sql.exec('INSERT INTO moves (token, secret, ip, created) VALUES (?, ?, ?, ?)', token, live ? await this.#seal(secret) : null, ip || '', Date.now());
+    return { ok: true, token, session: live };
+  }
+  #move(token, maxAge) {
+    if (typeof token !== 'string' || !MOVE_TOKEN.test(token)) return null;
+    const m = this.#row('SELECT * FROM moves WHERE token = ?', token);
+    return m && !m.done && Date.now() - m.created < maxAge ? m : null;
+  }
+  /** قطعة من بيانات المتصفح (حتى 1 ميغا). تُقبل قبل الاستلام فقط */
+  movePut(token, n, data) {
+    const m = this.#move(token, 6 * HOUR);
+    if (!m || m.claimed) return { ok: false, status: 404, error: 'gone' };
+    const size = data?.byteLength ?? -1;
+    if (!Number.isInteger(n) || n < 0 || n >= MOVE_MAX / MOVE_CHUNK || size < 1 || size > MOVE_CHUNK) return { ok: false, status: 400, error: 'bad_request' };
+    const old = this.#row('SELECT LENGTH(data) AS s FROM move_parts WHERE token = ? AND n = ?', token, n)?.s || 0;
+    if (m.size - old + size > MOVE_MAX) return { ok: false, status: 413, error: 'too_large' };
+    this.sql.exec('INSERT OR REPLACE INTO move_parts (token, n, data) VALUES (?, ?, ?)', token, n, data);
+    this.sql.exec('UPDATE moves SET size = ? WHERE token = ?', m.size - old + size, token);
+    return { ok: true };
+  }
+  /**
+   * الرابط الرئيسي يستلم: عدد القطع وحجمها، وسر الجهاز إذا هذا المتصفح ما عنده تفعيل صالح هنا (تفعيل موجود لا
+   * يُستبدل). السر يُعطى خلال 10 دقائق من أول استلام فقط، حتى يتحمل إعادة الطلب إذا ضاع الرد.
+   */
+  async moveClaim(token, deviceId) {
+    const m = this.#move(token, DAY);
+    if (!m) return { ok: false, status: 404, error: 'gone' };
+    const now = Date.now();
+    const parts = this.#row('SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(data)), 0) AS s FROM move_parts WHERE token = ?', token);
+    let secret = null;
+    if (m.secret && (!m.claimed || now - m.claimed < 10 * MIN) && !(deviceId && this.#check(deviceId).ok)) secret = await this.#open(m.secret);
+    if (!m.claimed) this.sql.exec('UPDATE moves SET claimed = ? WHERE token = ?', now, token);
+    return { ok: true, parts: parts.n, size: parts.s, secret };
+  }
+  moveGet(token, n) {
+    const m = this.#move(token, DAY);
+    if (!m || !m.claimed || !Number.isInteger(n)) return null;
+    return this.#row('SELECT data FROM move_parts WHERE token = ? AND n = ?', token, n)?.data ?? null;
+  }
+  /** وصلت: تُحذف البيانات والسر، ويبقى السجل حتى يعرف الرابط القديم أن نقلته اكتملت */
+  moveDone(token) {
+    if (!this.#move(token, DAY)) return { ok: true };
+    this.sql.exec('DELETE FROM move_parts WHERE token = ?', token);
+    this.sql.exec('UPDATE moves SET done = ?, secret = NULL WHERE token = ?', Date.now(), token);
+    return { ok: true };
+  }
+  moveStatus(token) {
+    if (typeof token !== 'string' || !MOVE_TOKEN.test(token)) return { done: false };
+    return { done: !!this.#row('SELECT done FROM moves WHERE token = ?', token)?.done };
   }
 
   // ── واجهة المستخدم ──
@@ -410,10 +489,10 @@ export class MediVoiceStore extends DurableObject {
     const code = c.code;
     if (sec > 0 && code.daily_limit_sec > 0) { // 0 = بلا حد يومي
       // طلب أُعيد (رده ضاع) لا يُحجز له مرة ثانية
-      const used = this.#usedSec(code.code, DAY) + (req && this.pending.has(req) ? 0 : this.#pendingSec(code.code));
+      const used = this.#usedToday(code.code) + (req && this.pending.has(req) ? 0 : this.#pendingSec(code.code));
       if (used + sec > code.daily_limit_sec + 30) {
-        const oldest = this.#row("SELECT MIN(ts) AS t FROM usage WHERE code = ? AND kind = 'audio' AND ts > ?", code.code, Date.now() - DAY);
-        const retry = oldest?.t ? Math.max(60, Math.ceil((oldest.t + DAY - Date.now()) / 1000)) : 3600;
+        // الرصيد يرجع كاملاً منتصف الليل بتوقيت بغداد
+        const retry = Math.max(60, Math.ceil((dayStart() + DAY - Date.now()) / 1000));
         return { ok: false, status: 429, error: 'daily_limit', retry_after: retry, used_sec: Math.round(used), limit_sec: code.daily_limit_sec };
       }
       if (req) this.pending.set(req, { code: code.code, sec, at: Date.now() });
@@ -425,7 +504,7 @@ export class MediVoiceStore extends DurableObject {
     }
     if (kind === 'pdf') {
       const cfg = this.#config();
-      const today = this.#row("SELECT COUNT(*) AS n FROM usage WHERE code = ? AND kind = 'pdf' AND ts > ?", code.code, Date.now() - DAY).n;
+      const today = this.#row("SELECT COUNT(*) AS n FROM usage WHERE code = ? AND kind = 'pdf' AND ts >= ?", code.code, dayStart()).n;
       if (today >= cfg.pdfPerDay) return { ok: false, status: 429, error: 'pdf_limit' };
       // Browser Run المجاني: طلب واحد كل 10 ثوانٍ للحساب كله
       const last = this.#setting('pdf_next', 0);
@@ -560,8 +639,8 @@ export class MediVoiceStore extends DurableObject {
     const codes = this.#all(`
       SELECT c.code, c.label, c.note, c.status, c.max_devices, c.daily_limit_sec, c.duration_days, c.created_at, c.activated_at,
              c.expires_at, c.groq_hint, c.gemini_hint, c.total_sec, c.lectures, c.pdfs, c.last_active,
-             (SELECT COALESCE(SUM(sec), 0) FROM usage u WHERE u.code = c.code AND u.kind = 'audio' AND u.ts > ?) AS used_sec
-      FROM codes c ORDER BY c.created_at DESC`, now - DAY);
+             (SELECT COALESCE(SUM(sec), 0) FROM usage u WHERE u.code = c.code AND u.kind = 'audio' AND u.ts >= ?) AS used_sec
+      FROM codes c ORDER BY c.created_at DESC`, dayStart(now));
     const devices = this.#all('SELECT id, code, os, browser, screen, first_seen, last_seen, ip, country, city FROM devices');
     const byCode = {};
     for (const d of devices) (byCode[d.code] ||= []).push({ id: d.id.slice(0, 10), os: d.os, browser: d.browser, screen: d.screen, first_seen: d.first_seen, last_seen: d.last_seen, country: d.country, city: d.city });
@@ -586,7 +665,7 @@ export class MediVoiceStore extends DurableObject {
              SUM(CASE WHEN status != 'active' THEN 1 ELSE 0 END) AS suspended,
              COALESCE(SUM(total_sec), 0) AS total_sec, COALESCE(SUM(lectures), 0) AS lectures, COALESCE(SUM(pdfs), 0) AS pdfs
       FROM codes`);
-    const today = this.#row("SELECT COALESCE(SUM(CASE WHEN kind = 'audio' THEN sec ELSE 0 END), 0) AS sec, COUNT(DISTINCT code) AS users FROM usage WHERE ts > ?", now - DAY);
+    const today = this.#row("SELECT COALESCE(SUM(CASE WHEN kind = 'audio' THEN sec ELSE 0 END), 0) AS sec, COUNT(DISTINCT code) AS users FROM usage WHERE ts >= ?", dayStart(now));
     const events = this.#all('SELECT ts, type, code, ip, country, detail FROM events ORDER BY id DESC LIMIT 80')
       .map((e) => ({ ...e, code: e.code ? displayCode(e.code) : null }));
     return {
@@ -758,13 +837,15 @@ async function currentTheme(env, ctx) {
 }
 const forgetTheme = () => { themeCache = { at: 0, css: '', tag: '', mode: 'dark', refreshing: false }; };
 
-async function serveHtml(request, asset, env, ctx) {
+async function serveHtml(request, asset, env, ctx, { home = '', move = false } = {}) {
   const th = await currentTheme(env, ctx);
-  const etag = `"${BUILD}.${th.tag}"`;
+  const etag = `"${BUILD}.${th.tag}${move ? '.m' : ''}"`;
   const headers = { 'content-type': asset.type, etag, 'cache-control': 'no-cache', ...SECURITY_HEADERS, 'content-security-policy': CSP };
   if (request.headers.get('if-none-match') === etag) return new Response(null, { status: 304, headers });
   // الوضع النهاري هو الأصل: يُكتب على <html> من الخادم حتى لا تومض الصفحة بالداكن قبل تشغيل السكربت
-  let html = asset.body.replace('</head>', () => `<style id="mv-theme">${th.css}</style>\n</head>`);
+  // mv-home: الرابط الرئيسي (رسالة التفعيل في لوحة التحكم). mv-move: هذا رابط ثاني، فالصفحة تنقل زائرها للرئيسي
+  const metas = (home ? `<meta name="mv-home" content="${home}">` : '') + (move ? `<meta name="mv-move" content="${home}">` : '');
+  let html = asset.body.replace('</head>', () => `${metas}<style id="mv-theme">${th.css}</style>\n</head>`);
   if (th.mode === 'light') html = html.replace(/<html\b/, '<html data-theme="light"');
   return new Response(html, { headers });
 }
@@ -1118,6 +1199,35 @@ async function handleApi(request, env, ctx, url) {
     return json(r.session, 200, { 'set-cookie': setCookie(DEVICE_COOKIE, secret, { maxAge: 400 * 86400 }) });
   }
 
+  // ── النقل من رابط قديم للرابط الرئيسي: قبل بوابة التفعيل، فالرابط القديم قد لا يكون مفعّلاً وعليه محاضرات ──
+  if (path.startsWith('/api/move/')) {
+    const t = url.searchParams.get('t') || '';
+    const n = Number(url.searchParams.get('n'));
+    const reply = (r) => json(r, r.ok === false ? r.status || 400 : 200);
+    if (path === '/api/move/start' && method === 'POST') {
+      return reply(await db.moveStart(await deviceId(request), cookies(request)[DEVICE_COOKIE] || '', request.headers.get('cf-connecting-ip') || ''));
+    }
+    if (path === '/api/move/part' && method === 'PUT') {
+      if (Number(request.headers.get('content-length') || 0) > MOVE_CHUNK) return json({ error: 'too_large' }, 413);
+      return reply(await db.movePut(t, n, await request.arrayBuffer()));
+    }
+    if (path === '/api/move/part' && method === 'GET') {
+      const data = await db.moveGet(t, n);
+      if (!data) return json({ error: 'gone' }, 404);
+      return new Response(data, { headers: { 'content-type': 'application/octet-stream', 'cache-control': 'no-store' } });
+    }
+    if (path === '/api/move/claim' && method === 'POST') {
+      const r = await db.moveClaim(t, await deviceId(request));
+      if (!r.ok) return reply(r);
+      const login = !!r.secret && /^[\w-]{30,80}$/.test(r.secret);
+      return json({ ok: true, parts: r.parts, size: r.size, session: login }, 200,
+        login ? { 'set-cookie': setCookie(DEVICE_COOKIE, r.secret, { maxAge: 400 * 86400 }) } : {});
+    }
+    if (path === '/api/move/done' && method === 'POST') return reply(await db.moveDone(t));
+    if (path === '/api/move/status' && method === 'GET') return reply(await db.moveStatus(t));
+    return json({ error: 'not_found' }, 404);
+  }
+
   // ── ما بعده يحتاج جهازاً مفعّلاً ──
   const id = await deviceId(request);
   if (!id) return json({ error: 'locked' }, 401);
@@ -1281,7 +1391,14 @@ export default {
       if (path === '/admin' || path === '/admin/') path = '/admin.html';
       const asset = ASSETS[path];
       if (!asset) return new Response('Not Found', { status: 404, headers: SECURITY_HEADERS });
-      if (asset.type.startsWith('text/html')) return serveHtml(request, asset, env, ctx);
+      if (asset.type.startsWith('text/html')) {
+        const home = homeUrl(env);
+        const foreign = url.host !== home.host;
+        // رابط ثاني للموقع: لوحة التحكم تتحول للرابط الرئيسي مباشرة (ما عليها بيانات)، والتطبيق تنقل صفحته زائرها
+        // ومعه تسجيل دخوله ومحاضراته
+        if (foreign && path === '/admin.html') return Response.redirect(`${home.origin}/admin`, 302);
+        return serveHtml(request, asset, env, ctx, { home: home.origin, move: foreign && path === '/index.html' });
+      }
       // نسخة الجهاز من هذا الإصدار صالحة: 304 لا يكشف شيئاً، فلا داعي لفحص التفعيل (طلب أقل على قاعدة البيانات)
       if (request.headers.get('if-none-match') === `"${BUILD}"`) return serveAsset(request, asset);
       if (asset.gated) {
