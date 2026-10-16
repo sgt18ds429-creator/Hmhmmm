@@ -224,7 +224,15 @@ const writeFlag = (v) => { try { localStorage.setItem(FLAG, JSON.stringify(v)); 
  * ui: { show(text), progress(0..1), fail(text, actions) } — شريط صغير تحت الشعار (shell.js)
  */
 export async function leave(home, ui) {
-  const go = (token) => location.replace(`${home}${location.pathname}${location.search}${token ? `#mv-move=${token}` : ''}`);
+  // الرجوع للرئيسي: ?mv-pulled يعلّم هذا الرابط «مرّ عليه» (والقائمة التي جاءت مع السحب)، و#mv-move يحمل رموز النقل،
+  // ومعها رموز روابط قبله في نفس الدورة
+  const pull = new URLSearchParams(location.search).get('mv-pull');
+  const before = tokensIn(location.hash);
+  const go = (token) => {
+    const tokens = token ? [...before, token] : before;
+    const path = pull === null ? location.pathname : '/';
+    location.replace(`${home}${path}?mv-pulled=${encodeURIComponent(pull || location.host)}${tokens.length ? `#mv-move=${tokens.join(',')}` : ''}`);
+  };
   let data = { stores: {}, ls: {} };
   try { data = await collect(); } catch (e) { console.warn('move: collect', e); }
   const rows = STORES.reduce((n, s) => n + (data.stores[s]?.length || 0), 0) + Object.keys(data.ls).length;
@@ -277,6 +285,12 @@ export async function leave(home, ui) {
 }
 
 // ───────────── الرابط الرئيسي: استلم ─────────────
+
+/** رموز النقل في #mv-move=رمز,رمز (رابط أو أكثر في نفس الدورة) */
+export function tokensIn(hash) {
+  const m = /(?:^#|&)mv-move=([\w,-]+)/.exec(String(hash || ''));
+  return m ? m[1].split(',').filter((t) => /^[\w-]{20,80}$/.test(t)) : [];
+}
 
 /** يرجّع { ok, lectures, session } أو null إذا الرمز منتهي */
 export async function arrive(token, ui) {

@@ -29,6 +29,10 @@ const dayStart = (now = Date.now()) => Math.floor((now + TZ_OFFSET) / DAY) * DAY
 // يطلب الرابط الثاني الكود من جديد وتبدو المحاضرات محذوفة. التشغيل المحلي يحدده بالمتغير MV_HOME.
 const HOME = 'https://medivoice.pages.dev';
 const homeUrl = (env) => new URL(env?.MV_HOME || HOME);
+// كل الروابط التي استُعمل عليها الموقع. أول فتح للرابط الرئيسي من متصفح يمر عليها بسرعة (تحويل واحد لكل رابط، مرة
+// واحدة لكل متصفح) فيسحب منها تسجيل دخوله ومحاضراته تلقائياً، حتى لو ما فتح الرابط القديم بنفسه. محلياً: MV_OLD
+const OLD_ORIGINS = ['https://medivoice.nukhba-uni.workers.dev', 'https://medivoice.pages.dev'];
+const PULL_COOKIE = 'mv_pull'; // على الرئيسي: الروابط القديمة التي سُحب منها هذا المتصفح
 const MOVE_CHUNK = 1024 * 1024; // قطعة نقل واحدة (حد SQLite للقيمة الواحدة 2 ميغا)
 const MOVE_MAX = 600 * 1024 * 1024; // أقصى حجم لنقلة واحدة
 const MOVE_TOKEN = /^[\w-]{20,80}$/;
@@ -837,10 +841,11 @@ async function currentTheme(env, ctx) {
 }
 const forgetTheme = () => { themeCache = { at: 0, css: '', tag: '', mode: 'dark', refreshing: false }; };
 
-async function serveHtml(request, asset, env, ctx, { home = '', move = false } = {}) {
+async function serveHtml(request, asset, env, ctx, { home = '', move = false, cookie = '' } = {}) {
   const th = await currentTheme(env, ctx);
   const etag = `"${BUILD}.${th.tag}${move ? '.m' : ''}"`;
   const headers = { 'content-type': asset.type, etag, 'cache-control': 'no-cache', ...SECURITY_HEADERS, 'content-security-policy': CSP };
+  if (cookie) headers['set-cookie'] = cookie;
   if (request.headers.get('if-none-match') === etag) return new Response(null, { status: 304, headers });
   // الوضع النهاري هو الأصل: يُكتب على <html> من الخادم حتى لا تومض الصفحة بالداكن قبل تشغيل السكربت
   // mv-home: الرابط الرئيسي (رسالة التفعيل في لوحة التحكم). mv-move: هذا رابط ثاني، فالصفحة تنقل زائرها للرئيسي
@@ -848,6 +853,33 @@ async function serveHtml(request, asset, env, ctx, { home = '', move = false } =
   let html = asset.body.replace('</head>', () => `${metas}<style id="mv-theme">${th.css}</style>\n</head>`);
   if (th.mode === 'light') html = html.replace(/<html\b/, '<html data-theme="light"');
   return new Response(html, { headers });
+}
+
+const bounce = (location, cookie = '') => new Response(null, { status: 302, headers: { location, 'cache-control': 'no-store', ...(cookie ? { 'set-cookie': cookie } : {}) } });
+
+/** الروابط القديمة (ما عدا الرئيسي)، بأسماء مضيفيها */
+function oldHosts(env, home) {
+  const list = env?.MV_OLD !== undefined ? String(env.MV_OLD).split(',') : OLD_ORIGINS;
+  return list.map((o) => o.trim().replace(/\/+$/, '')).filter((o) => /^https?:\/\/[\w.-]+(:\d+)?$/.test(o)).map((o) => new URL(o))
+    .filter((u) => u.host !== home.host);
+}
+
+/**
+ * الرابط الرئيسي: هذا المتصفح ما مر بعد على رابط قديم؟ يتحول له (?mv-pull=القائمة) ويرجع (?mv-pulled=القائمة)، ومعه
+ * رموز النقل في #mv-move إذا كان عنده شي هناك. القائمة تمشي مع الدورة والكوكي يحفظها، فكل رابط يُزار مرة واحدة حتى
+ * لو الكوكيز ممنوعة (بلا حلقة). يرجّع { redirect } أو { cookie } للصفحة.
+ */
+function pullStep(request, env, home, url) {
+  const olds = oldHosts(env, home);
+  if (!olds.length) return {};
+  const known = new Set(olds.map((u) => u.host));
+  const listed = (v) => String(v || '').split('|').filter((h) => known.has(h));
+  const done = new Set([...listed(cookies(request)[PULL_COOKIE]), ...listed(url.searchParams.get('mv-pulled'))]);
+  const next = olds.find((u) => !done.has(u.host));
+  if (next) done.add(next.host);
+  const cookie = setCookie(PULL_COOKIE, [...done].join('|'), { maxAge: 400 * 86400 });
+  if (next) return { redirect: bounce(`${next.origin}/?mv-pull=${encodeURIComponent([...done].join('|'))}`, cookie) };
+  return url.searchParams.has('mv-pulled') ? { cookie } : {};
 }
 
 function serveAsset(request, asset) {
@@ -1397,7 +1429,18 @@ export default {
         // رابط ثاني للموقع: لوحة التحكم تتحول للرابط الرئيسي مباشرة (ما عليها بيانات)، والتطبيق تنقل صفحته زائرها
         // ومعه تسجيل دخوله ومحاضراته
         if (foreign && path === '/admin.html') return Response.redirect(`${home.origin}/admin`, 302);
-        return serveHtml(request, asset, env, ctx, { home: home.origin, move: foreign && path === '/index.html' });
+        let cookie = '';
+        if (path === '/index.html') {
+          if (!foreign) {
+            const step = pullStep(request, env, home, url);
+            if (step.redirect) return step.redirect;
+            cookie = step.cookie || '';
+          } else if (url.searchParams.has('mv-pull') && !cookies(request)[DEVICE_COOKIE]) {
+            // الرئيسي جاء يسحب: متصفح ما فعّل على هذا الرابط أبداً ما عنده شي هنا، يرجع فوراً بلا تحميل صفحة
+            return bounce(`${home.origin}/?mv-pulled=${encodeURIComponent(url.searchParams.get('mv-pull') || url.host)}`);
+          }
+        }
+        return serveHtml(request, asset, env, ctx, { home: home.origin, move: foreign && path === '/index.html', cookie });
       }
       // نسخة الجهاز من هذا الإصدار صالحة: 304 لا يكشف شيئاً، فلا داعي لفحص التفعيل (طلب أقل على قاعدة البيانات)
       if (request.headers.get('if-none-match') === `"${BUILD}"`) return serveAsset(request, asset);

@@ -403,7 +403,7 @@ async function leaveIntro(intro, dest) {
       await (await import('/move.js')).leave(moveTo, introNote(intro));
     } catch (e) {
       console.error(e);
-      location.replace(`${moveTo}${location.pathname}${location.search}`);
+      location.replace(`${moveTo}/?mv-pulled=${encodeURIComponent(new URLSearchParams(location.search).get('mv-pull') || location.host)}`);
     }
     return;
   }
@@ -414,14 +414,27 @@ async function leaveIntro(intro, dest) {
   if (!quick) try { localStorage.setItem('mv-intro-at', String(Date.now())); } catch { /* تخزين ممنوع */ }
   const ms = quick ? Math.min(1500, DESIGN.splashMs) : DESIGN.splashMs;
   const introDone = sleep(reduced ? 350 : ms);
-  // وصل من رابط قديم: نستلم تسجيل دخوله ومحاضراته قبل فحص الجلسة (الخادم يدخله بنفس تفعيله)
-  const moveToken = /(?:^#|&)mv-move=([\w-]{20,80})/.exec(location.hash)?.[1];
+  // رجع من رابط قديم (مر عليه الخادم ليسحب منه، أو فتحه الطالب بنفسه): نستلم تسجيل دخوله ومحاضراته قبل فحص الجلسة
+  // (الخادم يدخله بنفس تفعيله)، ونمسح علامات الدورة من الرابط
+  const query = new URLSearchParams(location.search);
+  const arriving = /(?:^#|&)mv-move=/.test(location.hash);
   let moved = null;
-  if (moveToken) {
-    history.replaceState(null, '', location.pathname + location.search);
-    const note = introNote(intro);
-    moved = await import('/move.js').then((m) => m.arrive(moveToken, note)).catch((e) => { console.error(e); return null; });
-    note.done();
+  if (arriving || query.has('mv-pulled')) {
+    query.delete('mv-pulled');
+    const hash = location.hash;
+    const rest = query.toString();
+    history.replaceState(null, '', location.pathname + (rest ? `?${rest}` : ''));
+    if (arriving) {
+      const note = introNote(intro);
+      try {
+        const m = await import('/move.js');
+        for (const token of m.tokensIn(hash)) {
+          const r = await m.arrive(token, note);
+          if (r) moved = { ok: (moved?.ok ?? true) && r.ok, lectures: (moved?.lectures || 0) + r.lectures };
+        }
+      } catch (e) { console.error(e); }
+      note.done();
+    }
   }
   const sessionReq = api(`/api/session?fp=${encodeURIComponent(JSON.stringify(fingerprint()))}`);
   // الكود مفعّل: التطبيق يُحمَّل بالتوازي مع الافتتاحية

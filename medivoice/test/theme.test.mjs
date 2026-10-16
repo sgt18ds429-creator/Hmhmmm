@@ -73,7 +73,7 @@ async function loadWorker() {
   return (await import(join(dir, 'worker.mjs'))).default;
 }
 // mv.test هو الرابط الرئيسي (رابط ثاني ينقل زائره، وتلك حالة في bundle.test.mjs)
-const envWith = (theme) => ({ STORE: { idFromName: () => 'x', get: () => ({ theme: async () => cleanTheme(theme) }) }, MV_HOME: 'https://mv.test' });
+const envWith = (theme) => ({ STORE: { idFromName: () => 'x', get: () => ({ theme: async () => cleanTheme(theme) }) }, MV_HOME: 'https://mv.test', MV_OLD: '' });
 const ctx = { waitUntil() {} };
 
 test('كل صفحة HTML تحمل التصميم المحفوظ في <head>، والوضع النهاري الأصلي يُكتب على <html>', async () => {
@@ -98,7 +98,7 @@ test('كل صفحة HTML تحمل التصميم المحفوظ في <head>، و
 
 test('بدون قاعدة بيانات (أو عند خطأ): التصميم الأصلي، والوضع الليلي بلا سمة على <html>', async () => {
   const worker = await loadWorker();
-  const broken = { STORE: { idFromName: () => 'x', get: () => ({ theme: async () => { throw new Error('down'); } }) }, MV_HOME: 'https://mv.test' };
+  const broken = { STORE: { idFromName: () => 'x', get: () => ({ theme: async () => { throw new Error('down'); } }) }, MV_HOME: 'https://mv.test', MV_OLD: '' };
   const html = await (await worker.fetch(new Request('https://mv.test/'), broken, ctx)).text();
   assert.ok(html.includes(`<style id="mv-theme">${themeCss(DEFAULT_THEME)}</style>`));
   assert.match(html, /<html lang="ar" dir="rtl">/);

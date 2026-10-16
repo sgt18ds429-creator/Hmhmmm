@@ -59,6 +59,7 @@
 
 .banner { display: flex; gap: 12px; align-items: flex-start; padding: 13px 16px; border-radius: var(--r-m); background: var(--amber-bg); box-shadow: inset 0 0 0 1px var(--amber-line); color: var(--amber-ink); font-size: 0.94rem; }
 .banner .icon { color: var(--amber); margin-top: 3px; }
+.banner > span { flex: 1 1 auto; min-width: 0; }
 .banner button { margin-inline-start: auto; flex: none; }
 .banner.info { background: var(--tint); box-shadow: inset 0 0 0 1px var(--line-2); color: var(--text-2); }
 .banner.info .icon { color: var(--accent); }
@@ -264,7 +265,7 @@
 
 /* الجداول والنص المفرّغ */
 .blk.tbl-wrap { margin: 16px 0 20px; }
-.tbl-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.tbl-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; overflow-wrap: normal; word-break: normal; } /* الجداول تنسحب أفقياً ولا تكسر المصطلحات */
 .tbl { width: 100%; border-collapse: collapse; font-size: 0.92rem; line-height: 1.75; }
 .tbl th { text-align: start; font-weight: 700; color: #4d1ace; background: #f1eaff; padding: 8px 10px; border-bottom: 2px solid #4d1ace; vertical-align: bottom; }
 .tbl td { padding: 8px 10px; border-bottom: 1px solid #e7dff8; vertical-align: top; }

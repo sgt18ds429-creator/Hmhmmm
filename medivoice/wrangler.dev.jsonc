@@ -3,8 +3,8 @@
   "name": "medivoice-dev",
   "main": "dist/worker.js",
   "compatibility_date": "2026-09-15",
-  // الرابط الرئيسي محلياً: http://localhost:8787 يُعامل كرابط ثاني ينقل زائره إلى 127.0.0.1 (test/move.e2e.mjs)
-  "vars": { "MV_HOME": "http://127.0.0.1:8787" },
+  // الرابط الرئيسي محلياً 127.0.0.1، و localhost رابط قديم: ينقل زائره، والرئيسي يسحب منه (test/move.e2e.mjs)
+  "vars": { "MV_HOME": "http://127.0.0.1:8787", "MV_OLD": "http://localhost:8787" },
   "durable_objects": { "bindings": [{ "name": "STORE", "class_name": "MediVoiceStore" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MediVoiceStore"] }]
 }

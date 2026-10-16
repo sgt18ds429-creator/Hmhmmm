@@ -28,7 +28,7 @@ const store = (active) => ({ idFromName: () => 'x', get: () => ({
   authorize: async () => (active ? { ok: true, code: 'x' } : { ok: false, status: 401, error: 'locked' }),
 }) });
 // mv.test هو الرابط الرئيسي في هذه الاختبارات
-const env = (active) => ({ STORE: store(active), MV_HOME: 'https://mv.test' });
+const env = (active) => ({ STORE: store(active), MV_HOME: 'https://mv.test', MV_OLD: '' });
 
 test('يخدم كل الملفات العامة كما هي', async () => {
   const worker = await loadWorker();
@@ -83,7 +83,7 @@ test('روابط الوحدات تحمل رقم الإصدار، والرابط 
 
 test('رابط ثاني للموقع: صفحة التطبيق تنقل زائرها للرابط الرئيسي، ولوحة التحكم تتحول له مباشرة', async () => {
   const worker = await loadWorker();
-  const e = { STORE: store(false), MV_HOME: 'https://home.test' };
+  const e = { STORE: store(false), MV_HOME: 'https://home.test', MV_OLD: '' };
   const html = await (await worker.fetch(new Request('https://old.test/'), e, {})).text();
   assert.match(html, /<meta name="mv-move" content="https:\/\/home\.test">/);
   assert.match(html, /<meta name="mv-home" content="https:\/\/home\.test">/);
@@ -100,6 +100,42 @@ test('رابط ثاني للموقع: صفحة التطبيق تنقل زائر�
   // بلا MV_HOME: الرابط الرئيسي هو رابط Pages، وworkers.dev ينقل زائره له
   const prod = await (await worker.fetch(new Request('https://medivoice.nukhba-uni.workers.dev/'), { STORE: store(false) }, {})).text();
   assert.match(prod, /<meta name="mv-move" content="https:\/\/medivoice\.pages\.dev">/);
-  const main = await (await worker.fetch(new Request('https://medivoice.pages.dev/'), { STORE: store(false) }, {})).text();
+  const main = await (await worker.fetch(new Request('https://medivoice.pages.dev/', { headers: { cookie: 'mv_pull=medivoice.nukhba-uni.workers.dev' } }), { STORE: store(false) }, {})).text();
   assert.doesNotMatch(main, /mv-move/);
+});
+
+test('الرئيسي يسحب من الروابط القديمة تلقائياً: كل رابط مرة واحدة لكل متصفح، وبلا حلقة حتى لو الكوكيز ممنوعة', async () => {
+  const worker = await loadWorker();
+  const e = { STORE: store(false), MV_HOME: 'https://home.test', MV_OLD: 'https://a.test,https://b.test,https://home.test' };
+  const get = (url, cookie) => worker.fetch(new Request(url, cookie ? { headers: { cookie } } : {}), e, {});
+  const jar = (res) => (res.headers.get('set-cookie') || '').split(';')[0];
+  // أول فتح: يروح للرابط القديم الأول، والكوكي يحفظه قبل الذهاب
+  const r1 = await get('https://home.test/');
+  assert.equal(r1.status, 302);
+  assert.equal(r1.headers.get('location'), 'https://a.test/?mv-pull=a.test');
+  assert.equal(jar(r1), 'mv_pull=a.test');
+  // القديم: متصفح ما فعّل هناك يرجع فوراً بلا صفحة
+  const r2 = await get('https://a.test/?mv-pull=a.test');
+  assert.equal(r2.status, 302);
+  assert.equal(r2.headers.get('location'), 'https://home.test/?mv-pulled=a.test');
+  // ومتصفح مفعّل هناك ياخذ صفحة النقل
+  const r2b = await get('https://a.test/?mv-pull=a.test', 'mv_dev=' + 'z'.repeat(40));
+  assert.equal(r2b.status, 200);
+  assert.match(await r2b.text(), /name="mv-move"/);
+  // رجع: يكمل للقديم الثاني
+  const r3 = await get('https://home.test/?mv-pulled=a.test', 'mv_pull=a.test');
+  assert.equal(r3.headers.get('location'), 'https://b.test/?mv-pull=a.test%7Cb.test');
+  assert.equal(jar(r3), 'mv_pull=a.test|b.test');
+  // رجع من الأخير: الصفحة نفسها، والكوكي يحفظ الاثنين
+  const r4 = await get('https://home.test/?mv-pulled=a.test%7Cb.test', 'mv_pull=a.test|b.test');
+  assert.equal(r4.status, 200);
+  assert.equal(jar(r4), 'mv_pull=a.test|b.test');
+  // بعدها: لا مرور
+  assert.equal((await get('https://home.test/', 'mv_pull=a.test|b.test')).status, 200);
+  // كوكيز ممنوعة: القائمة تمشي مع الدورة فتنتهي بعد المرور على الكل
+  const n1 = await get('https://home.test/?mv-pulled=a.test');
+  assert.equal(n1.headers.get('location'), 'https://b.test/?mv-pull=a.test%7Cb.test');
+  assert.equal((await get('https://home.test/?mv-pulled=a.test%7Cb.test')).status, 200);
+  // لوحة التحكم ما تسحب
+  assert.equal((await get('https://home.test/admin')).status, 200);
 });
