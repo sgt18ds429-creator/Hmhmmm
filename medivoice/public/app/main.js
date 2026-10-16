@@ -18,8 +18,9 @@ const keysLabel = (n) => (n <= 1 ? 'مفتاح واحد' : n === 2 ? 'مفتاح
 const ACCEPT = 'audio/*,video/*,.m4a,.mp3,.wav,.ogg,.oga,.opus,.aac,.flac,.mp4,.mov,.m4v,.webm,.mkv,.3gp,.amr,.wma';
 
 const PROVIDERS = {
-  gemini: { badge: 'G', name: 'Gemini', role: 'محرك الدقة' },
-  groq: { badge: 'Q', name: 'Groq', role: 'محرك الساعات' },
+  // للمستخدم: «المفتاح الأول» و«المفتاح الثاني» فقط (المسؤول يعلّمه أي مفتاح يحط بكل خانة)
+  gemini: { badge: '1', name: 'المفتاح الأول' },
+  groq: { badge: '2', name: 'المفتاح الثاني' },
 };
 
 export async function start(MV, root) {
@@ -173,9 +174,9 @@ export async function start(MV, root) {
       rise(noKeys
         ? h('div', { class: 'banner' }, icon('key'), h('span', null, 'قبل أول محاضرة اربط مفاتيحك المجانية. دقيقتين ومرة وحدة.'), h('button', { class: 'btn small amber', onclick: () => go('link') }, 'ربط'))
         : !s.keys.gemini.linked
-          ? h('div', { class: 'banner' }, icon('warn'), h('span', null, 'بدون Gemini تقل دقة المصطلحات الطبية. اربطه مجاناً.'), h('button', { class: 'btn small amber', onclick: () => go('link') }, 'ربط'))
+          ? h('div', { class: 'banner' }, icon('warn'), h('span', null, 'اربط المفتاح الأول حتى تطلع المصطلحات الطبية أدق.'), h('button', { class: 'btn small amber', onclick: () => go('link') }, 'ربط'))
           : !s.keys.groq.linked
-            ? h('div', { class: 'banner info' }, icon('info'), h('span', null, 'اربط Groq حتى تزيد ساعاتك اليومية ويشتغل الاثنين سوا.'), h('button', { class: 'btn small ghost', onclick: () => go('link') }, 'ربط'))
+            ? h('div', { class: 'banner info' }, icon('info'), h('span', null, 'اربط المفتاح الثاني حتى تزيد ساعاتك ويشتغل المفتاحين سوا.'), h('button', { class: 'btn small ghost', onclick: () => go('link') }, 'ربط'))
             : null),
       rise(slab),
       rise(h('div', { class: 'row' }, h('button', { class: 'btn ghost', onclick: () => (noKeys ? go('link') : openRecorder(ctx)) }, icon('mic'), 'تسجيل مباشر'))),
@@ -259,58 +260,66 @@ export async function start(MV, root) {
       const p = PROVIDERS[id];
       const state = ctx.session.keys[id];
       const box = h('section', { class: 'card prov rise', style: { '--i': String(i) } });
-      const adding = state.linked; // مفتاح إضافي من حساب آخر: حصة يومية مجانية جديدة فوق الحالية
-      const input = h('input', { class: 'input', type: 'text', placeholder: adding ? 'مفتاح من حساب ثاني' : 'الصق المفتاح هنا', autocomplete: 'off', autocapitalize: 'off', spellcheck: false, 'aria-label': `مفتاح ${p.name}` });
-      const label = h('span', null, adding ? 'إضافة' : 'لصق');
-      const pasteBtn = h('button', { class: 'btn small', onclick: paste }, icon(adding ? 'plus' : 'paste'), label);
-      async function submit(raw) {
-        const key = String(raw || '').trim().replace(/^["']|["']$/g, '');
-        if (key.length < 20) { ctx.toast('الصق المفتاح كاملاً.', 'err'); return; }
-        pasteBtn.disabled = true;
-        label.textContent = 'أتحقق…';
-        const r = await ctx.api('/api/keys', { method: 'POST', body: { key, provider: adding ? id : undefined, add: adding } }); // الخادم يميّز المزوّد من شكل المفتاح
-        pasteBtn.disabled = false;
-        label.textContent = adding ? 'إضافة' : 'لصق';
-        if (r.ok && r.data?.active) {
-          ctx.session = MV.session = r.data;
-          ctx.caps = null;
-          ctx.ribbon.kick(0.8);
-          const now = r.data.keys[id]?.count || 1;
-          ctx.toast(!adding ? `تم ربط ${PROVIDERS[r.data.linked]?.name || p.name}` : now > (state.count || 1) ? `صار عندك ${keysLabel(now)} ${p.name}` : 'هذا المفتاح مربوط من قبل. أضف مفتاح من حساب ثاني.', 'ok');
-          render();
-        } else {
-          const e = r.data?.error;
-          ctx.toast(e === 'bad_key' ? 'المفتاح غير صحيح. انسخه كاملاً.' : e === 'too_many_keys' ? 'الحد 6 مفاتيح.' : e === 'provider_down' ? 'تعذّر التحقق من المفتاح الآن. جرّب بعد قليل.' : 'تعذّر الحفظ. تأكد من الإنترنت.', 'err');
+      /** خانة لصق: للمفتاح نفسه، أو لمفتاح إضافي من حساب آخر (حصة يومية مجانية جديدة فوق الحالية) */
+      function field(adding) {
+        const input = h('input', { class: 'input', type: 'text', placeholder: adding ? 'الصق المفتاح الإضافي' : 'الصق المفتاح هنا', autocomplete: 'off', autocapitalize: 'off', spellcheck: false, 'aria-label': adding ? `مفتاح إضافي لـ${p.name}` : p.name });
+        const label = h('span', null, adding ? 'إضافة' : 'لصق');
+        const btn = h('button', { class: 'btn small', onclick: paste }, icon(adding ? 'plus' : 'paste'), label);
+        async function submit(raw) {
+          const key = String(raw || '').trim().replace(/^["']|["']$/g, '');
+          if (key.length < 20) { ctx.toast('الصق المفتاح كاملاً.', 'err'); return; }
+          btn.disabled = true;
+          label.textContent = 'أتحقق…';
+          const r = await ctx.api('/api/keys', { method: 'POST', body: { key, provider: adding ? id : undefined, add: adding } }); // الخادم يميّز نوع المفتاح من شكله
+          btn.disabled = false;
+          label.textContent = adding ? 'إضافة' : 'لصق';
+          if (r.ok && r.data?.active) {
+            ctx.session = MV.session = r.data;
+            ctx.caps = null;
+            ctx.ribbon.kick(0.8);
+            const now = r.data.keys[id]?.count || 1;
+            ctx.toast(!adding ? `تم ربط ${PROVIDERS[r.data.linked]?.name || p.name}` : now > (state.count || 1) ? 'انضاف المفتاح.' : 'هذا المفتاح مربوط من قبل. أضف مفتاح من حساب ثاني.', 'ok');
+            render();
+          } else {
+            const e = r.data?.error;
+            ctx.toast(e === 'bad_key' ? 'المفتاح غير صحيح. انسخه كاملاً.' : e === 'too_many_keys' ? 'الحد 6 مفاتيح.' : e === 'provider_down' ? 'تعذّر التحقق من المفتاح الآن. جرّب بعد قليل.' : 'تعذّر الحفظ. تأكد من الإنترنت.', 'err');
+          }
         }
-      }
-      async function paste() {
-        if (input.value.trim()) return submit(input.value);
-        try {
-          const text = await navigator.clipboard.readText();
-          if (text && text.trim().length >= 20) { input.value = text.trim(); return submit(text); }
-          ctx.toast('الحافظة فارغة. انسخ المفتاح أولاً.', 'err');
-        } catch {
-          input.focus();
-          ctx.toast('اضغط مطولاً داخل الحقل واختر «لصق».');
+        async function paste() {
+          if (input.value.trim()) return submit(input.value);
+          try {
+            const text = await navigator.clipboard.readText();
+            if (text && text.trim().length >= 20) { input.value = text.trim(); return submit(text); }
+            ctx.toast('الحافظة فارغة. انسخ المفتاح أولاً.', 'err');
+          } catch {
+            input.focus();
+            ctx.toast('اضغط مطولاً داخل الخانة واختر «لصق».');
+          }
         }
+        input.addEventListener('paste', () => setTimeout(() => { if (input.value.trim().length >= 20) submit(input.value); }, 30));
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(input.value); });
+        return h('div', { class: 'paste-row' }, input, btn);
       }
-      input.addEventListener('paste', () => setTimeout(() => { if (input.value.trim().length >= 20) submit(input.value); }, 30));
-      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(input.value); });
 
       box.append(h('div', { class: 'prov-head' },
         h('span', { class: 'prov-badge' }, p.badge),
         h('h3', null, p.name),
         state.linked ? h('span', { class: 'chip ok' }, icon('check'), (state.count || 1) > 1 ? keysLabel(state.count) : 'مربوط') : null));
-      if (state.linked) {
-        const many = (state.count || 1) > 1;
-        box.append(h('div', { class: 'linked-row' }, h('code', null, state.hint),
-          h('button', { class: 'btn ghost small', onclick: async () => {
-            if (!(await confirm({ title: `فك ربط ${p.name}`, message: many ? 'تنفك كل المفاتيح. تقدر تربطها مرة ثانية بأي وقت.' : 'تقدر تربطه مرة ثانية بأي وقت.', ok: 'فك الربط', danger: true }))) return;
-            const r = await ctx.api(`/api/keys?provider=${id}`, { method: 'DELETE' });
-            if (r.ok && r.data?.active) { ctx.session = MV.session = r.data; ctx.caps = null; render(); }
-          } }, 'فك الربط')));
+      if (!state.linked) { box.append(field(false)); return box; }
+      const many = (state.count || 1) > 1;
+      box.append(h('div', { class: 'linked-row' }, h('code', null, state.hint),
+        h('button', { class: 'btn ghost small', onclick: async () => {
+          if (!(await confirm({ title: `فك ربط ${p.name}`, message: many ? 'تنفك كل مفاتيحه. تقدر تربطها مرة ثانية بأي وقت.' : 'تقدر تربطه مرة ثانية بأي وقت.', ok: 'فك الربط', danger: true }))) return;
+          const r = await ctx.api(`/api/keys?provider=${id}`, { method: 'DELETE' });
+          if (r.ok && r.data?.active) { ctx.session = MV.session = r.data; ctx.caps = null; render(); }
+        } }, 'فك الربط')));
+      if ((state.count || 1) < 6) {
+        // «أضف مفتاح آخر»: خانة ثانية تظهر عند الضغط
+        const addRow = field(true);
+        addRow.hidden = true;
+        const addBtn = h('button', { class: 'btn ghost small add-key', onclick: () => { addBtn.hidden = true; addRow.hidden = false; addRow.classList.add('rise'); addRow.querySelector('input').focus(); } }, icon('plus'), 'أضف مفتاح آخر');
+        box.append(addBtn, addRow);
       }
-      if (!state.linked || (state.count || 1) < 6) box.append(h('div', { class: 'paste-row' }, input, pasteBtn));
       return box;
     }
     function render() {
@@ -327,7 +336,7 @@ export async function start(MV, root) {
     const s = ctx.session, u = s.usage;
     const left = Math.max(0, u.limit_sec - u.used_sec);
     const keyRow = (id) => h('div', { class: 'row between' },
-      h('span', null, h('b', { class: 'ltr' }, PROVIDERS[id].name), `  ${PROVIDERS[id].role}`),
+      h('b', null, PROVIDERS[id].name),
       s.keys[id].linked ? h('span', { class: 'chip ok' }, icon('check'), (s.keys[id].count || 1) > 1 ? keysLabel(s.keys[id].count) : 'مربوط') : h('span', { class: 'chip warn' }, 'غير مربوط'));
     // المظهر: نهاري أو ليلي لهذا الجهاز (إذا المسؤول سامح بالتبديل)
     const modeSeg = h('div', { class: 'seg', role: 'group', 'aria-label': 'المظهر' });

@@ -464,6 +464,12 @@ export class MediVoiceStore extends DurableObject {
     else if (kind === 'lecture') this.sql.exec('UPDATE codes SET lectures = lectures + 1, last_active = ? WHERE code = ?', now, code);
   }
 
+  /** خطأ غير متوقع أثناء تحويل عند الطالب: يُسجَّل للتشخيص (لا يظهر في سجل النشاط)، 12 بالساعة لكل كود */
+  clientError(code, detail) {
+    if (!this.#allow(`diag:${code}`, 3600_000, 12)) return;
+    this.#event('client_error', { code, detail });
+  }
+
   /** طلب صوت فشل عند المزوّد: ثوانيه المحجوزة تُحرَّر فوراً */
   release(req) { if (req) this.pending.delete(req); }
 
@@ -1195,6 +1201,15 @@ async function handleApi(request, env, ctx, url) {
     const up = await geminiWithKeys(auth.geminiKeys, model, await request.arrayBuffer(), learn(ctx, db, auth.code));
     settle(auth, up);
     return relay(up);
+  }
+
+  if (path === '/api/diag' && method === 'POST') {
+    const auth = await db.authorize(id, {});
+    if (!auth.ok) return json(auth, auth.status);
+    const b = await request.json().catch(() => ({}));
+    const clip = (v, n) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, n);
+    await db.clientError(auth.code, [clip(b.m, 160), clip(b.at, 90), clip(b.st, 20), clip(b.b, 14)].filter(Boolean).join(' | '));
+    return json({ ok: true });
   }
 
   if (path === '/api/done' && method === 'POST') {

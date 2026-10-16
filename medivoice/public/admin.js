@@ -80,11 +80,16 @@ function statusOf(c) {
   if (c.activated_at) return { key: 'wait', label: 'بانتظار جهاز جديد', chip: '' };
   return { key: 'wait', label: 'لم يُفعَّل بعد', chip: 'off' };
 }
+/** عدد الأيام بالعربي: يوم واحد، يومين، 3 أيام، 30 يوم */
+const daysText = (n) => (n === 1 ? 'يوم واحد' : n === 2 ? 'يومين' : n >= 3 && n <= 10 ? `${n} أيام` : `${n} يوم`);
 function validity(c) {
-  if (!c.activated_at) return c.duration_days ? `${c.duration_days} يوم من أول تفعيل` : 'دائم';
+  if (!c.activated_at) return c.duration_days ? `${daysText(c.duration_days)} من أول تفعيل` : 'دائم';
   if (!c.expires_at) return 'دائم';
-  const left = Math.ceil((c.expires_at - Date.now()) / DAY);
-  return left <= 0 ? `انتهى ${dateStr(c.expires_at)}` : left === 1 ? 'ينتهي خلال يوم' : `باقي ${left} يوم`;
+  const ms = c.expires_at - Date.now();
+  if (ms <= 0) return `انتهى ${dateStr(c.expires_at)}`;
+  if (ms < DAY) { const hrs = Math.ceil(ms / 3600000); return hrs <= 1 ? 'ينتهي خلال ساعة' : `باقي ${hrs} ساعة`; }
+  const left = Math.ceil(ms / DAY);
+  return left === 1 ? 'ينتهي خلال يوم' : `باقي ${daysText(left)}`;
 }
 function inviteText(c) {
   return [
@@ -330,7 +335,7 @@ function openExtend(c, parent) {
   const s = sheet({ title: limited ? 'تمديد الصلاحية' : 'تحديد مدة للكود', body: h('div', { class: 'stack' },
     h('p', { class: 'muted' }, limited ? `الحالي: ${validity(c)}. اختر المدة اللي تنضاف.` : c.activated_at ? 'الكود دائم الآن. اختر مدة تبدأ من اليوم.' : 'الكود دائم الآن. اختر مدة تبدأ من أول تفعيل.'),
     h('div', { class: 'menu' },
-      add('شهر', 30), add('3 أشهر', 90), add('6 أشهر', 180), add('سنة', 365),
+      add('يوم واحد', 1), add('أسبوع', 7), add('شهر', 30), add('3 أشهر', 90), add('6 أشهر', 180), add('سنة', 365),
       limited ? h('button', { onclick: () => mutate(api(path, { method: 'PATCH', body: { expires_at: null } }), 'صار الكود دائم.', [s, parent]) }, icon('check'), 'خلّيه دائم') : null)) });
 }
 
@@ -359,9 +364,9 @@ function openCreate() {
   const note = h('input', { type: 'text', placeholder: 'اختياري', maxLength: 200 });
   const custom = h('input', { type: 'number', min: 1, max: 3650, inputMode: 'numeric', placeholder: 'عدد الأيام' });
   const customWrap = h('label', { class: 'field', hidden: true }, h('span', null, 'عدد الأيام'), custom);
-  const DUR = [[null, 'دائم'], [30, 'شهر'], [90, '3 أشهر'], [365, 'سنة'], ['x', 'غيرها']];
+  const DUR = [[1, 'يوم'], [7, 'أسبوع'], [30, 'شهر'], [90, '3 أشهر'], [365, 'سنة'], [null, 'دائم'], ['x', 'عدد أيام']];
   let dur = null;
-  const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'مدة الكود' });
+  const seg = h('div', { class: 'seg wrap', role: 'group', 'aria-label': 'مدة الكود' });
   const paintSeg = () => clear(seg).append(...DUR.map(([v, label]) => h('button', { type: 'button', 'aria-pressed': String(dur === v), onclick: () => { dur = v; customWrap.hidden = v !== 'x'; paintSeg(); if (v === 'x') custom.focus(); } }, label)));
   paintSeg();
   const hours = hoursControl(Math.round(Number(cfg.defaultDailyHours ?? 8) * 3600));
@@ -463,6 +468,7 @@ function tabActivity(view) {
   const events = h('div');
   if (!d.events.length) events.append(h('div', { class: 'empty' }, 'السجل فارغ.'));
   for (const e of d.events) {
+    if (e.type === 'client_error') continue; // للتشخيص فقط
     const [ic, tone, parts] = eventView(e, byCode);
     const where = [ago(e.ts), country(e.country), tone === 'bad' && e.ip ? e.ip : ''].filter(Boolean).join('، ');
     events.append(h('div', { class: `ev ${tone}` }, h('span', { class: 'dot' }, icon(ic)), h('p', null, parts), h('small', null, where)));

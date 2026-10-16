@@ -160,11 +160,11 @@ export function viewNew(ctx, el, { file, recId = null }) {
 
 // ───────────── شاشة التحويل ─────────────
 const ERRORS = {
-  key_groq: ['مفتاح Groq ما يشتغل', 'ممكن انحذف أو انتهى. اربطه من جديد.', 'link'],
-  key_gemini: ['مفتاح Gemini ما يشتغل', 'ممكن انحذف أو انتهى. اربطه من جديد.', 'link'],
-  no_engine: ['خلصت حصة اليوم بمفاتيحك', 'المقاطع المكتملة محفوظة. أضف مفتاح من حساب ثاني (Gemini أو Groq) وارفع نفس الملف ويكمل من مكانه، أو جرّب بعدين.', 'link'],
+  key_groq: ['المفتاح الثاني ما يشتغل', 'ممكن انحذف أو انتهى. اربطه من جديد.', 'link'],
+  key_gemini: ['المفتاح الأول ما يشتغل', 'ممكن انحذف أو انتهى. اربطه من جديد.', 'link'],
+  no_engine: ['خلصت حصة اليوم بمفاتيحك', 'المقاطع المكتملة محفوظة. أضف مفتاح آخر من حساب ثاني وارفع نفس الملف ويكمل من مكانه، أو جرّب بعدين.', 'link'],
   daily_limit: ['خلص رصيد اليوم', 'المقاطع المكتملة محفوظة. ارجع ارفع نفس الملف بعدين ويكمل من مكانه، أو اطلب ساعات أكثر من المسؤول.', 'support'],
-  rate_limit: ['وصلت حد Groq للصوت', 'المقاطع المكتملة محفوظة. أضف مفتاح Groq من حساب ثاني، أو جرّب بعد شوية بنفس الملف ويكمل من مكانه.', 'retry+link'],
+  rate_limit: ['المفتاح مضغوط الآن', 'المقاطع المكتملة محفوظة. أضف مفتاح آخر للمفتاح الثاني، أو جرّب بعد شوية بنفس الملف ويكمل من مكانه.', 'retry+link'],
   locked: ['توقف الكود', 'الكود موقوف أو انتهت مدته. راجع المسؤول.', 'reload'],
   audio: ['مشكلة بالملف', 'ما قدرت أقرأ الصوت من هذا الملف. جرّب صيغة ثانية.', 'home'],
   empty: ['ماكو كلام بالتسجيل', 'ما لقيت كلام واضح. تأكد إنه تسجيل محاضرة وصوته مسموع.', 'home'],
@@ -197,7 +197,7 @@ function liveNodes(blocks) {
  * واجهة التقدم المشتركة (تحويل تسجيل، أو كتابة شرح لمحاضرة محفوظة).
  * @param opts.stages [[المعرّف، الاسم]] · opts.weights { transcribe, write }
  */
-function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
+function runScreen(ctx, el, { title, stages: stageNames, weights, retry, auto = null }) {
   ctx.setBar('sub', { title });
   const controller = new AbortController();
   let running = true, waitTimer = null;
@@ -398,8 +398,8 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
       else if (e.code === 'translate_failed') ctx.toast('ما كدرت أكتب النسخة الثانية (الترجمة) هسه لأن المحرك مضغوط. الملزمة جاهزة بلغتها، وتقدر تعيد كتابتها بعدين.', 'err');
       else if (e.code === 'translate_partial') ctx.toast('أجزاء قليلة من النسخة الثانية بقت بلغتها الأصلية لأن ترجمتها ما اكتملت، ومعلَّمة بملاحظة.');
       else if (e.code === 'figures_partial') ctx.toast('انقطع الاتصال أثناء فحص بعض الصور، فالملزمة كاملة بصور أقل.');
-      else if (e.code === 'key_groq_dead') ctx.toast('مفتاح Groq ما عاد يشتغل (انحذف أو انتهى)، فكمّلت بـ Gemini وحده. اربطه من جديد من الإعدادات.', 'err');
-      else if (e.code === 'key_gemini_dead') ctx.toast('مفتاح Gemini ما عاد يشتغل (انحذف أو انتهى)، فكمّلت بـ Groq وحده (دقة المصطلحات أقل). اربطه من جديد من الإعدادات.', 'err');
+      else if (e.code === 'key_groq_dead') ctx.toast('المفتاح الثاني ما عاد يشتغل، فكمّلت بالمفتاح الأول. اربطه من جديد من «حسابي».', 'err');
+      else if (e.code === 'key_gemini_dead') ctx.toast('المفتاح الأول ما عاد يشتغل، فكمّلت بالمفتاح الثاني. اربطه من جديد من «حسابي».', 'err');
       // نفاد حصة النماذج الدقيقة أو حصة Gemini: يكمل التحويل وحده بالمتاح، ولا رسالة للمستخدم (تبقى في التشخيص)
     } else if (e.type === 'images') {
       // الصور تُفحص أثناء الكتابة أيضاً: لا نغطي حالة الكتابة، ونعرض العدد فقط
@@ -465,6 +465,17 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
   function failWith(e) {
     if (e?.name === 'AbortError' || e?.code === 'aborted') { cleanup(); game?.close(); return; }
     console.error(e);
+    if (!isPipelineError(e)) {
+      // خطأ غير متوقع: يُسجَّل للتشخيص، ويكمل التحويل وحده من مكانه (مرتين على الأكثر) قبل أي رسالة
+      const at = String(e?.stack || '').split('\n').find((l) => /\.js/.test(l)) || '';
+      ctx.api('/api/diag', { method: 'POST', body: { m: `${e?.name || 'Error'}: ${e?.message || e}`, at: at.replace(/https?:\/\/[^/]+/g, '').replace(/\?v=\w+/g, ''), st: stageNow, b: ctx.session.build } }).catch(() => {});
+      if (auto && auto.n < 2 && navigator.onLine !== false && body.isConnected) {
+        cleanup(); game?.close();
+        status.textContent = 'أكمل من مكاني…';
+        setTimeout(() => { if (body.isConnected) auto.again(auto.n + 1); }, 1200);
+        return;
+      }
+    }
     if (isPipelineError(e)) fail(e.code, e);
     else fail(navigator.onLine === false ? 'network' : 'unknown');
     ctx.refreshSession().catch(() => {});
@@ -504,7 +515,7 @@ function slimSlides(doc) {
   if (doc.slides?.pages) doc.slides = { pages: doc.slides.pages.map((p) => ({ page: p.page, text: p.text })), figs: doc.slides.figs || [] };
 }
 
-export function viewRun(ctx, el, { file, meta, info, pdfFile = null, recId = null, resumes = 0 }) {
+export function viewRun(ctx, el, { file, meta, info, pdfFile = null, recId = null, resumes = 0, auto = 0 }) {
   const notes = isNotes(meta.mode);
   const cfg = { chunkSec: ctx.session.config.chunkSec, overlapSec: ctx.session.config.overlapSec };
   const job = hash([file.name, file.size, file.lastModified, meta.speech, meta.style, cfg.chunkSec].join('|'));
@@ -519,6 +530,7 @@ export function viewRun(ctx, el, { file, meta, info, pdfFile = null, recId = nul
     stages: stagesFor(notes ? meta.mode : 'transcript'),
     weights: notes ? { transcribe: 0.55, write: 0.28 } : { transcribe: 0.86, write: 0 },
     retry: () => ctx.go('run', { file, meta, info, pdfFile, recId }, { replace: true }),
+    auto: { n: auto, again: (n) => ctx.go('run', { file, meta, info, pdfFile, recId, auto: n }, { replace: true }) },
   });
   // نبضة كل 20 ثانية مع التقدم: آخر وقت كان فيه التحويل يعمل
   let beatAt = Date.now();

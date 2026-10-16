@@ -157,3 +157,6 @@ details.more .stack { margin-top: 2px; }
 .card h3 { font-family: var(--font-display); font-weight: 600; font-size: 1.08rem; }
 .card > .dim { margin-top: -6px; }
 textarea.mono { font-family: var(--font-mono); font-size: 0.82rem; direction: ltr; }
+/* أزرار مدة الكود: صفان (يوم، أسبوع، شهر، 3 أشهر / سنة، دائم، عدد أيام) */
+.seg.wrap { grid-auto-flow: row; grid-template-columns: repeat(4, 1fr); border-radius: 22px; }
+.seg.wrap button { border-radius: 16px; }

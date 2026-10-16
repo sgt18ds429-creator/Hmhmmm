@@ -107,7 +107,8 @@
 .prov { display: grid; gap: 14px; }
 .prov-head { display: flex; align-items: center; gap: 12px; }
 .prov-badge { width: 44px; height: 44px; flex: none; display: grid; place-items: center; font-family: var(--font-latin); font-weight: 600; font-size: 1.25rem; color: #fff; background: var(--grad); border-radius: 14px; box-shadow: var(--glow); }
-.prov-head h3 { font-family: var(--font-latin); font-weight: 600; font-size: 1.16rem; line-height: 1.4; }
+.prov-head h3 { font-family: var(--font-display); font-weight: 700; font-size: 1.2rem; line-height: 1.4; }
+.prov .add-key { justify-self: start; }
 .prov-head .chip { margin-inline-start: auto; }
 .paste-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
 .paste-row input:not(:placeholder-shown) { direction: ltr; font-family: var(--font-mono); font-size: 0.86rem; }
