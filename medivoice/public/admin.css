@@ -109,7 +109,8 @@ details.more .stack { margin-top: 2px; }
   transition: transform 0.4s var(--spring);
 }
 .splash-tile:active { transform: scale(0.98); }
-.splash-tile .logo-mark { width: 26%; max-width: 110px; filter: drop-shadow(0 10px 20px rgba(20, 0, 60, 0.4)); animation: mark-float 5s ease-in-out infinite; }
+.splash-tile::before { content: ''; position: absolute; left: 50%; top: 42%; width: 60%; aspect-ratio: 1; transform: translate(-50%, -50%); border-radius: 50%; background: radial-gradient(closest-side, rgba(255, 255, 255, 0.22), transparent); pointer-events: none; }
+.splash-tile .logo-mark { position: relative; width: 26%; max-width: 110px; }
 .splash-tile b { font-family: var(--font-display); font-size: clamp(1.3rem, 5.5vw, 1.8rem); font-weight: 700; line-height: 1.1; }
 .splash-play { position: absolute; bottom: 12px; inset-inline-end: 12px; width: 40px; height: 40px; display: grid; place-items: center; border-radius: 50%; background: rgba(255, 255, 255, 0.18); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
 .splash-play .icon { width: 18px; height: 18px; fill: currentColor; stroke: none; margin-left: 3px; }

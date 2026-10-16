@@ -14,7 +14,7 @@ export const MARK_COLOR = '/mark-color.webp';
 export const MARK_COLOR_MIC = '/mark-color-mic.webp';
 export const MARK_COLOR_BARS = '/mark-color-bars.webp';
 export const MARK_GRAD = '/mark-grad.png'; // بتدرّج الهوية للصفحات البيضاء (ترويسة الـ PDF)
-export const CUT_RATIO = 640 / 553;
+export const CUT_RATIO = 960 / 828;
 
 /**
  * الشعار بلا خلفيته: بألوانه الأصلية في الوضع الليلي، وبتدرّج الهوية في الوضع النهاري (الأبيض لا يظهر على

@@ -128,9 +128,9 @@ body::before {
     radial-gradient(42% 36% at 82% 8%, rgba(var(--v2-rgb), 0.36), transparent 70%),
     radial-gradient(38% 34% at 10% 92%, rgba(var(--v1-rgb), 0.3), transparent 70%),
     radial-gradient(30% 26% at 55% 55%, rgba(var(--v3-rgb), 0.11), transparent 70%);
-  animation: nebula 26s ease-in-out infinite alternate;
+  animation: nebula 34s ease-in-out infinite alternate;
 }
-@keyframes nebula { to { transform: translate3d(3%, -2%, 0) scale(1.06); } }
+@keyframes nebula { to { transform: translate3d(2%, -1.5%, 0) scale(1.04); } }
 h1, h2, h3 { font-family: var(--font-display); font-weight: 600; line-height: 1.35; margin: 0; }
 p { margin: 0; }
 button, input, textarea, select { font: inherit; color: inherit; }
@@ -146,17 +146,19 @@ a { color: var(--accent); text-underline-offset: 3px; }
 
 /* ───────── الشعار بلا خلفية ───────── */
 /* بألوانه الأصلية على الداكن والبنفسجي، وبتدرّج الهوية على الفاتح (الأبيض لا يظهر فوق خلفية فاتحة) */
-.logo-mark { position: relative; display: block; width: 100%; aspect-ratio: 640 / 553; user-select: none; -webkit-user-select: none; }
-.logo-mark img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; -webkit-user-drag: none; pointer-events: none; }
-.logo-mark .lm-grad { position: absolute; inset: 0; width: 100%; height: 100%; display: none; background: var(--grad); }
-:root[data-theme='light'] .logo-mark:not(.on-brand) img { display: none; }
-:root[data-theme='light'] .logo-mark:not(.on-brand) .lm-grad { display: block; }
+.logo-mark { position: relative; display: block; width: 100%; aspect-ratio: 960 / 828; user-select: none; -webkit-user-select: none; }
+.logo-mark img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; -webkit-user-drag: none; pointer-events: none; transition: opacity 0.5s ease; }
+.logo-mark .lm-grad { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; background: var(--grad); transition: opacity 0.5s ease; }
+:root[data-theme='light'] .logo-mark:not(.on-brand) img { opacity: 0; }
+:root[data-theme='light'] .logo-mark:not(.on-brand) .lm-grad { opacity: 1; }
 .mk { display: inline-block; background: currentColor; -webkit-mask: var(--mk) center / contain no-repeat; mask: var(--mk) center / contain no-repeat; vertical-align: middle; }
 .mark { display: block; width: 100%; color: #fff; }
 .logo { display: block; width: 100%; height: 100%; object-fit: contain; user-select: none; -webkit-user-drag: none; }
-.brand-tile { position: relative; width: 116px; filter: drop-shadow(0 16px 26px rgba(var(--v2-rgb), 0.5)); animation: mark-float 5s ease-in-out infinite; }
-:root[data-theme='light'] .brand-tile { filter: drop-shadow(0 14px 22px rgba(var(--v2-rgb), 0.28)); }
-@keyframes mark-float { 50% { transform: translateY(-5px); } }
+/* شعار القفل: ثابت وحاد، وخلفه هالة بلون الهوية تتنفس (تدرّج لا فلتر، فلا يتغبّش الشعار) */
+.brand-tile { position: relative; width: 120px; isolation: isolate; }
+.brand-tile::before { content: ''; position: absolute; left: 50%; top: 50%; width: 220%; aspect-ratio: 1; transform: translate(-50%, -50%); z-index: -1; border-radius: 50%; background: radial-gradient(closest-side, rgba(var(--v2-rgb), 0.42), rgba(var(--v1-rgb), 0.12) 55%, transparent); animation: halo 4.5s ease-in-out infinite; pointer-events: none; }
+:root[data-theme='light'] .brand-tile::before { background: radial-gradient(closest-side, rgba(var(--v2-rgb), 0.16), rgba(var(--v1-rgb), 0.05) 55%, transparent); }
+@keyframes halo { 50% { opacity: 0.65; transform: translate(-50%, -50%) scale(0.9); } }
 
 /* ───────── أزرار ───────── */
 .btn {
@@ -270,53 +272,42 @@ span.ripple.ripple { position: absolute; z-index: 0; border-radius: 50%; pointer
 ::placeholder { color: var(--text-3); opacity: 1; }
 
 /* ───────── الافتتاحية: شاشة كاملة بلون الهوية، الشعار واسم الموقع في الوسط ───────── */
-#intro {
-  --k: 1;
-  position: fixed;
-  inset: 0;
-  z-index: 30;
-  display: grid;
-  place-items: center;
-  overflow: hidden;
-  color: #fff;
+/* كل الحركة هنا شفافية وتحريك فقط (بلا تغبيش ولا قص)، فتبقى ناعمة وحادة على iPhone */
+#intro { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; color: #fff; }
+#intro .intro-bg {
+  position: absolute; inset: 0; overflow: hidden;
   background:
-    radial-gradient(70% 55% at 50% 42%, rgba(255, 255, 255, 0.12), transparent 70%),
+    radial-gradient(70% 52% at 50% 42%, rgba(255, 255, 255, 0.13), transparent 72%),
     linear-gradient(160deg, var(--splash-1) 0%, var(--splash-m) 55%, var(--splash-2) 100%);
   background-color: var(--splash-1);
 }
 /* أشكال الشعار الكبيرة الخافتة خلف المحتوى */
-#intro .intro-ghost { position: absolute; width: 118vmax; max-width: none; opacity: 0.06; pointer-events: none; user-select: none; }
-#intro .intro-ghost.a { inset-inline-start: -52vmax; bottom: -42vmax; animation: ghost-drift 14s ease-in-out infinite alternate; }
-#intro .intro-ghost.b { width: 76vmax; inset-inline-end: -40vmax; top: -30vmax; opacity: 0.045; transform: rotate(180deg); animation: ghost-drift-b 18s ease-in-out infinite alternate; }
-@keyframes ghost-drift { to { transform: translate3d(3vmax, -2vmax, 0) rotate(-4deg) scale(1.04); } }
-@keyframes ghost-drift-b { to { transform: rotate(176deg) translate3d(-2vmax, 2vmax, 0) scale(1.05); } }
-#intro .intro-center { position: relative; display: grid; justify-items: center; gap: 22px; }
-#intro .intro-mark { width: min(46vw, 210px); filter: drop-shadow(0 20px 40px rgba(20, 0, 60, 0.45)); }
-#intro .lm-mic { opacity: 0; transform: scale(0.6); filter: blur(10px); animation: mic-in calc(var(--k) * 0.9s) var(--spring) calc(var(--k) * 0.1s) forwards; }
-#intro .lm-bars { opacity: 0; transform: scaleX(0.4); transform-origin: 50% 40%; animation: bars-in calc(var(--k) * 0.7s) var(--ease) calc(var(--k) * 0.45s) forwards, bars-pulse 1.1s ease-in-out calc(var(--k) * 1.2s) infinite; }
-@keyframes mic-in { to { opacity: 1; transform: none; filter: blur(0); } }
-@keyframes bars-in { to { opacity: 1; transform: none; } }
-@keyframes bars-pulse { 0%, 100% { transform: scaleY(1); } 30% { transform: scaleY(1.14); } 60% { transform: scaleY(0.9); } }
+#intro .intro-ghost { position: absolute; width: 118vmax; max-width: none; opacity: 0.05; pointer-events: none; user-select: none; }
+#intro .intro-ghost.a { inset-inline-start: -52vmax; bottom: -42vmax; animation: ghost-drift 16s ease-in-out infinite alternate; }
+#intro .intro-ghost.b { width: 76vmax; inset-inline-end: -40vmax; top: -30vmax; opacity: 0.04; transform: rotate(180deg); animation: ghost-drift-b 20s ease-in-out infinite alternate; }
+@keyframes ghost-drift { to { transform: translate3d(2vmax, -1.5vmax, 0) rotate(-3deg); } }
+@keyframes ghost-drift-b { to { transform: rotate(177deg) translate3d(-1.5vmax, 1.5vmax, 0); } }
+#intro .intro-center { position: relative; display: grid; justify-items: center; gap: 18px; }
+/* هالة ضوء ناعمة خلف الشعار (تدرّج، لا فلتر) */
+#intro .intro-glow { position: absolute; left: 50%; top: 38%; width: 340px; height: 340px; margin: -170px 0 0 -170px; border-radius: 50%; background: radial-gradient(closest-side, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0.07) 55%, transparent); pointer-events: none; animation: glow-in 1.1s ease 0.1s both, glow-breathe 3.2s ease-in-out 1.2s infinite; }
+@keyframes glow-in { from { opacity: 0; transform: scale(0.6); } }
+@keyframes glow-breathe { 50% { opacity: 0.6; transform: scale(0.92); } }
+#intro .intro-mark { position: relative; width: min(50vw, 224px); animation: mark-in 0.95s cubic-bezier(0.2, 0.85, 0.25, 1.08) 0.05s both; }
+@keyframes mark-in { from { opacity: 0; transform: translateY(18px) scale(0.9); } }
+#intro .lm-bars { transform-origin: 50% 44%; animation: bars-in 0.6s ease 0.45s both, bars-pulse 1.3s ease-in-out 1.2s infinite; }
+@keyframes bars-in { from { opacity: 0; } }
+@keyframes bars-pulse { 0%, 100% { transform: scaleY(1); } 35% { transform: scaleY(1.1); } 65% { transform: scaleY(0.94); } }
 #intro .intro-name {
-  font-family: var(--font-display); font-weight: 700; font-size: clamp(2.3rem, 10.5vw, 3.2rem); line-height: 1.15;
-  background: linear-gradient(100deg, #fff 0%, #fff 40%, #f0d4ff 50%, #fff 60%, #fff 100%);
-  background-size: 260% 100%; background-position: 100% 0;
-  -webkit-background-clip: text; background-clip: text; color: transparent;
-  opacity: 0; transform: translateY(18px);
-  animation: name-in calc(var(--k) * 0.8s) var(--ease) calc(var(--k) * 0.7s) forwards, name-shine 2.4s ease-in-out calc(var(--k) * 1.3s) infinite;
+  position: relative; font-family: var(--font-display); font-weight: 700; font-size: clamp(2.5rem, 11.5vw, 3.4rem); line-height: 1.2;
+  color: #fff; text-shadow: 0 2px 24px rgba(24, 0, 64, 0.35);
+  animation: name-in 0.85s cubic-bezier(0.2, 0.85, 0.25, 1) 0.5s both;
 }
-@keyframes name-in { to { opacity: 1; transform: none; } }
-@keyframes name-shine { to { background-position: -60% 0; } }
-/* خروج احتياطي (بلا View Transitions): الشاشة البنفسجية تنكمش دائرةً نحو الشعار */
-#intro.out { pointer-events: none; animation: intro-out 0.75s var(--swift) forwards; }
-#intro.out .intro-center { animation: center-out 0.5s var(--ease) forwards; }
-@keyframes intro-out { from { clip-path: circle(150% at 50% 46%); } to { clip-path: circle(0% at 50% 46%); } }
-@keyframes center-out { to { opacity: 0; transform: scale(1.12); filter: blur(6px); } }
-/* الخروج مع View Transitions: الموقع ينكشف بدائرة من الشعار، والشعار يطير لمكانه */
-.vt-intro::view-transition-old(root) { animation: none; }
-.vt-intro::view-transition-new(root) { animation: vt-circle 0.95s var(--swift) both; }
-.vt-intro::view-transition-group(mv-logo) { animation-duration: 0.95s; animation-timing-function: var(--swift); }
-.vt-intro::view-transition-old(mv-logo), .vt-intro::view-transition-new(mv-logo) { animation-duration: 0.5s; }
+@keyframes name-in { from { opacity: 0; transform: translateY(14px); } }
+/* الخروج (shell.js): الخلفية تتلاشى، الاسم يختفي، والشعار يطير لمكانه في الشاشة التالية */
+#intro.leave { pointer-events: none; }
+#intro.leave .intro-bg { opacity: 0; transition: opacity 0.6s ease 0.08s; }
+#intro.leave .intro-name, #intro.leave .intro-glow { opacity: 0; transform: translateY(-10px) scale(0.96); transition: opacity 0.28s ease, transform 0.35s ease; animation: none; }
+#intro.leave .lm-bars { animation: none; }
 
 /* التطبيق تحت الافتتاحية: حركات الدخول متوقفة حتى ينكشف */
 #app.hold, #app.hold * { animation-play-state: paused !important; }
@@ -375,6 +366,8 @@ span.ripple.ripple { position: absolute; z-index: 0; border-radius: 50%; pointer
 #lock.in .lock-card > :nth-child(4) { transition-delay: 0.26s; }
 #lock.in .lock-card > :nth-child(5) { transition-delay: 0.34s; }
 #lock.in .lock-corner { transition-delay: 0.4s; }
+/* شعار القفل لا يتحرك في الدخول: شعار الافتتاحية يطير ويستقر في مكانه بالضبط */
+.lock-card > .brand-tile { transform: none; }
 
 /* ───────── إشعارات ───────── */
 #toasts { position: fixed; z-index: 60; inset-inline: 0; bottom: calc(18px + var(--safe-b)); display: grid; justify-items: center; gap: 8px; pointer-events: none; padding: 0 16px; }
@@ -393,22 +386,16 @@ span.ripple.ripple { position: absolute; z-index: 0; border-radius: 50%; pointer
 .toast.bye { opacity: 0; transform: translateY(10px) scale(0.96); transition: 0.3s var(--ease); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(22px) scale(0.9); } }
 
-/* ───────── انتقالات (View Transitions) ───────── */
-/* تبديل النهاري/الليلي: الوضع الجديد ينكشف بدائرة من الزر */
-.vt-theme::view-transition-old(root) { animation: none; }
-.vt-theme::view-transition-new(root) { animation: vt-circle 0.7s var(--ease) both; }
-@keyframes vt-circle { from { clip-path: circle(0 at var(--vt-x) var(--vt-y)); } to { clip-path: circle(var(--vt-r) at var(--vt-x) var(--vt-y)); } }
-/* بين الشاشات: القديمة تتراجع قليلاً والجديدة تصعد، والشريط العلوي يتبدل في مكانه */
-.vt-nav::view-transition-old(root) { animation: vt-out 0.2s ease-in both; }
-.vt-nav::view-transition-new(root) { animation: vt-in 0.45s var(--ease) both; }
-@keyframes vt-out { to { opacity: 0; transform: scale(0.985); } }
-@keyframes vt-in { from { opacity: 0; transform: translateY(16px); } }
-.vt-nav::view-transition-group(mv-bar) { animation-duration: 0.3s; }
+/* ───────── تبديل النهاري/الليلي: الألوان تتلاشى من وضع لوضع (theme.js يضيف الصنف نصف ثانية) ───────── */
+:root.theme-fade, :root.theme-fade *, :root.theme-fade *::before, :root.theme-fade *::after {
+  transition: background-color 0.55s ease, color 0.55s ease, border-color 0.55s ease, box-shadow 0.55s ease, fill 0.55s ease, stroke 0.55s ease, opacity 0.55s ease, transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
+}
+body::before { transition: opacity 0.55s ease; }
 
 /* ───────── مستوى الحركة (لوحة التحكم) وتقليل الحركة في الجهاز ───────── */
 :root[data-motion='light'] body::before,
 :root[data-motion='light'] #intro .intro-ghost,
-:root[data-motion='light'] .brand-tile { animation: none; }
+:root[data-motion='light'] .brand-tile::before { animation: none; }
 :root[data-motion='off'] *, :root[data-motion='off'] *::before, :root[data-motion='off'] *::after { animation-duration: 0.01ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }

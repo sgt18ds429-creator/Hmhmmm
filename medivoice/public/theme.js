@@ -58,23 +58,18 @@ export function applyTheme({ mode = true } = {}) {
 export const motionOn = () => root.dataset.motion !== 'off';
 
 /**
- * ينتقل إلى وضع بحركة: الوضع الجديد ينكشف بدائرة تتسع من الزر الذي ضُغط (View Transitions)،
- * وبدونها يتبدل فوراً.
+ * ينتقل إلى وضع بحركة: كل الألوان تتلاشى من الوضع القديم للجديد معاً خلال نصف ثانية (صنف theme-fade في
+ * shell.css)، وزر الشمس والقمر يدور. ألوان فقط، فلا تقطيع ولا ومضات على أي جهاز.
  */
-function reveal(next, from) {
+let fadeTimer = 0;
+function reveal(next) {
   if (next === root.dataset.theme) return;
-  if (typeof document.startViewTransition !== 'function' || !motionOn()) { paint(next); return; }
-  const r = from?.getBoundingClientRect?.();
-  const x = r ? r.left + r.width / 2 : innerWidth / 2;
-  const y = r ? r.top + r.height / 2 : 0;
-  root.style.setProperty('--vt-x', `${x}px`);
-  root.style.setProperty('--vt-y', `${y}px`);
-  root.style.setProperty('--vt-r', `${Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y))}px`);
-  root.classList.add('vt-theme');
-  try {
-    const t = document.startViewTransition(() => paint(next));
-    t.finished.finally(() => root.classList.remove('vt-theme'));
-  } catch { paint(next); root.classList.remove('vt-theme'); }
+  if (!motionOn()) { paint(next); return; }
+  root.classList.add('theme-fade');
+  void root.offsetWidth; // يثبّت الحالة الحالية قبل التبديل حتى تبدأ الحركة منها
+  paint(next);
+  clearTimeout(fadeTimer);
+  fadeTimer = setTimeout(() => root.classList.remove('theme-fade'), 650);
 }
 
 /** اختيار المستخدم: 'light' | 'dark' | 'auto'. يُحفظ لهذا الجهاز */
@@ -84,7 +79,7 @@ export function setMode(mode, from) {
     else localStorage.removeItem(KEY);
   } catch { /* تخزين ممنوع: يبقى لهذه الجلسة */ }
   const d = design();
-  reveal(mode === 'light' || mode === 'dark' ? mode : d.def === 'auto' ? systemMode() : d.def, from);
+  reveal(mode === 'light' || mode === 'dark' ? mode : d.def === 'auto' ? systemMode() : d.def);
 }
 
 /** زر التبديل: عكس الوضع الظاهر الآن */
@@ -132,7 +127,7 @@ document.addEventListener('mv-theme', () => {
 });
 
 /** موجة من مكان اللمسة على الأزرار والبطاقات القابلة للضغط (مستمع واحد للصفحة كلها) */
-const RIPPLE_ON = '.btn, .icon-btn, .menu button, .lec, .type, .slab, .cc, .seg button, .filters button, .pick, .swatch, .font-opt';
+const RIPPLE_ON = '.btn, .icon-btn, .menu button, .lec, .type, .slab, .cc, .seg button, .filters button, .pick, .swatch, .font-opt, .game-pick, .xo-cell:not(.taken)';
 let rippling = false;
 export function ripples() {
   if (rippling) return;

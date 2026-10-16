@@ -3,7 +3,34 @@
 // الرسم في عامل خلفي (game-worker.js) فلا يتقطّع حين تنشغل الصفحة بالتحويل؛ والنصوص (النقاط واللوحات)
 // عناصر صفحة عادية بخط الموقع. المتصفح الذي لا يدعم الرسم في الخلفية يشغّل المحرك نفسه في الصفحة.
 
-import { h, sheet, clear } from './ui.js';
+import { h, sheet, clear, svgEl } from './ui.js';
+export { openXO } from './xo.js';
+
+const GAME_KEY = 'mv-game';
+/**
+ * نافذة «اختر لعبة»: سباق السيارات أو إكس أو. ترجع 'race' أو 'xo'، أو null إذا أُغلقت.
+ * آخر لعبة اختارها الطالب تظهر مميزة.
+ */
+export function chooseGame() {
+  let last = null;
+  try { last = localStorage.getItem(GAME_KEY); } catch { /* تخزين غير متاح */ }
+  return new Promise((resolve) => {
+    let picked = null;
+    const pick = (id) => { picked = id; try { localStorage.setItem(GAME_KEY, id); } catch { /* */ } s.close(); };
+    const raceArt = h('span', { class: 'gp-art race-art', 'aria-hidden': 'true' }, h('i', { class: 'sun' }), h('i', { class: 'road' }), h('i', { class: 'car' }));
+    const cell = (v) => h('i', null, v === 'x' ? svgEl('svg', { viewBox: '0 0 100 100', class: 'x' }, svgEl('path', { d: 'M28 28 72 72M72 28 28 72' })) : v === 'o' ? svgEl('svg', { viewBox: '0 0 100 100', class: 'o' }, svgEl('circle', { cx: 50, cy: 50, r: 24 })) : null);
+    const xoArt = h('span', { class: 'gp-art xo-art', 'aria-hidden': 'true' }, ...['x', 'o', '', '', 'x', 'o', '', '', 'x'].map(cell));
+    const card = (id, art, title, sub) => h('button', { type: 'button', class: `game-pick${last === id ? ' last' : ''}`, onclick: () => pick(id) },
+      art, h('span', { class: 'gp-text' }, h('b', null, title), h('small', null, sub)));
+    const s = sheet({
+      title: 'اختر لعبة',
+      body: h('div', { class: 'game-picks' },
+        card('race', raceArt, 'سباق السيارات', 'تفادى السيارات واجمع النجوم'),
+        card('xo', xoArt, 'إكس أو', 'تحدَّ الكمبيوتر بثلاث مستويات')),
+      onClose: () => resolve(picked),
+    });
+  });
+}
 
 const BEST_KEY = 'mv-race-best';
 function loadBest() { try { return Number(localStorage.getItem(BEST_KEY)) || 0; } catch { return 0; } }

@@ -491,18 +491,22 @@ function previewTheme(t, { keepMode = false } = {}) {
   applyTheme({ mode: !keepMode });
 }
 
-/** شاشة الافتتاحية كاملة فوق اللوحة، بنفس شكلها في الموقع (للمعاينة) */
+/** شاشة الافتتاحية كاملة فوق اللوحة، بنفس شكلها وحركتها في الموقع (للمعاينة) */
 function playSplash(ms) {
   document.getElementById('intro')?.remove();
+  const mark = h('span', { class: 'logo-mark on-brand intro-mark' }, h('img', { class: 'lm-mic', src: '/mark-color-mic.webp', alt: '' }), h('img', { class: 'lm-bars', src: '/mark-color-bars.webp', alt: '' }));
   const intro = h('div', { id: 'intro', 'aria-hidden': 'true' },
-    h('img', { class: 'intro-ghost a', src: '/mark.png', alt: '' }),
-    h('img', { class: 'intro-ghost b', src: '/mark.png', alt: '' }),
-    h('div', { class: 'intro-center' },
-      h('span', { class: 'logo-mark on-brand intro-mark' }, h('img', { class: 'lm-mic', src: '/mark-color-mic.webp', alt: '' }), h('img', { class: 'lm-bars', src: '/mark-color-bars.webp', alt: '' })),
-      h('span', { class: 'intro-name' }, 'ميدي فويز')));
-  intro.style.setProperty('--k', String(Math.min(1, ms / 2300)));
+    h('div', { class: 'intro-bg' }, h('img', { class: 'intro-ghost a', src: '/mark.png', alt: '' }), h('img', { class: 'intro-ghost b', src: '/mark.png', alt: '' })),
+    h('div', { class: 'intro-center' }, h('span', { class: 'intro-glow' }), mark, h('span', { class: 'intro-name' }, 'ميدي فويز')));
   let gone = false;
-  const leave = () => { if (gone) return; gone = true; intro.classList.add('out'); setTimeout(() => intro.remove(), 760); };
+  const leave = async () => {
+    if (gone) return;
+    gone = true;
+    mark.style.animation = 'none';
+    intro.classList.add('leave');
+    await mark.animate?.([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'scale(1.12)' }], { duration: 520, easing: 'ease', fill: 'forwards' }).finished.catch(() => {});
+    intro.remove();
+  };
   intro.addEventListener('click', leave);
   document.body.append(intro);
   setTimeout(leave, ms);

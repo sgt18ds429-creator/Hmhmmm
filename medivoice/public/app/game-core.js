@@ -412,7 +412,7 @@ export function createRace(canvas, { emit = () => {}, best = 0, reduced = false 
   // ── اللعب ──
   function reset() {
     Object.assign(st, {
-      mode: 'run', lane: 1, x: laneOffset(1), speed: 0.55, dist: 0, bonus: 0, time: 0, combo: 1, streak: 0, newBest: false,
+      mode: 'run', count: reduced ? 0 : 2.8, lane: 1, x: laneOffset(1), speed: 0.2, dist: 0, bonus: 0, time: 0, combo: 1, streak: 0, newBest: false, near: 0,
       cars: [], items: [], sparks: [], flags: [], texts: [], spawnIn: 1.1, itemIn: 1.8, shake: 0, flash: 0, shield: false, magnetUntil: 0, nitroUntil: 0, hitSlow: 0,
     });
     emit({ type: 'mode', mode: 'run' });
@@ -450,6 +450,8 @@ export function createRace(canvas, { emit = () => {}, best = 0, reduced = false 
     if (nitro()) { sparkle(xOf(c.lane, c.z), yOf(c.z), '#ff7a8a', 16); c.dead = true; st.bonus += 15; return; }
     if (st.shield) { st.shield = false; st.flash = 0.5; st.shake = reduced ? 0 : 0.5; c.dead = true; floatText('الدرع حماك', W / 2, H * 0.5, '#7cc8ff'); emit({ type: 'buzz', ms: 40 }); hud(true); return; }
     st.mode = 'over'; st.shake = reduced ? 0 : 1; st.flash = 1;
+    const cx = xOf(c.lane, PLAYER_Z), cy = yOf(PLAYER_Z) - carW(PLAYER_Z) * 0.3;
+    sparkle(cx, cy, '#ffb547', 18); sparkle(cx, cy, '#ff7a8a', 14); sparkle(cx, cy, '#fff4d6', 8);
     const sc = score();
     st.newBest = sc > st.best;
     if (st.newBest) { st.best = sc; emit({ type: 'best', best: sc }); }
@@ -502,6 +504,15 @@ export function createRace(canvas, { emit = () => {}, best = 0, reduced = false 
     for (const f of st.flags) f.z += base * dt;
     st.flags = st.flags.filter((f) => f.z < 1.12);
     if (idle) return;
+    if (st.count > 0) {
+      // 3، 2، 1، انطلق: الطريق يتحرك ببطء والسيارة تقدر تغيّر مسارها، بلا عوائق بعد
+      const before = Math.ceil((st.count - 0.7) / 0.7);
+      st.count = Math.max(0, st.count - dt);
+      if (Math.ceil((st.count - 0.7) / 0.7) !== before) emit({ type: 'buzz', ms: before > 0 ? 12 : 30 });
+      st.speed += (0.42 - st.speed) * Math.min(1, dt * 2);
+      st.x += (laneOffset(st.lane) - st.x) * Math.min(1, dt * 12);
+      return;
+    }
 
     st.time += dt;
     st.hitSlow = Math.max(0, st.hitSlow - dt);
@@ -525,6 +536,20 @@ export function createRace(canvas, { emit = () => {}, best = 0, reduced = false 
     st.items = st.items.filter((it) => it.z < 1.1 && !it.taken);
 
     const pz0 = PLAYER_Z - 0.045, pz1 = PLAYER_Z + 0.045;
+    // تجاوز قريب: سيارة بالمسار المجاور تمر جنبك بالضبط
+    for (const c of st.cars) {
+      if (c.passed || c.kind === 'cone' || c.z - 0.045 * c.len <= pz1) continue;
+      c.passed = true;
+      const d = Math.abs(laneOffset(c.lane) - st.x);
+      if (d > 0.42 && d < 0.95) {
+        st.near++;
+        const v = 15 * st.combo;
+        st.bonus += v;
+        const x = (xOf(c.lane, PLAYER_Z) + W / 2 + st.x * halfRoad(PLAYER_Z)) / 2;
+        floatText(`قريب! +${v}`, x, yOf(PLAYER_Z) - carW(PLAYER_Z) * 0.6, '#7cc8ff');
+        emit({ type: 'buzz', ms: 10 });
+      }
+    }
     for (const c of st.cars) {
       const len = 0.045 * c.len;
       const sameLane = Math.abs(laneOffset(c.lane) - st.x) < (c.kind === 'cone' ? 0.28 : 0.42);
@@ -628,6 +653,24 @@ export function createRace(canvas, { emit = () => {}, best = 0, reduced = false 
     g.globalCompositeOperation = 'lighter';
     g.drawImage(beam.img, pcx - beam.w / 2, pBottom - sprites.player.ch - beam.h, beam.w, beam.h);
     g.globalCompositeOperation = 'source-over';
+    // خطوط سرعة تنطلق من الأفق وتزيد كلما أسرعت
+    const rush = Math.max(0, (st.speed - 0.75) / 0.8) + (nitro() ? 0.8 : 0);
+    if (rush > 0.02 && !reduced) {
+      g.globalCompositeOperation = 'lighter';
+      g.strokeStyle = `rgba(230, 220, 255, ${Math.min(0.22, 0.1 + rush * 0.12)})`; g.lineWidth = 1.4;
+      g.beginPath();
+      for (let i = 0; i < 18; i++) {
+        const a = ((i * 137.5) % 360) * Math.PI / 180;
+        if (Math.sin(a) < -0.15) continue; // لا خطوط في السماء
+        const r0 = ((st.clock * (1.2 + rush) + i * 0.618) % 1);
+        const r1 = r0 + 0.06 + rush * 0.05;
+        const R = Math.hypot(W, H);
+        g.moveTo(W / 2 + Math.cos(a) * R * r0 * r0, horizon + Math.sin(a) * R * r0 * r0);
+        g.lineTo(W / 2 + Math.cos(a) * R * r1 * r1, horizon + Math.sin(a) * R * r1 * r1);
+      }
+      g.stroke();
+      g.globalCompositeOperation = 'source-over';
+    }
     if (nitro()) {
       g.strokeStyle = 'rgba(255, 122, 138, 0.35)'; g.lineWidth = 2;
       g.beginPath();
@@ -739,6 +782,19 @@ export function createRace(canvas, { emit = () => {}, best = 0, reduced = false 
       g.globalAlpha = 1;
     }
     g.restore();
+    if (st.mode === 'run' && st.count > 0) {
+      // العد التنازلي: كل رقم يكبر ويتلاشى
+      const phase = 2.8 - st.count, idx = Math.min(3, Math.floor(phase / 0.7)), t = (phase - idx * 0.7) / 0.7;
+      const label = ['3', '2', '1', 'انطلق!'][idx];
+      const size = Math.round(Math.max(40, W * (idx === 3 ? 0.13 : 0.24)) * (1.35 - 0.35 * Math.min(1, t * 3)));
+      g.save();
+      g.globalAlpha = t < 0.75 ? 1 : Math.max(0, 1 - (t - 0.75) / 0.25);
+      g.textAlign = 'center'; g.textBaseline = 'middle'; g.direction = 'rtl';
+      g.font = `800 ${size}px system-ui, sans-serif`;
+      g.fillStyle = 'rgba(10, 6, 24, 0.55)'; g.fillText(label, W / 2 + 2, H * 0.47 + 3);
+      g.fillStyle = idx === 3 ? '#6fe3b4' : '#ffffff'; g.fillText(label, W / 2, H * 0.47);
+      g.restore();
+    }
     if (st.flash) { g.fillStyle = `rgba(255, 122, 138, ${st.flash * 0.35})`; g.fillRect(0, 0, W, H); }
     if (st.mode !== 'run' || st.finished) { g.fillStyle = 'rgba(8, 4, 20, 0.45)'; g.fillRect(0, 0, W, H); }
   }

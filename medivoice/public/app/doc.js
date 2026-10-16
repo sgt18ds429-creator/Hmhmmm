@@ -137,21 +137,11 @@ export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
       paper.append(seg);
     }
   }
-  if (notes && doc.stats.fallback) {
-    paper.append(h('div', { class: 'blk note' }, h('span', { class: 'tag' }, 'للمراجعة'),
-      `${countOf(doc.stats.fallback, ['جزء واحد', 'جزآن', 'أجزاء', 'جزءاً'])} من الملزمة ${doc.stats.fallback === 1 ? 'بقي' : 'بقيت'} نصاً مفرّغاً لأن كتابة شرحه ما اكتملت (غالباً خلصت حصة المحرك اليومية). تقدر تعيد كتابة الشرح بعدين من خيارات الملزمة.`));
-  }
+  // أجزاء بقيت نصاً مفرّغاً (doc.stats.fallback) أو بلا Gemini: لا ملاحظة تشبه الخطأ للمستخدم (تبقى في التشخيص)
   if (!notes && doc.blocks.length) {
     paper.append(h('div', { class: 'blk note convert' }, h('span', { class: 'tag' }, 'جديد'),
       'هذي الملزمة نص مفرّغ كما قيل. تكدر تحوّلها لشرح مفصّل ومرتب بعناوين ونقاط وجداول وصور مطابقة، بدون ما تعيد رفع التسجيل.',
       h('div', null, h('button', { class: 'mini', onclick: () => rewrite() }, icon('book'), 'حوّلها لشرح مفصّل'))));
-  }
-  // «دقة أقل» فقط إذا لم يسمع Gemini أي مقطع (محركات gemini و gemini+merge و gemini-tx كلها سمعه)
-  const heardByGemini = Object.keys(doc.stats.engines || {}).some((k) => k.startsWith('gemini'));
-  if (doc.stats.engines && !heardByGemini && (doc.stats.engines.groq || doc.stats.engines.raw)) {
-    paper.append(h('div', { class: 'blk note' }, h('span', { class: 'tag' }, 'دقة أقل'), ctx.session?.keys?.gemini?.linked
-      ? 'Gemini ما كدر يسمع هذا التسجيل هسه (خلصت حصته اليومية أو كان مشغول)، فالنص من المحرك السريع وحده ودقته أقل. أعد تحويله بعدين حتى يطلع أدق.'
-      : 'هذي المحاضرة تحوّلت بدون Gemini، فراجع المصطلحات. اربطه من «حسابي» للمحاضرات الجاية.'));
   }
 
   // ── الفقرات ──
@@ -505,7 +495,7 @@ export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
       return;
     }
     const why = error === 'pdf_limit' ? 'وصلت الحد اليومي لملفات PDF.'
-      : error === 'pdf_quota' ? 'خلصت حصة الخادم اليومية لتوليد PDF، وتتجدد الساعة 3 الفجر.'
+      : error === 'pdf_quota' ? 'خادم التحويل مزدحم الآن.'
       : error === 'pdf_busy' ? 'خادم التحويل مشغول الآن.'
       : error === 'too_large' ? 'الملزمة كبيرة على الخادم (صور كثيرة).'
       : error === 'network' ? 'انقطع الاتصال.' : error === 'timeout' ? 'خادم التحويل تأخر كثيراً.' : 'تعذّر تجهيز الملف على الخادم.';

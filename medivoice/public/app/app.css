@@ -11,10 +11,9 @@
   -webkit-backdrop-filter: blur(18px) saturate(1.4); backdrop-filter: blur(18px) saturate(1.4);
   border-bottom: 1px solid var(--line);
 }
-/* بين الشاشات يبقى الشريط ثابتاً ويتبدل محتواه بنعومة (الاسم يُعطى أثناء الانتقال فقط) */
-.vt-nav .bar { view-transition-name: mv-bar; }
-.bar .tile { width: 42px; flex: none; filter: drop-shadow(0 6px 14px rgba(var(--v2-rgb), 0.55)); }
-:root[data-theme='light'] .bar .tile { filter: none; }
+.bar .tile { position: relative; width: 42px; flex: none; isolation: isolate; }
+.bar .tile::before { content: ''; position: absolute; inset: -40%; z-index: -1; border-radius: 50%; background: radial-gradient(closest-side, rgba(var(--v2-rgb), 0.38), transparent); pointer-events: none; }
+:root[data-theme='light'] .bar .tile::before { opacity: 0.35; }
 .bar .name { font-family: var(--font-display); font-size: 1.35rem; font-weight: 700; line-height: 1; white-space: nowrap; }
 .bar .title { flex: 1; min-width: 0; font-family: var(--font-display); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bar .grow { flex: 1; }
@@ -33,8 +32,8 @@
 @media (max-width: 370px) { .bar .name { font-size: 1.12rem; } .bar { gap: 6px; padding-inline: 10px; } .bar .tile { width: 36px; } }
 
 /* ───────── الهيكل ───────── */
-.view { flex: 1; width: min(100%, 760px); margin: 0 auto; padding: 24px 18px calc(48px + var(--safe-b)); animation: view-in 0.5s var(--ease); }
-@keyframes view-in { from { opacity: 0; transform: translateY(14px); } }
+.view { flex: 1; width: min(100%, 760px); margin: 0 auto; padding: 24px 18px calc(48px + var(--safe-b)); animation: view-in 0.55s cubic-bezier(0.2, 0.8, 0.25, 1) both; }
+@keyframes view-in { from { opacity: 0; transform: translateY(16px); } }
 .stack { display: grid; gap: 14px; }
 .stack.lg { gap: 24px; }
 .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -298,8 +297,8 @@
 .mcq-why b { color: #4d1ace; }
 
 /* ───────── النوافذ السفلية ───────── */
-.sheet { position: fixed; inset: 0; z-index: 40; display: flex; align-items: flex-end; justify-content: center; background: transparent; transition: background 0.3s, -webkit-backdrop-filter 0.3s, backdrop-filter 0.3s; }
-.sheet.open { background: var(--overlay); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
+.sheet { position: fixed; inset: 0; z-index: 40; display: flex; align-items: flex-end; justify-content: center; background: transparent; transition: background-color 0.35s ease; }
+.sheet.open { background: var(--overlay); }
 /* النافذة تصعد بنابض خفيف؛ جزء مخفي تحت الشاشة يغطي ارتداد النابض */
 .sheet-panel { width: min(100%, 560px); max-height: 86vh; max-height: 90dvh; display: flex; flex-direction: column; background: var(--sheet-bg); border-radius: 30px 30px 0 0; box-shadow: 0 -20px 60px rgba(0, 0, 0, 0.45), inset 0 1px 0 var(--line-2); transform: translateY(104%); transition: transform 0.55s cubic-bezier(0.3, 1.25, 0.5, 1); position: relative; margin-bottom: -48px; padding-bottom: 48px; }
 .sheet-panel::before { content: ''; position: absolute; top: 8px; left: 50%; width: 40px; height: 4px; margin-left: -20px; border-radius: 4px; background: var(--line-2); }
@@ -384,6 +383,80 @@
 @keyframes race-cta { 50% { transform: scale(1.05); } }
 @media (prefers-reduced-motion: reduce) { .race-cta { animation: none; } }
 .game-hint { margin: 0; text-align: center; color: var(--text-3); font-size: 0.8rem; }
+
+/* ───────── اختيار اللعبة ───────── */
+.game-picks { display: grid; gap: 12px; padding-bottom: 4px; }
+.game-pick { position: relative; overflow: hidden; display: grid; grid-template-columns: 112px 1fr; align-items: center; gap: 16px; width: 100%; padding: 12px; border: 0; border-radius: var(--r-l); background: var(--surface); color: var(--text); text-align: start; box-shadow: var(--card-edge); transition: transform 0.35s var(--spring), box-shadow 0.25s; animation: rise 0.55s var(--ease) both; }
+.game-pick:nth-child(2) { animation-delay: 0.07s; }
+.game-pick:active { transform: scale(0.97); }
+.game-pick.last { box-shadow: inset 0 0 0 2px var(--accent), var(--glow); }
+.game-pick .gp-text { display: grid; gap: 2px; }
+.game-pick b { font-family: var(--font-display); font-size: 1.2rem; font-weight: 700; }
+.game-pick small { color: var(--text-2); font-size: 0.86rem; line-height: 1.5; }
+.gp-art { position: relative; display: block; width: 112px; height: 86px; border-radius: 18px; overflow: hidden; }
+/* سباق: سماء وشمس وطريق بمنظور */
+.race-art { background: linear-gradient(180deg, #1b0b3c 0%, #4a1270 52%, #120826 52%); }
+.race-art .sun { position: absolute; left: 50%; top: 18px; width: 40px; height: 20px; margin-left: -20px; border-radius: 40px 40px 0 0; background: linear-gradient(180deg, #ffd166, #ff6bd6); }
+.race-art .road { position: absolute; left: 0; right: 0; bottom: 0; height: 48%; background: linear-gradient(90deg, transparent 49%, rgba(255, 255, 255, 0.85) 49%, rgba(255, 255, 255, 0.85) 51%, transparent 51%) center / 100% 9px repeat-y, #241445; clip-path: polygon(44% 0, 56% 0, 96% 100%, 4% 100%); animation: road-run 0.6s linear infinite; }
+@keyframes road-run { to { background-position: center 9px, 0 0; } }
+.race-art .car { position: absolute; left: 50%; bottom: 6px; width: 22px; height: 13px; margin-left: -11px; border-radius: 5px 5px 3px 3px; background: linear-gradient(180deg, #a78bff, #6a3df0); box-shadow: inset 0 -3px 0 #ff3b57; animation: car-sway 1.6s ease-in-out infinite; }
+@keyframes car-sway { 30% { transform: translateX(-14px); } 70% { transform: translateX(12px); } }
+/* إكس أو: لوحة صغيرة */
+.xo-art { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 8px; background: linear-gradient(150deg, #1d1140, #120826); }
+.xo-art i { display: grid; place-items: center; border-radius: 6px; background: rgba(255, 255, 255, 0.06); }
+.xo-art svg { width: 76%; height: 76%; fill: none; stroke-width: 13; stroke-linecap: round; }
+.xo-art .x { stroke: #ff6bd6; }
+.xo-art .o { stroke: #5ee0ff; }
+
+/* ───────── إكس أو ───────── */
+.xo { --x-ink: #ff6bd6; --o-ink: #5ee0ff; }
+:root[data-theme='light'] .xo { --x-ink: #c21f8f; --o-ink: #0b8fb0; }
+.xo-scores { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; }
+.xo-score { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 46px; padding: 6px 12px; border-radius: 999px; background: var(--tint); box-shadow: inset 0 0 0 1px var(--line); font-size: 0.86rem; color: var(--text-2); }
+.xo-score .xo-mark { width: 20px; height: 20px; }
+.xo-score .xo-mark path, .xo-score .xo-mark circle { animation: none; stroke-dashoffset: 0; }
+.xo-score b { font-family: var(--font-latin); font-size: 1.15rem; color: var(--text); }
+.xo-score b.bump { animation: score-bump 0.5s var(--spring); }
+@keyframes score-bump { 40% { transform: scale(1.5); } }
+.xo-level button { min-height: 38px; }
+.xo-turn { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 1.8em; margin: 0; font-family: var(--font-display); font-size: 1rem; color: var(--text-2); }
+.xo-turn .dots { display: inline-flex; gap: 4px; }
+.xo-turn .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--o-ink); animation: think 1s ease-in-out infinite; }
+.xo-turn .dots i:nth-child(2) { animation-delay: 0.15s; }
+.xo-turn .dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes think { 50% { transform: translateY(-5px); opacity: 0.4; } }
+.xo-stage { position: relative; }
+.xo-board { position: relative; display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; width: min(100%, 340px, 50vh); margin: 0 auto; padding: 12px; border-radius: 28px; background: var(--surface); box-shadow: var(--card-edge); }
+.xo-board.fresh .xo-cell { animation: cell-in 0.45s var(--spring) both; }
+.xo-board.fresh .xo-cell:nth-child(3n+2) { animation-delay: 0.04s; }
+.xo-board.fresh .xo-cell:nth-child(3n) { animation-delay: 0.08s; }
+@keyframes cell-in { from { opacity: 0; transform: scale(0.82); } }
+.xo-cell { position: relative; overflow: hidden; aspect-ratio: 1; display: grid; place-items: center; border: 0; border-radius: 18px; background: var(--tint); box-shadow: inset 0 0 0 1px var(--line); transition: transform 0.3s var(--spring), background 0.2s; touch-action: manipulation; }
+.xo-cell:not(.taken):active { transform: scale(0.92); }
+.xo-cell.taken { cursor: default; }
+.xo-cell.win { background: var(--tint-2); animation: cell-win 0.6s var(--spring) 0.25s both; }
+@keyframes cell-win { 40% { transform: scale(1.08); } }
+.xo-mark { width: 64%; height: 64%; fill: none; stroke-width: 11; stroke-linecap: round; overflow: visible; }
+.xo-mark.x { stroke: var(--x-ink); }
+.xo-mark.o { stroke: var(--o-ink); }
+/* العلامة تُرسم بخط يتحرك */
+.xo-mark path { stroke-dasharray: 70; stroke-dashoffset: 70; animation: xo-draw 0.28s var(--ease) forwards; }
+.xo-mark path + path { animation-delay: 0.16s; }
+.xo-mark circle { stroke-dasharray: 160; stroke-dashoffset: 160; transform: rotate(-90deg); transform-origin: 50% 50%; animation: xo-draw 0.42s var(--ease) forwards; }
+@keyframes xo-draw { to { stroke-dashoffset: 0; } }
+.xo-line { position: absolute; inset: 12px; width: calc(100% - 24px); height: calc(100% - 24px); pointer-events: none; overflow: visible; }
+.xo-line line { stroke-linecap: round; stroke-dasharray: 420; stroke-dashoffset: 420; animation: xo-draw 0.5s var(--ease) 0.1s forwards; }
+.xo-line .glow { stroke: rgba(255, 209, 102, 0.16); stroke-width: 16; }
+.xo-line .core { stroke: #ffd166; stroke-width: 7; }
+.xo-result { position: absolute; left: 50%; top: 50%; display: grid; justify-items: center; gap: 10px; min-width: 210px; padding: 18px 22px; border-radius: 24px; background: var(--sheet-bg); box-shadow: var(--shadow), inset 0 0 0 1px var(--line-2); text-align: center; transform: translate(-50%, -50%); animation: result-in 0.5s var(--spring) both; }
+@keyframes result-in { from { opacity: 0; transform: translate(-50%, -40%) scale(0.9); } }
+.xo-result h3 { font-size: 1.5rem; }
+.xo-result.won h3 { color: var(--mint); }
+.xo-result.lost h3 { color: var(--rose); }
+.xo-result.ready h3 { color: var(--mint); }
+.xo-result p { margin: 0; color: var(--text-2); font-size: 0.92rem; }
+.xo-confetti { position: absolute; left: 50%; top: 45%; width: 8px; height: 12px; border-radius: 2px; pointer-events: none; animation: confetti 1.1s cubic-bezier(0.2, 0.7, 0.3, 1) both; }
+@keyframes confetti { 0% { opacity: 1; transform: translate(-50%, -50%) rotate(0); } 100% { opacity: 0; transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy) + 60px)) rotate(var(--r)); } }
 
 /* مقاطع إنجليزية داخل نص عربي: معزولة الاتجاه، والقصيرة لا تنكسر بين سطرين */
 .lt { direction: ltr; unicode-bidi: isolate; }

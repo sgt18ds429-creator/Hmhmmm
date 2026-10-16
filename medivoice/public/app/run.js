@@ -9,7 +9,7 @@ const isPipelineError = (e) => !!e && e instanceof Error && typeof e.code === 's
 import { parseMarkup, splitInline, fmtTime, isNotes } from './text.js';
 import { fmtDuration } from './pdf.js';
 import * as db from './db.js';
-import { openGame } from './game.js';
+import { openGame, openXO, chooseGame } from './game.js';
 import { keepAwake } from './awake.js';
 
 /** متصفح حديث بما يكفي لقارئ PDF (يحتاج Safari 16.4 أو أحدث): importmap ظهرت مع نفس الجيل */
@@ -214,13 +214,19 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
   const cancelBtn = h('button', { class: 'btn ghost', onclick: () => history.back() }, 'إلغاء');
   // لعبة تسلّي الانتظار؛ التحويل يكمل بالخلفية، واللعبة تنغلق وحدها عندما تجهز الملزمة
   let game = null;
-  const playGame = () => {
-    if (game || !running) return;
+  let choosing = false;
+  const playGame = async () => {
+    if (game || choosing || !running) return;
+    choosing = true;
+    const kind = await chooseGame();
+    choosing = false;
+    if (!kind || game || !running) return;
     ctx.ribbon.pause?.(); // الشريط المتحرك يتوقف أثناء اللعبة حتى لا يتنافسا على الرسم
-    game = openGame({ build: ctx.session.build, onClose: () => { game = null; ctx.ribbon.resume?.(); flushLive(); } });
+    const onClose = () => { game = null; ctx.ribbon.resume?.(); flushLive(); };
+    game = kind === 'xo' ? openXO({ onClose }) : openGame({ build: ctx.session.build, onClose });
     game.update(shown, status.textContent);
   };
-  const gameBtn = h('button', { class: 'btn game-btn', onclick: playGame }, icon('play'), 'العب سباق سيارات لحد ما تجهز');
+  const gameBtn = h('button', { class: 'btn game-btn', onclick: playGame }, icon('play'), 'العب لحد ما تجهز الملزمة');
   // حلقة التقدم حول النسبة، بتدرّج الهوية
   const RING = 2 * Math.PI * 80;
   const ringFill = svgEl('circle', { class: 'r-fill', cx: 89, cy: 89, r: 80, 'stroke-dasharray': RING, 'stroke-dashoffset': RING });
@@ -394,8 +400,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
       else if (e.code === 'figures_partial') ctx.toast('انقطع الاتصال أثناء فحص بعض الصور، فالملزمة كاملة بصور أقل.');
       else if (e.code === 'key_groq_dead') ctx.toast('مفتاح Groq ما عاد يشتغل (انحذف أو انتهى)، فكمّلت بـ Gemini وحده. اربطه من جديد من الإعدادات.', 'err');
       else if (e.code === 'key_gemini_dead') ctx.toast('مفتاح Gemini ما عاد يشتغل (انحذف أو انتهى)، فكمّلت بـ Groq وحده (دقة المصطلحات أقل). اربطه من جديد من الإعدادات.', 'err');
-      else if (e.code === 'strong_out') ctx.toast('خلصت حصة اليوم للنماذج الدقيقة بمفتاحك، فأكمل بالنماذج الأخف. حتى تبقى الدقة كاملة كل يوم أضف مفتاح Gemini من حساب Google ثاني من «حسابي».');
-      else if (e.code === 'gemini_out') ctx.toast('خلصت حصة Gemini اليوم بمفاتيحك، فأكمل بـ Groq (دقة المصطلحات أقل). لحصة جديدة أضف مفتاح Gemini من حساب Google ثاني.', 'err');
+      // نفاد حصة النماذج الدقيقة أو حصة Gemini: يكمل التحويل وحده بالمتاح، ولا رسالة للمستخدم (تبقى في التشخيص)
     } else if (e.type === 'images') {
       // الصور تُفحص أثناء الكتابة أيضاً: لا نغطي حالة الكتابة، ونعرض العدد فقط
       if (e.picked) imagesPicked = Math.max(imagesPicked, e.picked);
@@ -407,8 +412,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry }) {
     } else if (e.type === 'wait') {
       let left = e.seconds;
       clearInterval(waitTimer);
-      const what = e.what === 'stt' ? 'Groq' : e.what === 'gemini' ? 'Gemini' : e.what === 'llm' ? 'Groq' : 'الشبكة';
-      const paint = () => { sub.textContent = `وصلنا حد الطلبات المجانية عند ${what}، نكمل بعد ${left} ثانية`; };
+      const paint = () => { sub.textContent = `لحظات ونكمل… ${left} ثانية`; };
       paint();
       waitTimer = setInterval(() => { left--; if (left <= 0) { clearInterval(waitTimer); waitTimer = null; } else paint(); }, 1000);
     } else if (e.type === 'resume') {

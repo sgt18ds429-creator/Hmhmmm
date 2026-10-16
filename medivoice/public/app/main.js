@@ -5,7 +5,7 @@ import { makeIO } from './api.js';
 import * as db from './db.js';
 import { fmtDuration } from './pdf.js';
 import { logoEl } from '../brand.js';
-import { design, motionOn, setMode, themeButton } from '../theme.js';
+import { design, setMode, themeButton } from '../theme.js';
 import { viewNew, viewRun, viewRewrite, openRecorder, loadEngine } from './run.js';
 import { viewDoc } from './doc.js';
 
@@ -21,7 +21,6 @@ const PROVIDERS = {
   gemini: { badge: 'G', name: 'Gemini', role: 'محرك الدقة' },
   groq: { badge: 'Q', name: 'Groq', role: 'محرك الساعات' },
 };
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export async function start(MV, root) {
   // الأنماط أولاً حتى لا تظهر الواجهة بلا تنسيق
@@ -112,54 +111,26 @@ export async function start(MV, root) {
   ctx.setBar = setBar;
 
   // ── التنقل ──
-  let shown = false; // أول شاشة تُرسم تحت الافتتاحية بلا انتقال
-  async function go(name, params = {}, { replace = false, instant = false } = {}) {
+  // الشاشة الجديدة تدخل بحركتها (.view و .rise): شفافية وتحريك فقط، ناعمة على كل الأجهزة
+  async function go(name, params = {}, { replace = false } = {}) {
     // نوافذ ما زالت مفتوحة: تُغلق، وخطوة أعلاها في السجل تصير خطوة الشاشة الجديدة (لا خطوات ميتة)
     const onSheet = closeAllSheets() > 0 && history.state?.sheet;
     ctx.view = name;
     ctx.guard = null;
     if (name !== 'home') { replace || onSheet ? histReplace({ v: name }) : histPush({ v: name }); }
+    clear(main);
+    scrollTo(0, 0);
     const el = h('main', { class: 'view' });
-    const render = async () => {
-      clear(main);
-      scrollTo(0, 0);
-      main.append(el);
-      if (name === 'home') await viewHome(el);
-      else if (name === 'link') viewLink(el, params);
-      else if (name === 'new') viewNew(ctx, el, params);
-      else if (name === 'run') viewRun(ctx, el, params);
-      else if (name === 'rewrite') await viewRewrite(ctx, el, params);
-      else if (name === 'doc') await viewDoc(ctx, el, params);
-    };
-    const first = !shown;
-    shown = true;
-    if (first || instant || document.hidden || !motionOn() || typeof document.startViewTransition !== 'function') return render();
-    return navTransition(render, el);
-  }
-  /**
-   * انتقال ناعم بين الشاشتين (View Transitions): الصفحة القديمة تتراجع والجديدة تصعد، والشريط يتبدل بمكانه.
-   * الشاشة الجديدة لا تنتظر أكثر من لحظة: ما يتأخر من محتواها (قراءة من الجهاز) يكمل بعد الانتقال.
-   */
-  function navTransition(render, el) {
-    const html = document.documentElement;
-    el.style.animation = 'none';
-    return new Promise((resolve, reject) => {
-      html.classList.add('vt-nav');
-      try {
-        const t = document.startViewTransition(() => {
-          const job = render();
-          job.then(resolve, reject);
-          return Promise.race([job.catch(() => {}), sleep(160)]);
-        });
-        t.finished.finally(() => html.classList.remove('vt-nav'));
-      } catch {
-        html.classList.remove('vt-nav');
-        render().then(resolve, reject);
-      }
-    });
+    main.append(el);
+    if (name === 'home') await viewHome(el);
+    else if (name === 'link') viewLink(el, params);
+    else if (name === 'new') viewNew(ctx, el, params);
+    else if (name === 'run') viewRun(ctx, el, params);
+    else if (name === 'rewrite') await viewRewrite(ctx, el, params);
+    else if (name === 'doc') await viewDoc(ctx, el, params);
   }
   function back() { history.back(); }
-  addEventListener('popstate', async (e) => {
+  addEventListener('popstate', async () => {
     if (ownPop()) return; // رجوع أطلقناه نحن عند إغلاق نافذة بزرها
     // لكل نافذة خطوتها في السجل: الرجوع يغلقها فقط
     if (closeTopSheet('history')) return;
@@ -170,8 +141,7 @@ export async function start(MV, root) {
       ctx.guard = null;
       return;
     }
-    // المتصفح رسم حركة رجوع بنفسه (سحب من حافة الشاشة في iPhone): بلا حركة ثانية فوقها
-    if (ctx.view !== 'home') go('home', {}, { instant: !!e.hasUAVisualTransition });
+    if (ctx.view !== 'home') go('home');
   });
 
   // ── الرئيسية ──

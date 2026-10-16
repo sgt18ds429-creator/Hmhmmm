@@ -102,13 +102,14 @@ class Ribbon {
     if (a < 0.01) return;
     const cy = h * this.cur.y;
     const e = this.cur.energy * (1 + this.pulse * 0.9);
-    const base = Math.min(w, 900) * 0.085 * e;
+    const base = Math.min(w, 900) * 0.062 * e;
     const { v1, v2, v3, thin, light } = this.colors;
     const grad = g.createLinearGradient(0, 0, w, 0);
     grad.addColorStop(0, v1); grad.addColorStop(0.5, v2); grad.addColorStop(1, v3);
-    g.globalAlpha = (light ? 0.2 : 0.32) * a; this.layer(cy + 10, base * 1.7, 0.32, 1.7, Math.max(10, w * 0.014), grad);
-    g.globalAlpha = (light ? 0.75 : 0.85) * a; this.layer(cy, base, 0.5, 0, Math.max(5, w * 0.0075), grad);
-    g.globalAlpha = (light ? 0.45 : 0.55) * a; this.layer(cy - 4, base * 0.55, 0.78, 4.2, 1.5, thin);
+    // ثلاث طبقات خافتة: موجة عريضة كظل، وخط الهوية، وخط رفيع فوقهما
+    g.globalAlpha = (light ? 0.06 : 0.09) * a; this.layer(cy + 8, base * 1.6, 0.32, 1.7, Math.max(8, w * 0.011), grad);
+    g.globalAlpha = (light ? 0.24 : 0.3) * a; this.layer(cy, base, 0.5, 0, Math.max(2.5, w * 0.0045), grad);
+    g.globalAlpha = (light ? 0.16 : 0.18) * a; this.layer(cy - 3, base * 0.55, 0.78, 4.2, 1.1, thin);
     g.globalAlpha = 1;
   }
 }
@@ -244,24 +245,18 @@ function setupLock(info) {
   paint();
 }
 
-// فتح القفل: حافة على شكل V (وادي اللوكو) تصعد وتكشف التطبيق
+// فتح القفل: شاشة القفل تطفو فوق التطبيق وتتلاشى صاعدة، والتطبيق تحتها يدخل بحركته (شفافية وتحريك فقط)
 async function unveil(el) {
   if (reduced) { el.hidden = true; return; }
-  const start = performance.now(), dur = 780;
-  await new Promise((done) => {
-    const step = (now) => {
-      const p = Math.min(1, (now - start) / dur);
-      const e = 1 - Math.pow(1 - p, 3);
-      const y = 100 - e * 175; // نسبة مئوية من الارتفاع
-      const dip = 28 * (innerWidth / innerHeight); // عمق الـ V بميل 30°
-      el.style.clipPath = `polygon(0 0, 100% 0, 100% ${y}%, 50% ${y + dip}%, 0 ${y}%)`;
-      el.style.opacity = String(1 - e * 0.35);
-      p < 1 ? requestAnimationFrame(step) : done();
-    };
-    requestAnimationFrame(step);
-  });
+  const y = scrollY;
+  Object.assign(el.style, { position: 'fixed', top: `${-y}px`, left: '0', right: '0', zIndex: '25', pointerEvents: 'none' });
+  scrollTo(0, 0);
+  const anim = el.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'translateY(-26px) scale(0.985)' }],
+    { duration: 520, easing: 'cubic-bezier(0.4, 0, 0.2, 1)', fill: 'forwards' });
+  await anim.finished.catch(() => {});
   el.hidden = true;
-  el.style.clipPath = ''; el.style.opacity = '';
+  anim.cancel();
+  for (const k of ['position', 'top', 'left', 'right', 'zIndex', 'pointerEvents']) el.style[k] = '';
 }
 
 /**
@@ -314,41 +309,36 @@ async function openApp(session, fromLock) {
 
 // ───────────── الإقلاع ─────────────
 /**
- * خروج الافتتاحية: الموقع ينكشف بدائرة تتسع من الشعار، والشعار نفسه يطير إلى مكانه في الشاشة التالية
- * (شعار القفل، أو شعار الشريط العلوي) — View Transitions. بدونها: الشاشة البنفسجية تنكمش دائرةً وتختفي.
+ * خروج الافتتاحية: خلفيتها تتلاشى والاسم يختفي، والشعار يطير ويصغر حتى يستقر مكان شعار الشاشة التالية
+ * (شعار القفل أو شعار الشريط العلوي) ثم يتبادل معه. تحريك وشفافية فقط، فتبقى ناعمة وحادة على الهواتف.
  */
 async function leaveIntro(intro, dest) {
-  const root = document.documentElement;
-  const release = () => $('#app').classList.remove('hold');
   const meta = document.querySelector('meta[name="theme-color"]');
-  const restoreMeta = () => { if (meta) meta.content = getComputedStyle(document.body).backgroundColor; };
+  if (meta) meta.content = getComputedStyle(document.body).backgroundColor;
+  const release = () => $('#app').classList.remove('hold');
   const mark = intro.querySelector('.intro-mark');
-  if (!reduced && typeof document.startViewTransition === 'function' && mark) {
-    const r = mark.getBoundingClientRect();
-    const x = r.left + r.width / 2, y = r.top + r.height / 2;
-    root.style.setProperty('--vt-x', `${x}px`);
-    root.style.setProperty('--vt-y', `${y}px`);
-    root.style.setProperty('--vt-r', `${Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y))}px`);
-    mark.style.viewTransitionName = 'mv-logo';
-    root.classList.add('vt-intro');
-    try {
-      const t = document.startViewTransition(() => {
-        intro.remove();
-        restoreMeta();
-        release();
-        if (dest) dest.style.viewTransitionName = 'mv-logo';
-      });
-      await t.finished.catch(() => {});
-      return;
-    } catch { /* المتصفح رفض الانتقال: الطريقة العادية تحت */ } finally {
-      root.classList.remove('vt-intro');
-      if (dest) dest.style.viewTransitionName = '';
-    }
-  }
-  restoreMeta();
+  if (reduced || !mark || typeof mark.animate !== 'function') { release(); intro.remove(); return; }
+  mark.style.animation = 'none'; // دخوله انتهى: يثبت على حالته الأخيرة قبل الطيران
+  const from = mark.getBoundingClientRect();
+  const to = dest?.getBoundingClientRect?.();
+  const landing = to && to.width > 4 && to.bottom > 0 && to.top < innerHeight;
+  intro.classList.add('leave');
   release();
-  intro.classList.add('out');
-  setTimeout(() => intro.remove(), reduced ? 0 : 760);
+  if (landing) {
+    dest.style.opacity = '0';
+    const dx = to.left + to.width / 2 - (from.left + from.width / 2);
+    const dy = to.top + to.height / 2 - (from.top + from.height / 2);
+    const fly = mark.animate([{ transform: 'none' }, { transform: `translate(${dx}px, ${dy}px) scale(${to.width / from.width})` }],
+      { duration: 860, easing: 'cubic-bezier(0.65, 0, 0.22, 1)', fill: 'forwards' });
+    await fly.finished.catch(() => {});
+    dest.style.transition = 'opacity 0.24s ease';
+    dest.style.opacity = '';
+    await mark.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 240, fill: 'forwards' }).finished.catch(() => {});
+    setTimeout(() => { dest.style.transition = ''; }, 300);
+  } else {
+    await mark.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'scale(1.12)' }], { duration: 520, easing: 'ease', fill: 'forwards' }).finished.catch(() => {});
+  }
+  intro.remove();
 }
 
 (async function boot() {
@@ -362,8 +352,7 @@ async function leaveIntro(intro, dest) {
   try { lastIntro = Number(localStorage.getItem('mv-intro-at')) || 0; } catch { /* تخزين ممنوع */ }
   const quick = Date.now() - lastIntro < 12 * 3600_000;
   if (!quick) try { localStorage.setItem('mv-intro-at', String(Date.now())); } catch { /* تخزين ممنوع */ }
-  const ms = quick ? Math.min(1250, DESIGN.splashMs) : DESIGN.splashMs;
-  intro.style.setProperty('--k', String(Math.min(1, ms / 2300))); // الحركات الداخلية تتناسب مع المدة
+  const ms = quick ? Math.min(1500, DESIGN.splashMs) : DESIGN.splashMs;
   const introDone = sleep(reduced ? 350 : ms);
   const sessionReq = api(`/api/session?fp=${encodeURIComponent(JSON.stringify(fingerprint()))}`);
   // الكود مفعّل: التطبيق يُحمَّل بالتوازي مع الافتتاحية
