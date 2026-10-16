@@ -363,8 +363,20 @@ export async function start(MV, root) {
         h('div', { class: 'card stack' }, keyRow('gemini'), keyRow('groq'),
           h('button', { class: 'btn ghost small', onclick: () => { sh.close(); go('link'); } }, icon('key'), 'إدارة المفاتيح')),
         h('p', { class: 'dim' }, 'المحاضرات محفوظة على هذا الجهاز فقط. نزّل PDF لكل محاضرة حتى تبقى عندك. لتثبيت الموقع كتطبيق: من قائمة المتصفح اختر «إضافة إلى الشاشة الرئيسية».'),
-        s.support?.url ? h('a', { class: 'btn ghost', href: s.support.url, target: '_blank', rel: 'noopener' }, icon('external'), s.support.label || 'تواصل مع المسؤول') : null),
+        s.support?.url ? h('a', { class: 'btn ghost', href: s.support.url, target: '_blank', rel: 'noopener' }, icon('external'), s.support.label || 'تواصل مع المسؤول') : null,
+        h('button', { class: 'btn danger', type: 'button', onclick: logout }, icon('logout'), 'تسجيل خروج')),
     });
+    async function logout() {
+      const ok = await confirm({
+        title: 'تسجيل خروج؟',
+        message: 'ترجع لصفحة الكود، وحتى تدخل مرة ثانية تكتب الكود. محاضراتك تبقى محفوظة على هذا الجهاز.',
+        ok: 'خروج', danger: true,
+      });
+      if (!ok) return;
+      sh.close();
+      await ctx.api('/api/logout', { method: 'POST' }).catch(() => {});
+      location.replace('/');
+    }
   }
 
   db.prune().catch(() => {});

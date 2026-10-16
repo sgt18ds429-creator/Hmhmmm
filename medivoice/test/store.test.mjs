@@ -392,3 +392,34 @@ test('النقل لرابط ثاني: رمز لمرة واحدة، يدخل بن
   assert.equal(st3.session, false);
   assert.equal((await store.moveClaim(st3.token, null)).secret, null);
 });
+
+test('تسجيل خروج الزبون: يرجع لصفحة الكود، ورجوعه على نفس الهاتف بلا ما يُحسب نقلاً، وهاتف ثاني ما ياخذ مكانه', async () => {
+  const { MediVoiceStore } = await loadModule();
+  const store = makeStore(MediVoiceStore);
+  const { token } = await store.adminLogin('admin-pass-123', '10.0.0.9');
+  const made = await store.adminCreateCodes(token, { label: 'طالب' }); // جهاز واحد مسموح
+  const code = made.created[0];
+  assert.equal((await store.activate('dev-1', code, META)).ok, true);
+  assert.equal(store.session('dev-1', META).active, true);
+
+  assert.equal(store.logout('dev-1', META).ok, true);
+  assert.equal(store.session('dev-1', META).active, false, 'بعد الخروج يطلب الكود');
+  let ov = await store.adminOverview(token);
+  assert.equal(ov.codes[0].devices.length, 1, 'مكانه محجوز');
+  assert.equal(ov.codes[0].devices[0].out, true);
+
+  // هاتف ثاني (موديل آخر) ما ياخذ مكانه: الكود ما يصير قابلاً للمشاركة بالخروج
+  const other = { ...META, os: 'iOS', screen: '430x932' };
+  assert.equal((await store.activate('dev-2', code, other)).error, 'in_use');
+
+  // نفس الهاتف يرجع بالكود (بمتصفح جديد): يدخل، بلا تكرار سجل، وثلاث مرات بالشهر ما تخلص حد النقل (2)
+  for (const id of ['dev-3', 'dev-4', 'dev-5']) {
+    assert.equal((await store.activate(id, code, META)).ok, true, id);
+    assert.equal(store.logout(id, META).ok, true);
+  }
+  assert.equal((await store.activate('dev-6', code, META)).ok, true);
+  ov = await store.adminOverview(token);
+  assert.equal(ov.codes[0].devices.length, 1);
+  assert.equal(ov.codes[0].devices[0].out, false);
+  assert.equal(ov.events.filter((e) => e.type === 'device_moved').length, 0, 'ما انحسب نقل');
+});

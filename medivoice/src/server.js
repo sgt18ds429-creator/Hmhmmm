@@ -441,6 +441,18 @@ export class MediVoiceStore extends DurableObject {
     return this.#sessionPayload(code);
   }
 
+  /**
+   * تسجيل خروج الزبون: الكوكي يُمسح من متصفحه، وسجل جهازه يبقى محجوزاً لنفس الهاتف (علامة out:) حتى ما يصير الكود
+   * قابلاً للمشاركة بالخروج والدخول من هاتف ثاني. رجوعه بالكود على نفس الهاتف يحل محل هذه العلامة بلا ما يُحسب نقلاً.
+   */
+  logout(deviceId, meta = {}) {
+    const dev = deviceId ? this.#row('SELECT * FROM devices WHERE id = ?', deviceId) : null;
+    if (!dev) return { ok: true };
+    this.sql.exec('UPDATE devices SET id = ? WHERE id = ?', `out:${randomToken(12)}`, deviceId);
+    this.#event('logout', { code: dev.code, ip: meta.ip, country: meta.country, detail: `${dev.os} · ${dev.browser}` });
+    return { ok: true };
+  }
+
   async activate(deviceId, rawCode, meta) {
     await this.#ensureAlarm();
     const ipKey = `act:${meta.ip || 'x'}`;
@@ -460,6 +472,10 @@ export class MediVoiceStore extends DurableObject {
     const mine = this.#row('SELECT * FROM devices WHERE id = ?', deviceId);
     if (mine && mine.code === codeStr) return { ok: true, session: this.#sessionPayload(code) }; // نفس الجهاز
 
+    // نفس الهاتف رجع بعد تسجيل خروج: مكانه المحجوز يرجع له (ولا يتكرر سجله ولا يُحسب نقلاً)
+    if (meta.os !== 'other' && meta.screen) {
+      this.sql.exec("DELETE FROM devices WHERE code = ? AND os = ? AND screen = ? AND id LIKE 'out:%'", codeStr, meta.os, meta.screen);
+    }
     const used = this.#row('SELECT COUNT(*) AS n FROM devices WHERE code = ?', codeStr).n;
     if (used >= code.max_devices) {
       // نفس الجهاز من متصفح آخر (فتح الرابط داخل تيليكرام ثم Chrome، أو تثبيته كتطبيق): ننقل التفعيل
@@ -653,7 +669,7 @@ export class MediVoiceStore extends DurableObject {
       FROM codes c ORDER BY c.created_at DESC`, dayStart(now));
     const devices = this.#all('SELECT id, code, os, browser, screen, first_seen, last_seen, ip, country, city FROM devices');
     const byCode = {};
-    for (const d of devices) (byCode[d.code] ||= []).push({ id: d.id.slice(0, 10), os: d.os, browser: d.browser, screen: d.screen, first_seen: d.first_seen, last_seen: d.last_seen, country: d.country, city: d.city });
+    for (const d of devices) (byCode[d.code] ||= []).push({ id: d.id.slice(0, 10), out: d.id.startsWith('out:'), os: d.os, browser: d.browser, screen: d.screen, first_seen: d.first_seen, last_seen: d.last_seen, country: d.country, city: d.city });
     const list = codes.map((c) => ({
       ...c,
       display: displayCode(c.code),
@@ -1237,6 +1253,16 @@ async function handleApi(request, env, ctx, url) {
     const r = await db.activate(await sha256hex(secret), body.code, clientMeta(request, body.fp || {}));
     if (!r.ok) return json({ error: r.error }, r.status || 400);
     return json(r.session, 200, { 'set-cookie': setCookie(DEVICE_COOKIE, secret, { maxAge: 400 * 86400 }) });
+  }
+
+  // ── تسجيل خروج الزبون: يمسح كوكي الجهاز ويرجعه لصفحة الكود (قبل بوابة التفعيل: يشتغل حتى لو انتهى التفعيل) ──
+  if (path === '/api/logout' && method === 'POST') {
+    const id = await deviceId(request);
+    if (id) {
+      await db.logout(id, clientMeta(request));
+      forgetAuth(id);
+    }
+    return json({ ok: true }, 200, { 'set-cookie': setCookie(DEVICE_COOKIE, '', { maxAge: 0 }) });
   }
 
   // ── النقل من رابط قديم للرابط الرئيسي: قبل بوابة التفعيل، فالرابط القديم قد لا يكون مفعّلاً وعليه محاضرات ──

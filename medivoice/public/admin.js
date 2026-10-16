@@ -78,7 +78,8 @@ async function share(text) {
 function statusOf(c) {
   if (c.status !== 'active') return { key: 'stop', label: 'موقوف', chip: 'red' };
   if (c.expired) return { key: 'end', label: 'منتهي', chip: 'warn' };
-  if (c.devices.length) return { key: 'on', label: 'مفعّل', chip: 'ok' };
+  if (c.devices.some((d) => !d.out)) return { key: 'on', label: 'مفعّل', chip: 'ok' };
+  if (c.devices.length) return { key: 'wait', label: 'سجّل خروج', chip: '' };
   if (c.activated_at) return { key: 'wait', label: 'بانتظار جهاز جديد', chip: '' };
   return { key: 'wait', label: 'لم يُفعَّل بعد', chip: 'off' };
 }
@@ -263,12 +264,12 @@ function tabCodes(view) {
 
 function codeCard(c) {
   const st = statusOf(c);
-  const dev = c.devices[0];
+  const dev = c.devices.find((d) => !d.out) || c.devices[0];
   const pct = c.daily_limit_sec ? Math.min(100, (c.used_sec / c.daily_limit_sec) * 100) : 0;
   return h('button', { class: `cc ${st.key}`, onclick: () => openCode(c) },
     h('div', { class: 'cc-top' }, h('b', { class: c.label ? '' : 'anon', dir: 'auto' }, c.label || 'بدون اسم'), h('span', { class: `chip ${st.chip}` }, st.label)),
     h('div', { class: 'cc-line' }, h('span', { class: 'cc-code ltr' }, c.display), h('time', null, validity(c))),
-    dev ? h('div', { class: 'cc-line' }, icon('phone'), h('span', null, [dev.os, dev.browser, place(dev)].filter(Boolean).join('، ')), h('time', null, ago(dev.last_seen))) : null,
+    dev ? h('div', { class: 'cc-line' }, icon('phone'), h('span', null, [dev.os, dev.browser, place(dev), dev.out ? 'سجّل خروج' : ''].filter(Boolean).join('، ')), h('time', null, ago(dev.last_seen))) : null,
     c.activated_at ? h('div', { class: 'use' },
       c.daily_limit_sec ? h('div', { class: `track${pct > 85 ? ' hot' : ''}` }, h('i', { style: { width: `${pct}%` } })) : null,
       h('span', null, h('b', null, fmtHM(c.used_sec)), c.daily_limit_sec ? ` من ${fmtHM(c.daily_limit_sec)} اليوم` : ' اليوم، بلا حد')) : null);
@@ -297,7 +298,7 @@ function openCode(c) {
     row('المفاتيح', [keys('Gemini', c.gemini), keys('Groq', c.groq)].filter(Boolean).join(' و ') || 'لم يربط مفاتيحه بعد');
   }
   for (const dev of c.devices) {
-    row('الجهاز', [dev.os, dev.browser].filter(Boolean).join('، '));
+    row('الجهاز', [dev.os, dev.browser, dev.out ? 'سجّل خروج (مكانه محجوز لنفس الهاتف)' : ''].filter(Boolean).join('، '));
     row('المكان', place(dev));
     row('فُعّل', dateTime(dev.first_seen));
     row('آخر ظهور', ago(dev.last_seen));
