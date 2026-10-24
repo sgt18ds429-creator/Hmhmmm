@@ -1,3 +1,29 @@
+/* MediVoice: سفاري (iPhone) ما يدعم «for await» على ReadableStream، و pdf.js يستعملها لقراءة نص السلايدات.
+   هذا الإكمال يضيفها بنفس سلوك المعيار، ولا يغيّر شي بالمتصفحات اللي تدعمها. */
+(() => {
+  const RS = globalThis.ReadableStream;
+  if (!RS || RS.prototype[Symbol.asyncIterator]) return;
+  const values = function ({ preventCancel = false } = {}) {
+    const reader = this.getReader();
+    return {
+      async next() {
+        try {
+          const r = await reader.read();
+          if (r.done) reader.releaseLock();
+          return r;
+        } catch (e) { reader.releaseLock(); throw e; }
+      },
+      async return(value) {
+        if (preventCancel) reader.releaseLock();
+        else { const p = reader.cancel(value); reader.releaseLock(); await p; }
+        return { done: true, value };
+      },
+      [Symbol.asyncIterator]() { return this; },
+    };
+  };
+  if (!RS.prototype.values) Object.defineProperty(RS.prototype, 'values', { value: values, writable: true, configurable: true });
+  Object.defineProperty(RS.prototype, Symbol.asyncIterator, { value: RS.prototype.values, writable: true, configurable: true });
+})();
 /**
  * @licstart The following is the entire license notice for the
  * JavaScript code in this page
