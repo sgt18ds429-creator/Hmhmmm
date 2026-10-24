@@ -471,7 +471,15 @@ function tabActivity(view) {
   const events = h('div');
   if (!d.events.length) events.append(h('div', { class: 'empty' }, 'السجل فارغ.'));
   for (const e of d.events) {
-    if (e.type === 'client_error' || e.type === 'move_start') continue; // للتشخيص فقط
+    if (e.type === 'move_start') continue; // للتشخيص فقط
+    if (e.type === 'client_error') {
+      // خطأ غير متوقع عند زبون: تفاصيله تظهر هنا حتى تُرسل للمطوّر ويُصلح
+      const who = byCode.get(e.code)?.label || e.code || 'زبون';
+      events.append(h('div', { class: 'ev bad' }, h('span', { class: 'dot' }, icon('warn')),
+        h('p', null, `توقف تحويل عند ${who}`, h('small', { class: 'ltr', style: { display: 'block', wordBreak: 'break-all', opacity: '0.8' } }, e.detail || '')),
+        h('small', null, [ago(e.ts), country(e.country)].filter(Boolean).join('، '))));
+      continue;
+    }
     const [ic, tone, parts] = eventView(e, byCode);
     const where = [ago(e.ts), country(e.country), tone === 'bad' && e.ip ? e.ip : ''].filter(Boolean).join('، ');
     events.append(h('div', { class: `ev ${tone}` }, h('span', { class: 'dot' }, icon(ic)), h('p', null, parts), h('small', null, where)));
