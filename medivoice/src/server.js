@@ -1386,7 +1386,7 @@ async function handleApi(request, env, ctx, url) {
     if (!auth.ok) return json(auth, auth.status);
     const b = await request.json().catch(() => ({}));
     const clip = (v, n) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, n);
-    await db.clientError(auth.code, [clip(b.m, 160), clip(b.at, 90), clip(b.st, 20), clip(b.b, 14)].filter(Boolean).join(' | '));
+    await db.clientError(auth.code, [clip(b.m, 280), clip(b.at, 90), clip(b.st, 20), clip(b.b, 14)].filter(Boolean).join(' | '));
     return json({ ok: true });
   }
 

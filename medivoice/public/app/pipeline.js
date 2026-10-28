@@ -51,6 +51,17 @@ function fatalFromServer(res, provider) {
   return null;
 }
 
+let current = null; // آخر محرك اشتغل: تقرير نماذجه يرافق خطأ التوقف في السجل
+
+/** ملخص قصير لكل نموذج جُرّب: نجاح/429/5xx/غيره، وهل خرج (نفدت حصته) — للتشخيص */
+export function engineReport() {
+  const e = current;
+  if (!e) return '';
+  const dead = new Set([e.stt, e.llm, e.gem, e.tx].flatMap((l) => l.items.filter((m) => m.dead).map((m) => m.id)));
+  const short = (id) => id.replace(/^gemini-/, 'g').replace(/^whisper-large-v3/, 'w3').replace(/^openai\/gpt-oss-/, 'oss').replace(/-flash/, 'f').replace(/-lite/, 'L');
+  return Object.entries(e.modelStats).map(([id, s]) => `${short(id)}${dead.has(id) ? '✗' : ''}:${s.ok}/${s.r429}/${s.r5xx}/${s.other}${s.why?.[0] ? `(${s.why[0].slice(0, 24)})` : ''}`).join(' ');
+}
+
 export class Engine {
   /**
    * @param io اتصالات (stt, groq, gemini, sleep, blobToBase64, loadImage, net)
@@ -59,6 +70,7 @@ export class Engine {
    */
   constructor(io, caps, emit = () => {}, signal) {
     this.io = io; this.caps = caps; this.emit = emit; this.signal = signal;
+    current = this;
     // الوقت المسموح للمهمة كلها: محاضرة ساعة أو أقل تجهز خلال 9 دقائق. عند التأخر تُترك الأعمال الإضافية
     // ساعة العمل الفعلي: بدون الوقت الذي قضاه الطالب خارج الموقع (الهاتف يوقف الصفحة حينها)
     this.now = () => (typeof io.activeNow === 'function' ? io.activeNow() : Date.now());
@@ -576,7 +588,8 @@ export async function refineChunk(engine, chunk, draft, meta, { first, last, exa
     await engine.pause(20_000 * (retry + 1), 'gemini');
     return refineChunk(engine, chunk, draft, meta, { first, last, exact, weak, known, retry: retry + 1 });
   }
-  throw new PipelineError('no_engine', 'no engine available for this chunk');
+  // نماذج Gemini ما زالت حية (ضغط مؤقت من گوگل/كروك، مو نفاد حصة اليوم): رسالة صادقة ويكمل وحده بعد شوية
+  throw new PipelineError(engine.hasGemini || engine.hasTx || engine.hasStt ? 'busy' : 'no_engine', 'no engine available for this chunk');
 }
 
 /**

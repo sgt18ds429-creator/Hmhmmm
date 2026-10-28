@@ -181,6 +181,7 @@ export function viewNew(ctx, el, { file, recId = null }) {
 const ERRORS = {
   key_groq: ['المفتاح الثاني ما يشتغل', 'ممكن انحذف أو انتهى. اربطه من جديد.', 'link'],
   key_gemini: ['المفتاح الأول ما يشتغل', 'ممكن انحذف أو انتهى. اربطه من جديد.', 'link'],
+  busy: ['خوادم الذكاء مزدحمة هسه', 'گوگل وكروك مضغوطين هسه، والمشكلة مو بمفاتيحك. الأجزاء المكتملة محفوظة، ودوس «أكمل التحويل» بعد دقيقتين ويكمل من مكانه.', 'retry'],
   no_engine: ['خلصت حصة اليوم بمفاتيحك', 'المقاطع المكتملة محفوظة. أضف مفتاح آخر من حساب ثاني وارفع نفس الملف ويكمل من مكانه، أو جرّب بعدين.', 'link'],
   daily_limit: ['خلص رصيد اليوم', 'المقاطع المكتملة محفوظة. ارجع ارفع نفس الملف بعدين ويكمل من مكانه، أو اطلب ساعات أكثر من المسؤول.', 'support'],
   rate_limit: ['المفتاح مضغوط الآن', 'المقاطع المكتملة محفوظة. أضف مفتاح آخر للمفتاح الثاني، أو جرّب بعد شوية بنفس الملف ويكمل من مكانه.', 'retry+link'],
@@ -517,6 +518,21 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry, auto = 
         cleanup(); game?.close();
         status.textContent = 'أكمل من مكاني…';
         setTimeout(() => { if (body.isConnected) auto.again(auto.n + 1); }, 1200);
+        return;
+      }
+    }
+    if (isPipelineError(e) && ['busy', 'no_engine', 'rate_limit'].includes(e.code)) {
+      // توقف بسبب المزوّدين: تقرير كل نموذج (نجاح/429/5xx) يُسجَّل حتى يبين السبب بالسجل
+      loadEngine().then((m) => ctx.api('/api/diag', { method: 'POST', body: { m: `${e.code}: ${m.engineReport?.() || ''}`, st: stageNow, b: ctx.session.build } })).catch(() => {});
+      // ضغط مؤقت: يكمل وحده بعد دقيقتين (مرتين على الأكثر) قبل ما يطلب من الطالب شي
+      if (e.code === 'busy' && auto && auto.n < 2 && body.isConnected) {
+        cleanup(); game?.close();
+        let left = 120;
+        status.textContent = 'خوادم الذكاء مزدحمة، أكمل وحدي بعد شوية من نفس المكان';
+        const t = setInterval(() => {
+          if (!body.isConnected) { clearInterval(t); return; }
+          if (--left <= 0) { clearInterval(t); auto.again(auto.n + 1); } else sub.textContent = `أكمل بعد ${left} ثانية`;
+        }, 1000);
         return;
       }
     }
