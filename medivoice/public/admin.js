@@ -263,13 +263,19 @@ function tabCodes(view) {
   paintList();
 }
 
+/** «مفتاح Gemini» / «كل مفاتيح Gemini» / «مفتاحين من مفاتيح Gemini» */
+function geminiCount(n, total) {
+  if (n >= total) return total > 1 ? 'كل مفاتيح Gemini' : 'مفتاح Gemini';
+  return n === 1 ? 'مفتاح من مفاتيح Gemini' : n === 2 ? 'مفتاحين من مفاتيح Gemini' : `${n} من مفاتيح Gemini`;
+}
+
 /** تنبيهات مفاتيح الكود كما شافها الخادم: كل سطر مشكلة ووش يسوي المسؤول */
 function keyWarnings(c) {
   const w = c.warn;
   if (!w) return [];
   const names = (list) => (list.length > 3 ? `${list.slice(0, 3).join('، ')} و${list.length - 3} غيرهم` : list.join('، '));
   const out = [];
-  if (w.restricted) out.push(`Google قفل الحصة المجانية لـ${w.restricted > 1 ? `${w.restricted} من مفاتيح Gemini` : 'مفتاح Gemini'}. سوّ مفتاح من حساب Google ثاني واربطه بداله.`);
+  if (w.restricted) out.push(`Google قفل الحصة المجانية لـ${geminiCount(w.restricted, c.gemini)}. سوّ مفتاح من حساب Google ثاني واربطه بداله.`);
   if (w.invalid) out.push(`${w.invalid > 1 ? `${w.invalid} مفاتيح مرفوضة` : 'مفتاح مرفوض'} (انحذف أو انقفل). اربط مفتاح جديد.`);
   if (w.shared?.length) out.push(`نفس المفتاح مربوط عند: ${names(w.shared)}. حصته المجانية تنقسم بينهم.`);
   if (w.same_org?.length) out.push(`مفاتيح Groq من نفس حساب Groq اللي عند: ${names(w.same_org)}. الحساب الواحد إله حصة وحدة بالساعة واليوم، فخلّي لكل طالب حساب Groq خاص.`);
@@ -455,7 +461,7 @@ function openKeyCheck() {
       + (failed ? ` (${failed} ما انفحصوا، جرّب بعدين)` : '');
     clear(out).append(...bad.map(({ c, restricted, invalid }) => h('div', { class: 'key-warn' },
       h('b', null, icon('warn'), c.label || c.display),
-      h('span', null, [restricted ? `Google قافل ${restricted === 1 ? 'مفتاح Gemini' : `${restricted} من مفاتيح Gemini`}، سوّ مفتاح من حساب Google ثاني` : '',
+      h('span', null, [restricted ? `Google قافل ${geminiCount(restricted, c.gemini)}، سوّ مفتاح من حساب Google ثاني` : '',
         invalid ? (invalid === 1 ? 'مفتاح مرفوض (انحذف أو انقفل)' : `${invalid} مفاتيح مرفوضة`) : ''].filter(Boolean).join('. ')))));
     await load(true);
   }
