@@ -595,12 +595,18 @@ export class MediVoiceStore extends DurableObject {
     this.sql.exec('INSERT INTO key_notes (code, hint, note, ts) VALUES (?, ?, ?, ?) ON CONFLICT(code, hint, note) DO UPDATE SET ts = excluded.ts',
       code, String(hint).slice(0, 20), String(note).slice(0, 80), Date.now());
   }
-  /** ملاحظات مفاتيح لم تعد مربوطة بالكود تُحذف */
-  #pruneNotes(code) {
-    const c = this.#row('SELECT gemini_hint, groq_hint FROM codes WHERE code = ?', code);
+  /**
+   * ملاحظات مفاتيح لم تعد مربوطة بالكود (أو الكود انحذف: gone) تُحذف، إلا إذا نفس المفتاح مربوط عند كود ثاني:
+   * تنتقل له (المفتاح نفسه ما زال مقفولاً أو بنفس الحساب)
+   */
+  #pruneNotes(code, { gone = false } = {}) {
+    const c = gone ? null : this.#row('SELECT gemini_hint, groq_hint FROM codes WHERE code = ?', code);
     const keep = new Set([c?.gemini_hint, c?.groq_hint].flatMap((x) => String(x || '').split(' · ')).filter(Boolean));
     for (const r of this.#all('SELECT DISTINCT hint FROM key_notes WHERE code = ?', code)) {
-      if (!keep.has(r.hint)) this.sql.exec('DELETE FROM key_notes WHERE code = ? AND hint = ?', code, r.hint);
+      if (keep.has(r.hint)) continue;
+      const other = this.#row('SELECT code FROM codes WHERE code != ? AND (instr(COALESCE(gemini_hint, \'\'), ?) > 0 OR instr(COALESCE(groq_hint, \'\'), ?) > 0)', code, r.hint, r.hint);
+      if (other) this.sql.exec('UPDATE OR REPLACE key_notes SET code = ? WHERE code = ? AND hint = ?', other.code, code, r.hint);
+      else this.sql.exec('DELETE FROM key_notes WHERE code = ? AND hint = ?', code, r.hint);
     }
   }
 
@@ -717,9 +723,15 @@ export class MediVoiceStore extends DurableObject {
       if (!orgs.has(n.note)) orgs.set(n.note, new Set());
       orgs.get(n.note).add(n.code);
     }
+    // حالة المفتاح نفسه (مقفول أو مرفوض) تخص كل كود مربوط بنفس المفتاح، حتى لو شافها الخادم عند كود ثاني
+    const keyState = new Map(); // hint → Set(note)
+    for (const n of notes) if (!n.note.startsWith('org:') && linked.get(n.hint)?.has(n.code)) {
+      if (!keyState.has(n.hint)) keyState.set(n.hint, new Set());
+      keyState.get(n.hint).add(n.note);
+    }
     for (const c of list) {
       const mine = new Set(String(c.gemini_hint || '').split(' · ').concat(String(c.groq_hint || '').split(' · ')).filter(Boolean));
-      const has = (note) => notes.filter((n) => n.code === c.code && n.note === note && mine.has(n.hint)).length;
+      const has = (note) => [...mine].filter((hint) => keyState.get(hint)?.has(note)).length;
       const shared = new Set(), sameOrg = new Set();
       for (const hint of mine) for (const other of linked.get(hint) || []) if (other !== c.code) shared.add(other);
       for (const n of notes) if (n.code === c.code && n.note.startsWith('org:') && mine.has(n.hint)) for (const other of orgs.get(n.note) || []) if (other !== c.code) sameOrg.add(other);
@@ -844,7 +856,7 @@ export class MediVoiceStore extends DurableObject {
     this.sql.exec('DELETE FROM devices WHERE code = ?', code);
     this.sql.exec('DELETE FROM usage WHERE code = ?', code);
     this.sql.exec('DELETE FROM key_health WHERE code = ?', code);
-    this.sql.exec('DELETE FROM key_notes WHERE code = ?', code);
+    this.#pruneNotes(code, { gone: true });
     this.sql.exec('DELETE FROM codes WHERE code = ?', code);
     this.#event('code_deleted', { code });
     return { ok: true };

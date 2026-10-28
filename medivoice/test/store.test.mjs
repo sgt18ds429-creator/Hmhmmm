@@ -445,19 +445,26 @@ test('مشاكل المفاتيح للمسؤول: مفتاح Gemini قفلت Goo
   const ov = await store.adminOverview(token);
   const by = Object.fromEntries(ov.codes.map((x) => [x.display, x]));
   assert.equal(by[a].warn.restricted, 1);
+  assert.equal(by[b].warn.restricted || 0, 0, 'مفتاح الطالب الثاني المشترك سليم');
   assert.deepEqual(by[a].warn.shared, ['طالب 2']);
   assert.deepEqual(by[b].warn.shared, ['طالب 1']);
   assert.deepEqual(by[b].warn.same_org, ['طالب 3']);
   assert.deepEqual(by[c].warn.same_org, ['طالب 2']);
   assert.equal(ov.codes.some((x) => 'gemini_hint' in x || 'groq_hint' in x), false, 'أجزاء المفاتيح ما تطلع للوحة');
-  // تبديل المفتاح المقفول يمسح تنبيهه
+  // المفتاح المشترك نفسه مقفول (شافه الخادم عند الطالب الأول): يظهر عند الثاني أيضاً
+  store.keyNote(compact(a), hint(gem(2)), 'restricted');
+  const ovs = await store.adminOverview(token);
+  assert.equal(ovs.codes.find((x) => x.display === b).warn.restricted, 1);
+  assert.equal(ovs.codes.find((x) => x.display === a).warn.restricted, 2);
+  // تبديل المفتاح المقفول يمسح تنبيهه، والمفتاح المشترك المقفول يبقى مقفولاً عند الطالب الثاني
   await store.setKey('dev-0', 'gemini', [gem(5)]);
   const ov2 = await store.adminOverview(token);
   assert.equal(ov2.codes.find((x) => x.display === a).warn, undefined, 'ما بقى تنبيه (ولا مشترك بعد التبديل)');
+  assert.equal(ov2.codes.find((x) => x.display === b).warn.restricted, 1, 'المفتاح نفسه ما زال مقفولاً عند الثاني');
   // حذف كود يمسح ملاحظاته
   await store.adminDeleteCode(token, compact(c));
   const ov3 = await store.adminOverview(token);
-  assert.equal(ov3.codes.find((x) => x.display === b).warn?.same_org, undefined);
+  assert.deepEqual(ov3.codes.find((x) => x.display === b).warn?.same_org || [], [], 'ما بقى طالب ثاني بنفس حساب Groq');
 });
 
 test('بروكسي: رد Google «free tier is not available» يُسجَّل للمفتاح، وحد Groq يسجّل حسابه (org)', async () => {
