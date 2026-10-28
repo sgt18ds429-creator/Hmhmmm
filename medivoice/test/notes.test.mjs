@@ -1198,6 +1198,17 @@ test('مفتاح مزوّد رُفض (ملغى) أثناء العمل: يكمل 
     { gemini: false, groq: true, geminiModels: [], groqModels: ['a', 'b'], sttModels: [] });
   assert.equal((await engine.groq({ system: 's', user: 'u' })).text, 'نص من Groq');
   assert.equal(engine.llm.alive.length, 1);
+  // Google قفل الحصة المجانية لمشروع المفتاح: كل نماذج Gemini تنترك فوراً (طلب واحد)، ويكمل Groq بتنبيه واضح
+  const restricted = { ok: false, status: 403, data: { error: { code: 403, message: 'The Gemini API free tier is not available for this project. Please set up billing to upgrade to the paid tier.', status: 'PERMISSION_DENIED' } } };
+  notes = []; let tries = 0;
+  engine = new Engine({ sleep: async () => {}, async gemini() { tries++; return restricted; }, async groq() { return groqOk; } },
+    { gemini: true, groq: true, geminiModels: ['gemini-strong', 'gemini-b', 'gemini-c'], groqModels: ['openai/gpt-oss-120b'], sttModels: [] }, (e) => { if (e.type === 'note') notes.push(e.code); });
+  assert.equal((await engine.write({ system: 's', user: 'u' })).text, 'نص من Groq');
+  assert.equal(tries, 1, 'طلب واحد بس');
+  assert.deepEqual(notes, ['gemini_restricted_dead']);
+  // بلا Groq: خطأ واضح بدل «الخوادم مزدحمة» والانتظار
+  engine = new Engine({ sleep: async () => {}, async gemini() { return restricted; } }, { gemini: true, groq: false, geminiModels: ['gemini-strong', 'gemini-b'], groqModels: [], sttModels: [] });
+  await assert.rejects(engine.gemini({ system: 's', parts: [] }), (e) => e instanceof PipelineError && e.code === 'gemini_restricted');
 });
 
 test('انقطاع الشبكة (حالة 0) لا يُحسب ضغطاً على النموذج الدقيق ولا يهدّئه: بعد رجوع الشبكة يكمل بنفس النموذج', async () => {

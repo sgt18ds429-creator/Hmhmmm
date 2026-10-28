@@ -34,7 +34,7 @@ export async function start(MV, root) {
   enableSheetHistory();
   const ctx = {
     MV, root, toast: MV.toast, api: MV.api, ribbon: MV.ribbon, io: makeIO(),
-    session: MV.session, caps: null, view: null, guard: null,
+    session: MV.session, caps: null, view: null, guard: null, appBuild: MV.session.build || '',
     go, back, refreshSession, loadCaps, openSettings, openLink: () => go('link'), pickFile,
   };
   const bar = h('header', { class: 'bar' });
@@ -47,7 +47,12 @@ export async function start(MV, root) {
   // ── الجلسة والقدرات ──
   async function refreshSession() {
     const r = await MV.api(`/api/session?fp=${encodeURIComponent(JSON.stringify(MV.fingerprint()))}`);
-    if (r.data?.active) { ctx.session = MV.session = r.data; paintMeter(); }
+    if (r.data?.active) {
+      ctx.session = MV.session = r.data;
+      paintMeter();
+      // نزلت نسخة أحدث من الموقع والصفحة مفتوحة من قبلها: تتحدث وحدها، بس مو بنص تحويل أو اختيار ملف
+      if (r.data.build && ctx.appBuild && r.data.build !== ctx.appBuild && ['home', 'link'].includes(ctx.view)) { location.reload(); return ctx.session; }
+    }
     else if (r.status === 200 && r.data && !r.data.active) location.reload(); // أُوقف الكود أو تغيّر الجهاز
     return ctx.session;
   }
@@ -378,6 +383,14 @@ export async function start(MV, root) {
       location.replace('/');
     }
   }
+
+  // رجوع للموقع بعد ما كان بالخلفية: نتأكد من الجلسة ومن نسخة الموقع (مرة كل دقيقتين على الأكثر)
+  let checkedAt = Date.now();
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden || Date.now() - checkedAt < 120_000) return;
+    checkedAt = Date.now();
+    refreshSession().catch(() => {});
+  });
 
   db.prune().catch(() => {});
   history.replaceState({ v: 'home' }, '');

@@ -181,6 +181,7 @@ export function viewNew(ctx, el, { file, recId = null }) {
 const ERRORS = {
   key_groq: ['المفتاح الثاني ما يشتغل', 'ممكن انحذف أو انتهى. اربطه من جديد.', 'link'],
   key_gemini: ['المفتاح الأول ما يشتغل', 'ممكن انحذف أو انتهى. اربطه من جديد.', 'link'],
+  gemini_restricted: ['Google قفل الحصة المجانية لمفتاحك الأول', 'Google وقّف الاستخدام المجاني لحساب Google اللي انسوّى منه المفتاح الأول (مو مشكلة بالموقع ولا بالتسجيل). سوّ مفتاح جديد من حساب Google ثاني وأضفه، وارفع نفس الملف ويكمل من مكانه، الأجزاء المكتملة محفوظة.', 'link'],
   busy: ['خوادم الذكاء مزدحمة هسه', 'گوگل وكروك مضغوطين هسه، والمشكلة مو بمفاتيحك. الأجزاء المكتملة محفوظة، ودوس «أكمل التحويل» بعد دقيقتين ويكمل من مكانه.', 'retry'],
   no_engine: ['خلصت حصة اليوم بمفاتيحك', 'المقاطع المكتملة محفوظة. أضف مفتاح آخر من حساب ثاني وارفع نفس الملف ويكمل من مكانه، أو جرّب بعدين.', 'link'],
   daily_limit: ['خلص رصيد اليوم', 'المقاطع المكتملة محفوظة. ارجع ارفع نفس الملف بعدين ويكمل من مكانه، أو اطلب ساعات أكثر من المسؤول.', 'support'],
@@ -424,6 +425,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry, auto = 
       else if (e.code === 'translate_partial') ctx.toast('أجزاء قليلة من النسخة الثانية بقت بلغتها الأصلية لأن ترجمتها ما اكتملت، ومعلَّمة بملاحظة.');
       else if (e.code === 'figures_partial') ctx.toast('انقطع الاتصال أثناء فحص بعض الصور، فالملزمة كاملة بصور أقل.');
       else if (e.code === 'key_groq_dead') ctx.toast('المفتاح الثاني ما عاد يشتغل، فكمّلت بالمفتاح الأول. اربطه من جديد من «حسابي».', 'err');
+      else if (e.code === 'gemini_restricted_dead') ctx.toast('Google قفل الحصة المجانية لمفتاحك الأول، فكمّلت بالمفتاح الثاني (أبطأ شوية). سوّ مفتاح من حساب Google ثاني وأضفه من «حسابي».', 'err');
       else if (e.code === 'key_gemini_dead') ctx.toast('المفتاح الأول ما عاد يشتغل، فكمّلت بالمفتاح الثاني. اربطه من جديد من «حسابي».', 'err');
       // نفاد حصة النماذج الدقيقة أو حصة Gemini: يكمل التحويل وحده بالمتاح، ولا رسالة للمستخدم (تبقى في التشخيص)
     } else if (e.type === 'images') {
@@ -499,13 +501,13 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry, auto = 
 
   function failWith(e) {
     if (stalled) {
-      ctx.api('/api/diag', { method: 'POST', body: { m: `Stalled: waiting ${stalled} for ${Math.round((Date.now() - progressAt) / 60000)} min`, st: stageNow, b: ctx.session.build } }).catch(() => {});
+      ctx.api('/api/diag', { method: 'POST', body: { m: `Stalled: waiting ${stalled} for ${Math.round((Date.now() - progressAt) / 60000)} min`, st: stageNow, b: ctx.appBuild || ctx.session.build } }).catch(() => {});
       fail('stalled');
       return;
     }
     if (e?.name === 'AbortError' || e?.code === 'aborted') { cleanup(); game?.close(); return; }
     if (lostFile(e)) {
-      ctx.api('/api/diag', { method: 'POST', body: { m: `${e?.name}: ${e?.message}`.slice(0, 160), st: stageNow, b: ctx.session.build } }).catch(() => {});
+      ctx.api('/api/diag', { method: 'POST', body: { m: `${e?.name}: ${e?.message}`.slice(0, 160), st: stageNow, b: ctx.appBuild || ctx.session.build } }).catch(() => {});
       fail('file_gone');
       return;
     }
@@ -513,7 +515,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry, auto = 
     if (!isPipelineError(e)) {
       // خطأ غير متوقع: يُسجَّل للتشخيص، ويكمل التحويل وحده من مكانه (مرتين على الأكثر) قبل أي رسالة
       const at = String(e?.stack || '').split('\n').find((l) => /\.js/.test(l)) || '';
-      ctx.api('/api/diag', { method: 'POST', body: { m: `${e?.name || 'Error'}: ${e?.message || e}`, at: at.replace(/https?:\/\/[^/]+/g, '').replace(/\?v=\w+/g, ''), st: stageNow, b: ctx.session.build } }).catch(() => {});
+      ctx.api('/api/diag', { method: 'POST', body: { m: `${e?.name || 'Error'}: ${e?.message || e}`, at: at.replace(/https?:\/\/[^/]+/g, '').replace(/\?v=\w+/g, ''), st: stageNow, b: ctx.appBuild || ctx.session.build } }).catch(() => {});
       if (auto && auto.n < 2 && navigator.onLine !== false && body.isConnected) {
         cleanup(); game?.close();
         status.textContent = 'أكمل من مكاني…';
@@ -523,7 +525,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry, auto = 
     }
     if (isPipelineError(e) && ['busy', 'no_engine', 'rate_limit'].includes(e.code)) {
       // توقف بسبب المزوّدين: تقرير كل نموذج (نجاح/429/5xx) يُسجَّل حتى يبين السبب بالسجل
-      loadEngine().then((m) => ctx.api('/api/diag', { method: 'POST', body: { m: `${e.code}: ${m.engineReport?.() || ''}`, st: stageNow, b: ctx.session.build } })).catch(() => {});
+      loadEngine().then((m) => ctx.api('/api/diag', { method: 'POST', body: { m: `${e.code}: ${m.engineReport?.() || ''}`, st: stageNow, b: ctx.appBuild || ctx.session.build } })).catch(() => {});
       // ضغط مؤقت: يكمل وحده بعد دقيقتين (مرتين على الأكثر) قبل ما يطلب من الطالب شي
       if (e.code === 'busy' && auto && auto.n < 2 && body.isConnected) {
         cleanup(); game?.close();
@@ -605,6 +607,15 @@ export function viewRun(ctx, el, { file, meta, info, pdfFile = null, recId = nul
       const prev = await db.getPref('active-run');
       if (prev?.job && prev.job !== job) db.clearSource(prev.job).catch(() => {}); // نسخة تحويل سابق لم يكتمل: لم تعد تلزم
       mark();
+      // نسخة بالذاكرة من التسجيل والسلايدات قبل أي شي. الملف المسترجع من تخزين الجهاز (استئناف بعد إغلاق الصفحة،
+      // أو «أكمل» من الرئيسية) بسفاري الآيفون ممكن ينمسح من تحته (NotFoundError)؛ هنا ينكشف فوراً بدل منتصف التحويل
+      try {
+        file = await ownCopy(file);
+        if (pdfFile) pdfFile = await ownCopy(pdfFile);
+      } catch (e) {
+        if (lostFile(e)) db.clearSource(job).catch(() => {}); // النسخة المحفوظة تالفة: الرئيسية تطلب اختيار الملف بدلها
+        throw e;
+      }
       keepSource(job, recId ? null : file, pdfFile); // التسجيل المباشر محفوظ أصلاً، فيُحفظ معه PDF السلايدات فقط
       const [caps, { runLecture, PipelineError }] = await Promise.all([ctx.caps || ctx.loadCaps(), loadEngine()]);
       let slides = null;
@@ -658,6 +669,10 @@ export function viewRun(ctx, el, { file, meta, info, pdfFile = null, recId = nul
 async function keepSource(job, file, pdf) {
   const size = (file?.size || 0) + (pdf?.size || 0);
   if (!size) return;
+  // محفوظة من قبل لنفس التحويل: لا نكتب فوقها. الكتابة فوق السجل بسفاري تحذف ملفه القديم، والملف المفتوح منه
+  // (استئناف) يصير غير مقروء (NotFoundError)
+  const had = await db.getSource(job).catch(() => null);
+  if (had?.file && (!pdf || had.pdf)) return;
   let room = 200e6;
   try {
     const e = await navigator.storage?.estimate?.();

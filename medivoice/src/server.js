@@ -1035,7 +1035,7 @@ const learn = (ctx, db, code) => (key, model, until) => { try { ctx.waitUntil(db
 /** خطأ يخص المفتاح نفسه (لا الطلب ولا النموذج): مفتاح غير صالح أو ملغى أو بلا صلاحية. */
 const keyRejected = (status, text) => status === 401
   || (status === 400 && /API_KEY_INVALID|API key not valid|API key expired/i.test(text))
-  || (status === 403 && /PERMISSION_DENIED|API key|SERVICE_DISABLED|has not been used|suspended/i.test(text));
+  || (status === 403 && /PERMISSION_DENIED|API key|SERVICE_DISABLED|has not been used|suspended|free tier is not available|denied access|quota tier unavailable/i.test(text));
 
 /** يرد بخطأ JSON بصيغة Google حتى يعامله المتصفح كأي رد من المزوّد. */
 const upstreamError = (status, message) => new Response(JSON.stringify({ error: { code: status, message } }), { status, headers: { 'content-type': 'application/json' } });

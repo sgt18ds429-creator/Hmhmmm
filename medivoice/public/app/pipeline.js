@@ -42,6 +42,13 @@ class Lanes {
   cool(m, ms) { m.until = Date.now() + ms; }
 }
 
+/**
+ * Google قفل الحصة المجانية لمشروع المفتاح نفسه (403 «The Gemini API free tier is not available for this project»
+ * أو «Your project has been denied access»): كل نماذج Gemini بهذا المفتاح ترجع نفس الرفض، فلا فائدة من تجربتها
+ * واحداً واحداً ولا من الانتظار.
+ */
+const geminiRestricted = (res) => res.status === 403 && /free tier is not available|denied access|quota tier unavailable|project (has been )?restricted/i.test(JSON.stringify(res.data?.error || ''));
+
 function fatalFromServer(res, provider) {
   const e = res.data?.error;
   const code = typeof e === 'string' ? e : '';
@@ -137,13 +144,14 @@ export class Engine {
    * المزوّد رفض المفتاح (ملغى أو محذوف): نكمل بالمزوّد الآخر بدل إيقاف المحاضرة، ويُبلَّغ الطالب مرة واحدة.
    * إذا لم يبقَ مزوّد آخر فالخطأ قاطع (شاشة «مفتاح ما يشتغل»).
    */
-  dropProvider(provider) {
+  /** @param why رمز السبب للمستخدم (افتراضياً key_<provider>: المفتاح مرفوض) */
+  dropProvider(provider, why = `key_${provider}`) {
     const lanes = provider === 'groq' ? [this.stt, this.llm] : [this.gem, this.tx];
     for (const l of lanes) for (const m of l.items) m.dead = true;
     const left = provider === 'groq' ? this.hasGemini : (this.hasGroqLlm || this.hasStt);
-    if (!left) throw new PipelineError(`key_${provider}`, `${provider} key rejected`);
+    if (!left) throw new PipelineError(why, `${provider} key rejected`);
     this.dropped ??= new Set();
-    if (!this.dropped.has(provider)) { this.dropped.add(provider); this.emit({ type: 'note', code: `key_${provider}_dead` }); }
+    if (!this.dropped.has(provider)) { this.dropped.add(provider); this.emit({ type: 'note', code: `${why}_dead` }); }
   }
   get hasGroqLlm() { return this.llm.alive.length > 0; }
   get hasStt() { return this.stt.alive.length > 0; }
@@ -175,6 +183,7 @@ export class Engine {
       }
       const fatal = fatalFromServer(res, 'gemini');
       if (fatal) throw fatal;
+      if (geminiRestricted(res)) { this.dropProvider('gemini', 'gemini_restricted'); return null; }
       const msg = String(res.data?.error?.message || '');
       if (res.status === 429) {
         const details = Array.isArray(res.data?.error?.details) ? res.data.error.details : [];
@@ -315,6 +324,7 @@ export class Engine {
       }
       // المفتاح نفسه مرفوض (كل المفاتيح، فالخادم يجرّبها قبل أن يرد): يكمل المزوّد الآخر.
       // 403 بلا ذكر المفتاح قد يخص هذا النموذج وحده (نموذج غير متاح للحساب): يُترك النموذج فقط
+      if (geminiRestricted(res)) { this.dropProvider('gemini', 'gemini_restricted'); continue; }
       if (res.status === 401 || /API key not valid|API_KEY_INVALID|API key expired|API_KEY_/i.test(msg)) { this.dropProvider('gemini'); continue; }
       if (res.status === 403) { this.retire(m); continue; }
       if (res.status === 400 && /thinking/i.test(msg) && !m.plain) {
