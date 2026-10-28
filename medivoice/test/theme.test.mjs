@@ -66,7 +66,7 @@ test('كل الخيارات تعطي متغيرات كاملة (الحواف، �
 // ── الخادم ──
 async function loadWorker() {
   execFileSync(process.execPath, [join(root, 'tools', 'build.mjs')], { stdio: 'pipe', env: { ...process.env, MV_BUILD: 'test' } });
-  const src = readFileSync(join(root, 'dist', 'worker.js'), 'utf8')
+  const src = readFileSync(join(root, 'dist', 'worker.test.js'), 'utf8')
     .replace(/import \{ DurableObject \} from ['"]cloudflare:workers['"];/, 'class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }');
   const dir = mkdtempSync(join(tmpdir(), 'mv-theme-'));
   writeFileSync(join(dir, 'worker.mjs'), src);

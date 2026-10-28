@@ -31,6 +31,9 @@ const settings = await api(`/accounts/${account}/workers/scripts/${name}/setting
 console.log(`العامل ${name}: compatibility_date=${settings.compatibility_date || '?'} · الروابط: ${(settings.bindings || []).map((b) => `${b.name}(${b.type})`).join(', ') || '—'}`);
 
 const code = readFileSync(join(root, 'dist', 'worker.js'));
+// حماية: نسخة بلا رقم إصدار حقيقي ما تُنشر (ملفاتها تبقى مخزّنة عند الزبائن وتمنع وصول التحديثات)
+const build = /var BUILD = "([^"]+)"/.exec(code.toString('utf8', 0, 4000))?.[1];
+if (!build || !/^\d{12}$/.test(build)) { console.error(`dist/worker.js رقمه «${build}»: شغّل node tools/build.mjs قبل النشر`); process.exit(1); }
 const form = new FormData();
 form.append('metadata', new Blob([JSON.stringify({ main_module: 'worker.js' })], { type: 'application/json' }));
 form.append('worker.js', new Blob([code], { type: 'application/javascript+module' }), 'worker.js');

@@ -76,5 +76,7 @@ const themeCore = readFileSync(join(pub, 'theme-core.js'), 'utf8').replace(/^exp
 if (/^\s*(?:import|export)\b/m.test(themeCore)) throw new Error('public/theme-core.js: لا يُسمح باستيراد أو تصدير غير مباشر');
 mkdirSync(join(root, 'dist'), { recursive: true });
 const out = server.replace('/*__ASSETS__*/', () => assets).replace('/*__THEME__*/', () => themeCore);
-writeFileSync(join(root, 'dist', 'worker.js'), out);
+// بناء الاختبارات (MV_BUILD=test) يُكتب بملف منفصل: لا يحل محل النسخة المعدّة للنشر أبداً. نسخة «test» لو نُشرت
+// تُخزَّن ملفاتها عند الزبائن سنة كاملة (?v=test) فلا يوصلهم أي إصلاح بعدها
+writeFileSync(join(root, 'dist', BUILD === 'test' ? 'worker.test.js' : 'worker.js'), out);
 console.log(`dist/worker.js · build ${BUILD} · ${entries.length} ملف${aliases.length ? ` (+${aliases.length} مكرر)` : ''} · ${(out.length / 1024).toFixed(0)} KB`);
