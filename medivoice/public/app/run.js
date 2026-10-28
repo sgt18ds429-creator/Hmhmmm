@@ -11,6 +11,7 @@ import { fmtDuration } from './pdf.js';
 import * as db from './db.js';
 import { openGame, openXO, chooseGame } from './game.js';
 import { keepAwake } from './awake.js';
+import { toMemory, storable } from './memfile.js';
 
 /** متصفح حديث بما يكفي لقارئ PDF (يحتاج Safari 16.4 أو أحدث): importmap ظهرت مع نفس الجيل */
 const modernJs = () => typeof HTMLScriptElement !== 'undefined' && !!HTMLScriptElement.supports?.('importmap');
@@ -47,14 +48,11 @@ function toggle(label, hint, checked, onChange) {
 const lostFile = (e) => [e, e?.cause].some((x) => /^(NotFoundError|NotReadableError)$/.test(x?.name || '') || /can ?not be found|could not be read|NotReadable/i.test(String(x?.message || '')));
 
 /**
- * نسخة من الملف داخل الصفحة نفسها. ملف مختار من «الملفات» أو iCloud بالآيفون يصير غير مقروء بعد ما الصفحة تروح
- * للخلفية أو تتحدث (The object can not be found here)، فالتحويل والاستئناف وحفظ نسخة الاستئناف يشتغلون على النسخة.
+ * نسخة من الملف بذاكرة الصفحة نفسها (MemFile). ملف مختار من «الملفات» أو iCloud بالآيفون، وحتى نسخة Blob منه، تصير
+ * غير مقروءة بعد ما الصفحة تروح للخلفية فترة (The object can not be found here)، أما ذاكرة الصفحة فتبقى ما دامت مفتوحة.
  * الاسم والحجم والتاريخ نفسها، فالتحويل يبقى يكمل من مكانه. الملفات الضخمة جداً تبقى كما هي (ذاكرة الهاتف).
  */
-async function ownCopy(f) {
-  if (!f || f.size > 700e6) return f;
-  return new File([await f.arrayBuffer()], f.name, { type: f.type, lastModified: f.lastModified });
-}
+const ownCopy = (f) => toMemory(f);
 const GONE_MSG = 'ما كدرت أقرأ الملف من مكانه. إذا هو بـ iCloud نزّله للموبايل أول (افتحه مرة بتطبيق الملفات)، بعدين اختاره مرة ثانية.';
 
 export function viewNew(ctx, el, { file, recId = null }) {
@@ -232,7 +230,7 @@ function liveNodes(blocks) {
  * واجهة التقدم المشتركة (تحويل تسجيل، أو كتابة شرح لمحاضرة محفوظة).
  * @param opts.stages [[المعرّف، الاسم]] · opts.weights { transcribe, write }
  */
-function runScreen(ctx, el, { title, stages: stageNames, weights, retry, auto = null }) {
+function runScreen(ctx, el, { title, stages: stageNames, weights, retry, auto = null, recover = null }) {
   ctx.setBar('sub', { title });
   const controller = new AbortController();
   let running = true, waitTimer = null;
@@ -523,6 +521,12 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry, auto = 
     if (e?.name === 'AbortError' || e?.code === 'aborted') { cleanup(); game?.close(); return; }
     if (lostFile(e)) {
       ctx.api('/api/diag', { method: 'POST', body: { m: `${e?.name}: ${e?.message}`.slice(0, 160), st: stageNow, b: ctx.appBuild || ctx.session.build } }).catch(() => {});
+      if (recover && auto && auto.n < 2 && body.isConnected) {
+        cleanup(); game?.close();
+        status.textContent = 'أكمل من النسخة المحفوظة على جهازك…';
+        recover().then((ok) => { if (!body.isConnected) return; if (ok) auto.again(auto.n + 1); else fail('file_gone'); }, () => fail('file_gone'));
+        return;
+      }
       fail('file_gone');
       return;
     }
@@ -615,12 +619,23 @@ export function viewRun(ctx, el, { file, meta, info, pdfFile = null, recId = nul
   let ended = false; // بعد العلامة الأخيرة (اكتمل/أوقف/فشل) لا تمسحها نبضة متأخرة
   const mark = (extra = {}) => db.setPref('active-run', { ...trace, ...extra, at: Date.now() }).catch(() => {});
   const finalMark = (extra) => { ended = true; return mark(extra); };
+  /** نسخ بالذاكرة من التسجيل و PDF السلايدات */
+  const inMemory = async (f, p) => [await ownCopy(f), p ? await ownCopy(p) : null];
+  /** النسخة المحفوظة على الجهاز لهذا التحويل (التسجيل المباشر محفوظ بمكانه)، أو null */
+  const storedSource = async () => {
+    const src = await db.getSource(job).catch(() => null);
+    const f = recId ? await db.getRecording(recId).catch(() => null) : src?.file;
+    if (!f || (pdfFile && !src?.pdf)) return null;
+    return { file: f, pdf: src?.pdf || null };
+  };
   const screen = runScreen(ctx, el, {
     title: 'جارِ التحويل',
     stages: stagesFor(notes ? meta.mode : 'transcript'),
     weights: notes ? { transcribe: 0.55, write: 0.28 } : { transcribe: 0.86, write: 0 },
     retry: () => ctx.go('run', { file, meta, info, pdfFile, recId }, { replace: true }),
     auto: { n: auto, again: (n) => ctx.go('run', { file, meta, info, pdfFile, recId, auto: n }, { replace: true }) },
+    // الملف ضاع بنص التحويل: إذا عندنا نسخة محفوظة يكمل منها وحده بدل ما يطلب اختياره
+    recover: async () => !!(await storedSource()),
   });
   // نبضة كل 20 ثانية مع التقدم: آخر وقت كان فيه التحويل يعمل
   let beatAt = Date.now();
@@ -638,11 +653,15 @@ export function viewRun(ctx, el, { file, meta, info, pdfFile = null, recId = nul
       // نسخة بالذاكرة من التسجيل والسلايدات قبل أي شي. الملف المسترجع من تخزين الجهاز (استئناف بعد إغلاق الصفحة،
       // أو «أكمل» من الرئيسية) بسفاري الآيفون ممكن ينمسح من تحته (NotFoundError)؛ هنا ينكشف فوراً بدل منتصف التحويل
       try {
-        file = await ownCopy(file);
-        if (pdfFile) pdfFile = await ownCopy(pdfFile);
+        [file, pdfFile] = await inMemory(file, pdfFile);
       } catch (e) {
-        if (lostFile(e)) db.clearSource(job).catch(() => {}); // النسخة المحفوظة تالفة: الرئيسية تطلب اختيار الملف بدلها
-        throw e;
+        if (!lostFile(e)) throw e;
+        // النسخة اللي بيدنا ما تنقرا (الموبايل سحب وصوله للملف، أو ضاعت نسخة الذاكرة والصفحة بالخلفية):
+        // نكمل من النسخة المحفوظة على الجهاز إذا موجودة، وإذا هي نفسها تالفة تنمسح حتى الرئيسية تطلب اختيار الملف
+        const stored = await storedSource();
+        if (!stored) throw e;
+        try { [file, pdfFile] = await inMemory(stored.file, pdfFile ? stored.pdf : null); }
+        catch (e2) { if (lostFile(e2) && !recId) db.clearSource(job).catch(() => {}); throw e2; }
       }
       keepSource(job, recId ? null : file, pdfFile); // التسجيل المباشر محفوظ أصلاً، فيُحفظ معه PDF السلايدات فقط
       const [caps, { runLecture, PipelineError }] = await Promise.all([ctx.caps || ctx.loadCaps(), loadEngine()]);
@@ -707,7 +726,7 @@ async function keepSource(job, file, pdf) {
     if (e?.quota) room = Math.min(400e6, (e.quota - (e.usage || 0)) * 0.4);
   } catch { /* تقدير غير متاح */ }
   if (size > room) return;
-  await db.saveSource(job, { file, pdf }).catch(() => {});
+  await db.saveSource(job, { file: storable(file), pdf: storable(pdf) }).catch(() => {});
 }
 
 /** كتابة شرح مفصل لمحاضرة محفوظة (بدون إعادة الاستماع للتسجيل). تُحفظ كملزمة جديدة ويبقى الأصل. */

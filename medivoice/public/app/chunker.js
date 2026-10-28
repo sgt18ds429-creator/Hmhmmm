@@ -4,11 +4,13 @@
 // فلا تنقص الجودة ولا يُحمَّل الملف كله في الذاكرة. ملفات WAV تُحوَّل إلى 16kHz أحادي.
 
 import {
-  Input, Output, BlobSource, BufferTarget, ALL_FORMATS,
+  Input, Output, BlobSource, BufferSource, BufferTarget, ALL_FORMATS,
   EncodedPacketSink, EncodedAudioPacketSource,
   Mp4OutputFormat, Mp3OutputFormat, OggOutputFormat, FlacOutputFormat, WavOutputFormat,
   Conversion,
 } from './vendor.js';
+import { MemFile } from './memfile.js';
+// vendor.js: mediabunny 1.61.3 مجمّعة بـ esbuild (tools/build-vendor.mjs)
 
 export class AudioError extends Error {
   constructor(code, message) { super(message || code); this.code = code; }
@@ -24,9 +26,20 @@ const COPY = {
 
 const isPcm = (codec) => !!codec && (codec.startsWith('pcm-') || codec === 'ulaw' || codec === 'alaw');
 
-function newInput(blob) {
-  return new Input({ source: new BlobSource(blob), formats: ALL_FORMATS });
+/**
+ * @param src MemFile أو ArrayBuffer (يُقرأ من ذاكرة الصفحة مباشرة، فلا يضيع إذا راحت الصفحة للخلفية)، أو Blob/File
+ */
+function newInput(src) {
+  const source = src instanceof MemFile ? new BufferSource(src.buffer)
+    : src instanceof ArrayBuffer || ArrayBuffer.isView(src) ? new BufferSource(src)
+      : new BlobSource(src);
+  return new Input({ source, formats: ALL_FORMATS });
 }
+
+/** حجم المقطع بالبايت */
+export const chunkSize = (c) => (c.bytes ? c.bytes.byteLength : c.blob.size);
+/** Blob جديد للمقطع وقت رفعه (بيانات المقطع نفسها تبقى بذاكرة الصفحة: Blob قديم ممكن يضيع بالخلفية على الآيفون) */
+export const chunkBlob = (c) => (c.bytes ? new Blob([c.bytes], { type: c.mime }) : c.blob);
 
 /**
  * يفحص الملف ويرجع معلومات المسار الصوتي.
@@ -74,7 +87,7 @@ export async function probeAudio(blob) {
  *
  * @param {Blob} blob
  * @param {{targetSec?:number, overlapSec?:number, maxBytes?:number, skipBefore?:number, signal?:AbortSignal}} opts
- * @yields {{index:number, start:number, end:number, offset:number, audioSec:number, blob:Blob, ext:string, mime:string, last:boolean}}
+ * @yields {{index:number, start:number, end:number, offset:number, audioSec:number, bytes:ArrayBuffer, ext:string, mime:string, last:boolean}}
  */
 export async function* chunkAudio(blob, opts = {}) {
   const targetSec = opts.targetSec ?? 300;
@@ -140,7 +153,7 @@ async function* copyChunks(blob, info, { targetSec, overlap, maxBytes, signal })
       const buffer = c.output.target.buffer;
       return {
         index: index++, start, end, offset: c.base, audioSec: Math.max(0, c.lastEnd - c.base),
-        blob: new Blob([buffer], { type: spec.mime }), ext: spec.ext, mime: spec.mime, last,
+        bytes: buffer, ext: spec.ext, mime: spec.mime, last,
       };
     };
 
@@ -188,9 +201,10 @@ let opusFails = 0;  // إخفاقات متتالية (خطأ عابر أو بط�
 export function resetCompression() { if (opusOk !== false) opusOk = null; opusFails = 0; }
 
 export async function compressChunk(chunk, { bitrate = 32000, signal } = {}) {
-  if (opusOk === false || opusFails >= 2 || !chunk?.blob || chunk.ext === 'ogg') return chunk;
-  if (chunk.blob.size < 400_000) return chunk; // صغير أصلاً
-  const input = newInput(chunk.blob);
+  if (opusOk === false || opusFails >= 2 || !(chunk?.bytes || chunk?.blob) || chunk.ext === 'ogg') return chunk;
+  const size = chunkSize(chunk);
+  if (size < 400_000) return chunk; // صغير أصلاً
+  const input = newInput(chunk.bytes || chunk.blob);
   let onAbort = null;
   try {
     const output = new Output({ format: new OggOutputFormat(), target: new BufferTarget() });
@@ -210,10 +224,11 @@ export async function compressChunk(chunk, { bitrate = 32000, signal } = {}) {
     const timeout = new Promise((_, rej) => { timer = setTimeout(() => { conversion.cancel().catch(() => {}); rej(new Error('compress timeout')); }, limitMs); });
     try { await Promise.race([conversion.execute(), timeout]); } finally { clearTimeout(timer); }
     const buffer = output.target.buffer;
-    if (!buffer || buffer.byteLength < 1000 || buffer.byteLength >= chunk.blob.size * 0.8) return chunk;
+    if (!buffer || buffer.byteLength < 1000 || buffer.byteLength >= size * 0.8) return chunk;
     opusOk = true;
     opusFails = 0;
-    return { ...chunk, blob: new Blob([buffer], { type: 'audio/ogg' }), ext: 'ogg', mime: 'audio/ogg', compressed: { from: chunk.blob.size, to: buffer.byteLength } };
+    const { blob, ...rest } = chunk;
+    return { ...rest, bytes: buffer, ext: 'ogg', mime: 'audio/ogg', compressed: { from: size, to: buffer.byteLength } };
   } catch (e) {
     if (signal?.aborted) throw new AudioError('aborted', 'أُلغيت العملية');
     opusFails++; // هذا المقطع يُرفع كما هو، والمقطع التالي يحاول من جديد
@@ -267,8 +282,8 @@ async function* transcodeChunks(blob, info, { targetSec, overlap, maxBytes, sign
       // الطول الحقيقي من البيانات نفسها (WAV) أو من الحدود المطلوبة
       const audioSec = opus ? to - from : Math.max(0, (buffer.byteLength - 44) / 32000);
       yield opus
-        ? { index: index++, start, end, offset: from, audioSec, blob: new Blob([buffer], { type: 'audio/ogg' }), ext: 'ogg', mime: 'audio/ogg', last }
-        : { index: index++, start, end, offset: from, audioSec, blob: new Blob([buffer], { type: 'audio/wav' }), ext: 'wav', mime: 'audio/wav', last };
+        ? { index: index++, start, end, offset: from, audioSec, bytes: buffer, ext: 'ogg', mime: 'audio/ogg', last }
+        : { index: index++, start, end, offset: from, audioSec, bytes: buffer, ext: 'wav', mime: 'audio/wav', last };
     } finally {
       if (onAbort) signal?.removeEventListener('abort', onAbort);
       input.dispose();

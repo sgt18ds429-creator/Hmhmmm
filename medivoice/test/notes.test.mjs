@@ -1314,3 +1314,41 @@ test('بلا Gemini وحصة Groq للساعة خلصت: يتوقف فوراً �
   assert.equal(calls, 2, 'كل نموذج مرة وحدة');
   assert.match(engineReport(), /w3:0\/1\/0\/0\(429 ASH 9m31s\)/);
 });
+
+test('استماع ألّفه النموذج من خياله (ما يطابق صوت المقطع) يُرفض، ويُعتمد النسخ الحرفي ويتعلّم للمراجعة', async () => {
+  const { sharedWords } = await import('../public/app/text.js');
+  // نفس الكلام: لهجة (كما يكتبها Gemini) وفصحى تقريبية (كما يكتبها Whisper)
+  const dialect = 'هسه راح نحجي عن الفحص السريري للبطن، أول شي نشوف المريض شلون نايم ونطلب منه يرخي عضلات البطن. بعدين نبدي بالنظر، نشوف شكل البطن إذا منتفخ أو بيه ندبات قديمة من عمليات، ونشوف السرة وحركة البطن مع التنفس. بعدها نروح للجس السطحي بإيد دافية ونسأل المريض وين يوجعه، ونبدي من المكان البعيد عن الألم. بعدين الجس العميق حتى نحس بالكبد والطحال والكلى، وإذا الكبد متضخم نقيس كم إصبع تحت الأضلاع. وأخيراً القرع والإصغاء لأصوات الأمعاء.';
+  const msa = 'الآن سنتحدث عن الفحص السريري للبطن، أول شيء نرى المريض كيف نائم ونطلب منه أن يرخي عضلات البطن. ثم نبدأ بالنظر، نرى شكل البطن إذا كان منتفخاً أو فيه ندبات قديمة من العمليات، ونرى السرة وحركة البطن مع التنفس. بعد ذلك نذهب إلى الجس السطحي بيد دافئة ونسأل المريض أين يؤلمه، ونبدأ من المكان البعيد عن الألم. ثم الجس العميق حتى نشعر بالكبد والطحال والكلى، وإذا كان الكبد متضخماً نقيس كم إصبعاً تحت الأضلاع. وأخيراً القرع والإصغاء لأصوات الأمعاء.';
+  // التسجيل مو محاضرة (وصف مباراة)، والنموذج الخفيف ألّف محاضرة من «المادة والمصطلحات المتوقعة»
+  const match = 'الجمهور كله واكف بالملعب ويهتف للمنتخب، الكرة عند اللاعب بالجناح اليمين، يعبر واحد واثنين ويرفعها عرضية، راسية قوية والحارس يطلعها ركنية. الركنية تنلعب قصيرة ويرجعون يبنون الهجمة من الخلف، تمريرة طويلة للمهاجم، يسيطر عليها بصدره ويسدد بقوة، الكرة تضرب العارضة وترجع للملعب. الجمهور يغني ويصفق والمدرب يأشر للاعبين يتقدمون، دقائق قليلة باقية على نهاية الشوط الأول والنتيجة تعادل سلبي بين الفريقين.';
+  const made = 'أهلاً بكم في محاضرة اليوم عن قراءة صورة الصدر الشعاعية. أول خطوة نتأكد من هوية المريض وتاريخ الصورة، وبعدين نقيم جودة الصورة من ناحية الشهيق والدوران والاختراق. الـ [[pneumothorax]] يظهر بغياب العلامات الرئوية مع خط الجنبة الحشوية، والـ [[pleural effusion]] يظهر كعتامة بقاعدة الرئة مع غياب الزاوية الضلعية الحجابية. حالة الـ [[tension pneumothorax]] طارئة وتحتاج تدخل فوري قبل طلب أي تصوير إضافي، وانحراف المنصف للجهة المعاكسة علامة مهمة جداً لازم ننتبه إلها.';
+  assert.ok(sharedWords(dialect, msa) >= 0.25, `نفس الكلام ${sharedWords(dialect, msa)}`);
+  assert.ok(sharedWords(made, match) < 0.08, `كلام مؤلَّف ${sharedWords(made, match)}`);
+
+  const calls = [];
+  const io = {
+    sleep: async () => {}, blobToBase64: async () => 'AAAA',
+    async gemini(model, body) {
+      const parts = body.contents[0].parts, text = parts.map((p) => p.text || '').join('\n');
+      const kind = parts.some((p) => p.inline_data) ? (/Transcribe this audio/.test(text) ? 'tx' : 'listen') : 'other';
+      calls.push(kind);
+      const out = kind === 'tx' ? match : kind === 'listen' ? made : match;
+      return { ok: true, status: 200, data: { candidates: [{ content: { parts: [{ text: out }] }, finishReason: 'STOP' }] } };
+    },
+  };
+  const notes = [];
+  const engine = new Engine(io, { gemini: true, groq: false, geminiModels: ['gemini-x-lite'], transcribeModels: ['gemini-tx'], groqModels: [], sttModels: [] }, (e) => { if (e.type === 'note') notes.push(e.code); });
+  const chunk = { index: 0, blob: new Blob(['x']), ext: 'ogg', mime: 'audio/ogg', audioSec: 480, start: 0, end: 480 };
+  const r = await refineChunk(engine, chunk, null, { title: '', subject: 'التصوير الشعاعي', keywords: 'chest X-ray, pneumothorax', mode: 'notes', style: 'verbatim' }, { first: true, last: false, exact: false });
+  assert.equal(r.engine, 'gemini-tx');
+  assert.equal(r.review, true);
+  assert.equal(r.markup, match, 'الكلام الحقيقي للمقطع، لا المحاضرة المؤلَّفة');
+  assert.deepEqual(notes, ['listen_mismatch']);
+
+  // استماع صادق (لهجة) مقابل مسودة Whisper فصحى: يُقبل كما هو
+  const io2 = { ...io, async gemini(model, body) { const r2 = await io.gemini(model, body); if (calls.at(-1) === 'listen') r2.data.candidates[0].content.parts[0].text = dialect; return r2; } };
+  const engine2 = new Engine(io2, { gemini: true, groq: false, geminiModels: ['gemini-x-lite'], transcribeModels: ['gemini-tx'], groqModels: [], sttModels: [] });
+  const ok = await refineChunk(engine2, chunk, msa, { title: '', mode: 'notes', style: 'verbatim' }, { first: true, last: false, exact: true });
+  assert.equal(ok.markup, dialect);
+});

@@ -1042,10 +1042,16 @@ async function proxyFetch(request, target) {
     up = null;
   }
   if (!up) return json({ error: 'upstream' }, 502);
-  if (!up.ok) return json({ error: 'upstream' }, up.status === 429 ? 429 : 502);
   const type = (up.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+  if (!up.ok) {
+    console.log('fetch', JSON.stringify({ h: url.hostname, s: up.status, t: type, b: (await up.text().catch(() => '')).replace(/\s+/g, ' ').slice(0, 160) }));
+    return json({ error: 'upstream' }, up.status === 429 ? 429 : 502);
+  }
   // لا نمرر SVG أو HTML من نطاقنا إطلاقاً
-  if (!/^(application\/json|image\/(jpeg|png|webp|gif))$/.test(type)) return json({ error: 'unsupported_type' }, 415);
+  if (!/^(application\/json|image\/(jpeg|png|webp|gif))$/.test(type)) {
+    console.log('fetch', JSON.stringify({ h: url.hostname, s: up.status, t: type }));
+    return json({ error: 'unsupported_type' }, 415);
+  }
   if (Number(up.headers.get('content-length') || 0) > FETCH_MAX_BYTES) return json({ error: 'too_large' }, 413);
   // حد الحجم أثناء التمرير أيضاً (الرد بلا content-length)
   let seen = 0;
@@ -1294,10 +1300,14 @@ async function verifyKey(provider, key) {
     const plain = (n) => !/preview|exp|tts|image|audio|live|embed|thinking/.test(n);
     const lite = names.filter((n) => /flash-lite/.test(n) && plain(n)).sort().pop() || names.filter((n) => /flash/.test(n) && plain(n)).sort().pop();
     if (!lite) return { ok: true };
-    const probe = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${lite}:generateContent`, {
-      method: 'POST', headers: { 'x-goog-api-key': key, 'content-type': 'application/json' }, signal: AbortSignal.timeout(20_000),
-      body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'Reply with: OK' }] }], generationConfig: { maxOutputTokens: 16, temperature: 0 } }),
-    });
+    // الفحص الإضافي لا يمنع الربط إذا تأخر أو انقطع: المفتاح نفسه صالح (قائمة النماذج اشتغلت)
+    let probe;
+    try {
+      probe = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${lite}:generateContent`, {
+        method: 'POST', headers: { 'x-goog-api-key': key, 'content-type': 'application/json' }, signal: AbortSignal.timeout(12_000),
+        body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'Reply with: OK' }] }], generationConfig: { maxOutputTokens: 16, temperature: 0 } }),
+      });
+    } catch { return { ok: true }; }
     if (probe.ok) return { ok: true };
     const text = await probe.text().catch(() => '');
     if (probe.status === 403 && geminiRestrictedText(text)) return { ok: false, error: 'key_restricted' };

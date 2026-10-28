@@ -58,6 +58,22 @@ const sentenceKey = (t) => tokens(t).join(' ');
  * نسبة التكرار في نص: حصة المقاطع الخماسية (5 كلمات متتالية) المكررة من مجموعها.
  * نص طبيعي ≈ 0 إلى 0.15، ونص في حلقة تكرار > 0.4.
  */
+/**
+ * نسبة كلمات النص a (المميزة، 3 حروف فأكثر) الموجودة في النص b، بعد توحيد الإملاء العربي (الهمزات والتاء المربوطة
+ * والألف المقصورة والتشكيل) وحذف «ال» و«و» من أول الكلمة. نسخان لنفس الكلام (حتى لهجة مقابل فصحى) يتشاركان ربع
+ * كلماتهما فأكثر؛ نص ألّفه النموذج من خياله يتشارك أقل من 8%.
+ */
+export function sharedWords(a, b) {
+  const words = (t) => new Set(String(t || '').replace(/\[\[|\]\]/g, ' ').toLowerCase()
+    .replace(/[\u064B-\u0652\u0670\u0640]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه').replace(/ؤ/g, 'و').replace(/ئ/g, 'ي')
+    .split(/[^\p{L}\p{N}]+/u).map((w) => w.replace(/^(وال|بال|فال|كال|لل|ال|و)(?=\p{L}{3,})/u, '')).filter((w) => w.length >= 3));
+  const A = words(a), B = words(b);
+  if (!A.size) return 1;
+  let n = 0;
+  for (const w of A) if (B.has(w)) n++;
+  return n / A.size;
+}
+
 export function repetitionScore(text, n = 5) {
   const w = tokens(text);
   if (w.length < n * 4) return 0;

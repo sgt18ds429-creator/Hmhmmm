@@ -2,10 +2,11 @@
 // → لصق → فهم المحاضرة وكتابتها شرحاً مفصلاً → قاموس المصطلحات → صور توضيحية مُتحقَّق من مطابقتها.
 // لا يعتمد على المتصفح مباشرة: كل اتصال يمر عبر كائن io حتى يُختبر في Node أيضاً.
 
-import { chunkAudio, probeAudio, compressChunk, resetCompression, AudioError } from './chunker.js';
+import { chunkAudio, probeAudio, compressChunk, resetCompression, AudioError, chunkSize, chunkBlob } from './chunker.js';
+import { bytesToBase64 } from './memfile.js';
 import {
   cleanWhisper, pickCut, wordsBetween, wordsToText, splitByWords, parseMarkup, joinChunks, blocksToMarkup,
-  countWords, tokens, collectTerms, blockText, stripMarkup, parseJsonLoose, uid, langOf, termsIn, textHash, normalize, isNotes, repetitionScore, collapseMarkup, collapseRepeats, collapseCycles,
+  countWords, tokens, collectTerms, blockText, stripMarkup, parseJsonLoose, uid, langOf, termsIn, textHash, normalize, isNotes, repetitionScore, collapseMarkup, collapseRepeats, collapseCycles, sharedWords,
   qualityGate, cleanBlockList, bracketTerms, trimHeading, dialectLines,
 } from './text.js';
 import {
@@ -14,6 +15,9 @@ import {
   reviewNotesPrompt, mcqPrompt, mcqTranslatePrompt, mcqCheckPrompt, figuresBatchPrompt, slideFiguresPrompt,
 } from './prompts.js';
 import { findCandidates } from './images.js';
+
+/** Base64 لصوت المقطع: من بياناته بذاكرة الصفحة مباشرة، أو من الـ Blob (أدوات Node والاختبارات) */
+const chunkB64 = async (c, io) => (c.bytes ? bytesToBase64(c.bytes) : io.blobToBase64(c.blob));
 
 export class PipelineError extends Error {
   constructor(code, message, extra = {}) { super(message || code); this.name = 'PipelineError'; this.code = code; Object.assign(this, extra); }
@@ -178,7 +182,7 @@ export class Engine {
         continue;
       }
       const body = {
-        contents: [{ role: 'user', parts: [{ inline_data: { mime_type: MIME[chunk.ext] || chunk.mime, data: data || await this.io.blobToBase64(chunk.blob) } }, { text: 'Transcribe this audio verbatim, in the language spoken.' }] }],
+        contents: [{ role: 'user', parts: [{ inline_data: { mime_type: MIME[chunk.ext] || chunk.mime, data: data || await chunkB64(chunk, this.io) } }, { text: 'Transcribe this audio verbatim, in the language spoken.' }] }],
         generationConfig: { temperature: 0 },
       };
       const res = await this.io.gemini(m.id, body, { sec, signal: this.signal });
@@ -223,7 +227,7 @@ export class Engine {
         await this.pause(wait + 500, 'stt');
         continue;
       }
-      const res = await this.io.stt({ blob: chunk.blob, filename: `part${chunk.index}.${chunk.ext}`, model: m.id, language, prompt }, { sec, signal: this.signal });
+      const res = await this.io.stt({ blob: chunkBlob(chunk), filename: `part${chunk.index}.${chunk.ext}`, model: m.id, language, prompt }, { sec, signal: this.signal });
       this.tally(m.id, res);
       if (res.ok && res.data && (res.data.words || res.data.segments || typeof res.data.text === 'string')) return res.data;
       const fatal = fatalFromServer(res, 'groq');
@@ -486,14 +490,14 @@ export async function refineChunk(engine, chunk, draft, meta, { first, last, exa
 
   // الصوت بصيغة base64 يُحسب مرة واحدة ويُشارك بين الاستماع والنسخ الحرفي
   let b64 = null;
-  const audioData = async () => (b64 ??= await io.blobToBase64(chunk.blob));
+  const audioData = async () => (b64 ??= await chunkB64(chunk, io));
 
   // نسخ حرفي (Gemini Transcribe): مرجع أدق من Whisper لاكتمال ما سمعه النموذج الرئيسي، وبديل إذا تعذّر الاستماع.
   // يبدأ بالتوازي فقط عندما لا توجد مسودة موثوقة؛ وإلا يُطلب عند الحاجة (الاستماع أقصر من المسودة بكثير)،
   // فلا يُرفع المقطع مرتين في الحالة الغالبة
   let txJob = null;
   const startTx = () => {
-    if (!txJob && engine.hasTx && chunk.blob.size <= GEMINI_MAX_INLINE) {
+    if (!txJob && engine.hasTx && chunkSize(chunk) <= GEMINI_MAX_INLINE) {
       // الوعد لا يُرفض أبداً (قد لا ينتظره أحد): الخطأ القاطع يُحفظ ويُرمى عند الطلب
       txJob = audioData().then((data) => engine.transcribe(chunk, { data })).catch((e) => { if (e instanceof PipelineError && FATAL.includes(e.code)) txFatal = e; return null; });
     }
@@ -514,7 +518,7 @@ export async function refineChunk(engine, chunk, draft, meta, { first, last, exa
 
   // 1) Gemini يستمع للصوت
   let blockedListen = false; // رفض دائم (حجب أو طلب غير مقبول): إعادة المقطع لن تغيّر شيئاً
-  if (engine.hasGemini && chunk.blob.size <= GEMINI_MAX_INLINE) {
+  if (engine.hasGemini && chunkSize(chunk) <= GEMINI_MAX_INLINE) {
     emit({ type: 'chunk', index: chunk.index, stage: 'listen' });
     const audio = { inline_data: { mime_type: MIME[chunk.ext] || chunk.mime, data: await audioData() } };
     let sec = draft === null ? chunk.audioSec : 0; // إذا لم يُحسب المقطع عند Whisper يُحسب هنا (مرة واحدة)
@@ -550,6 +554,24 @@ export async function refineChunk(engine, chunk, draft, meta, { first, last, exa
       review = true;
       if (tries === 0 && ref) { useDraft = true; anchor = ref.text; insist = true; } // نعيد الاستماع والمرجع الأكمل أمامه
       else if (tries >= 1) break;
+    }
+    if (best && countWords(best.text) >= 60) {
+      // الاستماع لازم يطابق الصوت نفسه: نص يكاد ما يشارك المسودة أو النسخ الحرفي بأي كلمة (أقل من 8%) ألّفه النموذج
+      // من خياله (يصير مع النماذج الخفيفة على صوت غير واضح أو مو محاضرة، متأثراً بالمادة والمصطلحات المتوقعة).
+      // نتأكد بالنسخ الحرفي، ونعتمده هو (أو المسودة) بدل نص مؤلَّف، والمقطع يتعلّم للمراجعة
+      const against = ref?.text || (draftWords >= 60 ? draft : '');
+      if (against && sharedWords(best.text, against) < 0.08) {
+        if (!ref) ref = await reference(45_000);
+        const check = ref?.text || against;
+        if (sharedWords(best.text, check) < 0.08) {
+          emit({ type: 'note', code: 'listen_mismatch' });
+          const src = ref && countWords(ref.text) >= 30 ? ref : draft ? { text: draft, model: '' } : null;
+          if (src) {
+            const markup = notes ? src.text : (await cleanupDraft(engine, src.text, meta, first)) || src.text;
+            return { markup, engine: ref ? 'gemini-tx' : 'raw', model: src.model || '', review: true };
+          }
+        }
+      }
     }
     if (best) {
       let words = countWords(best.text);
@@ -744,7 +766,7 @@ export async function runLecture({ file, meta, cfg, caps, io, emit = () => {}, s
       // فالرفع على بيانات الهاتف يصير أسرع بكثير. إذا لم يدعمه المتصفح يبقى المقطع كما هو
       const chunk = cfg.compress === false ? rawChunk : await compressChunk(rawChunk, { signal });
       if (chunk.compressed) compressedBytes += chunk.compressed.from - chunk.compressed.to;
-      inFlightLimit = chunk.blob.size <= 4.5 * 1024 * 1024 ? maxInFlight + 1 : maxInFlight;
+      inFlightLimit = chunkSize(chunk) <= 4.5 * 1024 * 1024 ? maxInFlight + 1 : maxInFlight;
 
       // مسودة Whisper لهذا المقطع (تبدأ فوراً). السياق المكتوب بلغة المحاضرة حتى لا يُضلّل الكشف
       let prompt = '';

@@ -514,3 +514,17 @@ test('ربط مفتاح Gemini قفلت Google حصته المجانية يُر�
     assert.equal(saved, 2);
   } finally { globalThis.fetch = realFetch; }
 });
+
+test('فحص الربط الإضافي لا يمنع ربط مفتاح سليم إذا تأخر رد Google', async () => {
+  const worker = (await loadModule()).default;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (/\/models\?/.test(url)) return new Response(JSON.stringify({ models: [{ name: 'models/gemini-3.5-flash-lite', supportedGenerationMethods: ['generateContent'] }] }), { status: 200 });
+    throw new DOMException('The operation timed out.', 'TimeoutError');
+  };
+  const env = { STORE: { idFromName: () => 'x', get: () => ({ isActive: async () => true, setKey: async () => ({ ok: true, shared: 0, session: { active: true } }) }) } };
+  try {
+    const r = await worker.fetch(new Request('https://mv.test/api/keys', { method: 'POST', headers: { cookie: `mv_dev=${'t'.repeat(40)}`, 'x-mv': '1', 'content-type': 'application/json' }, body: JSON.stringify({ key: `AIza${'w'.repeat(35)}` }) }), env, { waitUntil() {} });
+    assert.equal(r.status, 200);
+  } finally { globalThis.fetch = realFetch; }
+});
