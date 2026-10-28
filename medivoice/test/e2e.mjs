@@ -19,7 +19,8 @@ const code = created.created[0];
 console.log('code', code);
 
 const { browser, page } = await launch({ mobile: process.env.DESKTOP !== '1' });
-const shot = (name) => page.screenshot({ path: path.join(shots, `${name}.png`) });
+// لقطة الشاشة لا تُفشل الاختبار (WebKit على Linux أبطأ بلقطات الصفحات المتحركة)
+const shot = (name) => page.screenshot({ path: path.join(shots, `${name}.png`), timeout: 20000, animations: 'disabled' }).catch((e) => console.log(`(لقطة ${name} ما انأخذت: ${String(e.message || e).split('\n')[0]})`));
 
 step('intro → lock → activate');
 await page.goto(BASE + '/');

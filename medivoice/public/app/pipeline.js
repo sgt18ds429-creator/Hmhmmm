@@ -240,6 +240,10 @@ export class Engine {
       if (++netFails > 3) return null;
       await this.pause(1500 * 2 ** netFails, 'net');
     }
+    // خلصت المحاولات وحد Groq ما زال قائماً، و Gemini ما موجود يكمل بداله: نوقف بموعد رجوع الحصة (يكمل وحده بعدها)
+    // بدل «الخوادم مزدحمة» العامة
+    const wait = this.stt.waitMs();
+    if (!this.hasGemini && wait !== null && wait > 0) throw new PipelineError('rate_limit', 'groq audio limit', { retryAfter: Math.ceil(wait / 1000) });
     return null;
   }
 

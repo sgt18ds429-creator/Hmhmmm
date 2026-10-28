@@ -1340,6 +1340,12 @@ async function listModels(auth) {
   return out;
 }
 
+/**
+ * رقم الإصدار بالجلسة من الخادم نفسه لا من قاعدة البيانات: بعد النشر تبقى قاعدة البيانات (Durable Object) على الكود
+ * القديم دقائق، ورقمها القديم كان يخلي المتصفح يحمّل ملفات الإصدار القديم المخزّنة عنده
+ */
+const withBuild = (d) => (d && typeof d === 'object' && 'build' in d ? { ...d, build: BUILD } : d);
+
 async function handleApi(request, env, ctx, url) {
   const path = url.pathname;
   const method = request.method;
@@ -1382,7 +1388,7 @@ async function handleApi(request, env, ctx, url) {
     let fp = {};
     try { fp = JSON.parse(url.searchParams.get('fp') || '{}'); } catch {}
     const id = await deviceId(request);
-    return json(await db.session(id, clientMeta(request, fp)));
+    return json(withBuild(await db.session(id, clientMeta(request, fp))));
   }
 
   if (path === '/api/activate' && method === 'POST') {
@@ -1391,7 +1397,7 @@ async function handleApi(request, env, ctx, url) {
     if (!secret || !/^[\w-]{30,80}$/.test(secret)) secret = randomToken();
     const r = await db.activate(await sha256hex(secret), body.code, clientMeta(request, body.fp || {}));
     if (!r.ok) return json({ error: r.error }, r.status || 400);
-    return json(r.session, 200, { 'set-cookie': setCookie(DEVICE_COOKIE, secret, { maxAge: 400 * 86400 }) });
+    return json(withBuild(r.session), 200, { 'set-cookie': setCookie(DEVICE_COOKIE, secret, { maxAge: 400 * 86400 }) });
   }
 
   // ── تسجيل خروج الزبون: يمسح كوكي الجهاز ويرجعه لصفحة الكود (قبل بوابة التفعيل: يشتغل حتى لو انتهى التفعيل) ──
@@ -1454,7 +1460,7 @@ async function handleApi(request, env, ctx, url) {
     }
     const r = await db.setKey(id, provider, keys, { add: body.add === true });
     forgetAuth(id);
-    return r.ok ? json({ ...r.session, linked: provider, shared: r.shared || 0 }) : json({ error: r.error }, r.status);
+    return r.ok ? json({ ...withBuild(r.session), linked: provider, shared: r.shared || 0 }) : json({ error: r.error }, r.status);
   }
 
   if (path === '/api/keys' && method === 'DELETE') {
@@ -1462,7 +1468,7 @@ async function handleApi(request, env, ctx, url) {
     if (provider !== 'groq' && provider !== 'gemini') return json({ error: 'bad_request' }, 400);
     const r = await db.removeKey(id, provider);
     forgetAuth(id);
-    return r.ok ? json(r.session) : json({ error: r.error }, r.status);
+    return r.ok ? json(withBuild(r.session)) : json({ error: r.error }, r.status);
   }
 
   if (path === '/api/fetch' && method === 'GET') {

@@ -1352,3 +1352,14 @@ test('استماع ألّفه النموذج من خياله (ما يطابق ص
   const ok = await refineChunk(engine2, chunk, msa, { title: '', mode: 'notes', style: 'verbatim' }, { first: true, last: false, exact: true });
   assert.equal(ok.markup, dialect);
 });
+
+test('بلا Gemini وحد Groq اليومي يرجع بمواعيد قصيرة ثم يطول: بعد المحاولات يتوقف بموعد (rate_limit) لا «مزدحمة»', async () => {
+  const { Engine, PipelineError } = await import('../public/app/pipeline.js');
+  const waits = [21, 30, 25, 40, 22, 35, 28, 31, 26, 33];
+  let n = 0;
+  const engine = new Engine({ sleep: async () => {}, async stt() { const ra = waits[n++ % waits.length]; return { ok: false, status: 429, retryAfter: ra, data: { error: { message: `Rate limit reached for model \`whisper-large-v3\` in organization \`org_x\` service tier \`on_demand\` on seconds of audio per day (ASPD): Limit 28800, Used 28700, Requested 480. Please try again in ${ra}s.` } } }; } },
+    { gemini: false, groq: true, geminiModels: [], groqModels: [], sttModels: ['whisper-large-v3', 'whisper-large-v3-turbo'] });
+  engine.pause = async () => {}; // الانتظار نفسه ما يهم الاختبار
+  await assert.rejects(engine.whisper({ blob: new Blob(['x']), index: 0, ext: 'ogg' }, { sec: 480 }),
+    (e) => e instanceof PipelineError && e.code === 'rate_limit' && e.retryAfter > 0);
+});
