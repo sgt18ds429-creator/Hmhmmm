@@ -64,11 +64,11 @@ await page.locator('.sheet .menu button', { hasText: 'إعادة التشغيل'
 await page.waitForFunction(() => !document.querySelector('.sheet'));
 
 // النشاط والإعدادات
-await page.locator('.nav button').nth(1).click();
+await page.locator('.nav button', { hasText: 'النشاط' }).click();
 await page.waitForSelector('.chart');
 await page.waitForTimeout(500);
 await shot('a7-activity');
-await page.locator('.nav button').nth(2).click();
+await page.locator('.nav button', { hasText: 'الإعدادات' }).click();
 await page.waitForSelector('.view .card');
 await page.fill('.view input[dir=ltr]', '@medivoice_support');
 await page.locator('.view .btn.wide', { hasText: 'حفظ الإعدادات' }).click();

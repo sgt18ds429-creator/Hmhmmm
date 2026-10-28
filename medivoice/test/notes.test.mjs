@@ -1302,3 +1302,15 @@ test('طلب تجاوز 100 ثانية (524 من Cloudflare): النموذج ا�
   assert.deepEqual(calls, ['gemini-slow', 'gemini-fast'], 'محاولة واحدة على البطيء ثم التالي');
   assert.ok(engine.gem.items[0].until > Date.now(), 'البطيء في تهدئة');
 });
+
+test('بلا Gemini وحصة Groq للساعة خلصت: يتوقف فوراً بموعد رجوعها (لا انتظار بلا تقدم)، والتقرير يذكر نوع الحد', async () => {
+  const { Engine, PipelineError, engineReport } = await import('../public/app/pipeline.js');
+  let calls = 0;
+  const limited = { ok: false, status: 429, retryAfter: 571, data: { error: { message: 'Rate limit reached for model `whisper-large-v3` in organization `org_x` service tier `on_demand` on seconds of audio per hour (ASH): Limit 7200, Used 7100, Requested 480. Please try again in 9m31s.' } } };
+  const engine = new Engine({ sleep: async () => {}, async stt() { calls++; return limited; } },
+    { gemini: false, groq: true, geminiModels: [], groqModels: ['openai/gpt-oss-120b'], sttModels: ['whisper-large-v3', 'whisper-large-v3-turbo'] });
+  await assert.rejects(engine.whisper({ blob: new Blob(['x']), index: 0, ext: 'ogg' }, { sec: 480 }),
+    (e) => e instanceof PipelineError && e.code === 'rate_limit' && e.retryAfter > 500 && e.retryAfter <= 572);
+  assert.equal(calls, 2, 'كل نموذج مرة وحدة');
+  assert.match(engineReport(), /w3:0\/1\/0\/0\(429 ASH 9m31s\)/);
+});

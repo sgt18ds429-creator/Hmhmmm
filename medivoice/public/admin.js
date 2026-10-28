@@ -262,14 +262,29 @@ function tabCodes(view) {
   paintList();
 }
 
+/** تنبيهات مفاتيح الكود كما شافها الخادم: كل سطر مشكلة ووش يسوي المسؤول */
+function keyWarnings(c) {
+  const w = c.warn;
+  if (!w) return [];
+  const names = (list) => (list.length > 3 ? `${list.slice(0, 3).join('، ')} و${list.length - 3} غيرهم` : list.join('، '));
+  const out = [];
+  if (w.restricted) out.push(`Google قفل الحصة المجانية لـ${w.restricted > 1 ? `${w.restricted} من مفاتيح Gemini` : 'مفتاح Gemini'}. سوّ مفتاح من حساب Google ثاني واربطه بداله.`);
+  if (w.invalid) out.push(`${w.invalid > 1 ? `${w.invalid} مفاتيح مرفوضة` : 'مفتاح مرفوض'} (انحذف أو انقفل). اربط مفتاح جديد.`);
+  if (w.shared?.length) out.push(`نفس المفتاح مربوط عند: ${names(w.shared)}. حصته المجانية تنقسم بينهم.`);
+  if (w.same_org?.length) out.push(`مفاتيح Groq من نفس حساب Groq اللي عند: ${names(w.same_org)}. الحساب الواحد إله حصة وحدة بالساعة واليوم، فخلّي لكل طالب حساب Groq خاص.`);
+  return out;
+}
+
 function codeCard(c) {
   const st = statusOf(c);
+  const warns = keyWarnings(c);
   const dev = c.devices.find((d) => !d.out) || c.devices[0];
   const pct = c.daily_limit_sec ? Math.min(100, (c.used_sec / c.daily_limit_sec) * 100) : 0;
   return h('button', { class: `cc ${st.key}`, onclick: () => openCode(c) },
     h('div', { class: 'cc-top' }, h('b', { class: c.label ? '' : 'anon', dir: 'auto' }, c.label || 'بدون اسم'), h('span', { class: `chip ${st.chip}` }, st.label)),
     h('div', { class: 'cc-line' }, h('span', { class: 'cc-code ltr' }, c.display), h('time', null, validity(c))),
     dev ? h('div', { class: 'cc-line' }, icon('phone'), h('span', null, [dev.os, dev.browser, place(dev), dev.out ? 'سجّل خروج' : ''].filter(Boolean).join('، ')), h('time', null, ago(dev.last_seen))) : null,
+    warns.length ? h('div', { class: 'cc-warn' }, icon('warn'), h('span', null, warns.length > 1 ? `${warns.length} مشاكل بالمفاتيح، افتحه للتفاصيل` : warns[0])) : null,
     c.activated_at ? h('div', { class: 'use' },
       c.daily_limit_sec ? h('div', { class: `track${pct > 85 ? ' hot' : ''}` }, h('i', { style: { width: `${pct}%` } })) : null,
       h('span', null, h('b', null, fmtHM(c.used_sec)), c.daily_limit_sec ? ` من ${fmtHM(c.daily_limit_sec)} اليوم` : ' اليوم، بلا حد')) : null);
@@ -308,8 +323,10 @@ function openCode(c) {
   row('ملاحظة', c.note);
 
   const item = (label, ic, fn, cls) => h('button', { class: cls || '', onclick: fn }, icon(ic), label);
+  const warns = keyWarnings(c);
   const s = sheet({ title: c.label || 'كود بدون اسم', body: h('div', { class: 'stack lg' },
     h('div', { class: 'code-show' }, codeCells(c.display), h('span', { class: `chip ${st.chip}` }, st.label)),
+    warns.length ? h('div', { class: 'key-warn' }, h('b', null, icon('warn'), 'مشاكل بمفاتيح هذا الطالب'), h('ul', null, warns.map((t) => h('li', null, t)))) : null,
     h('div', { class: 'btn-row' },
       h('button', { class: 'btn small', onclick: () => copy(inviteText(c), 'انتسخت رسالة التفعيل') }, icon('copy'), 'نسخ الرسالة'),
       h('button', { class: 'btn ghost small', onclick: () => share(inviteText(c)) }, icon('share'), 'مشاركة')),

@@ -178,6 +178,18 @@ export function viewNew(ctx, el, { file, recId = null }) {
 }
 
 // ───────────── شاشة التحويل ─────────────
+/** ساعة لحظة قادمة بتوقيت الجهاز («4:35») */
+const clockAt = (ms) => new Date(ms).toLocaleTimeString('ar-IQ', { hour: 'numeric', minute: '2-digit' });
+/** موعد تجدد حصص Google المجانية: منتصف الليل بتوقيت كاليفورنيا (10 أو 11 الصبح ببغداد حسب التوقيت الصيفي هناك) */
+function googleResetAt(now = Date.now()) {
+  try {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      .formatToParts(new Date(now)).map((p) => [p.type, p.value]));
+    const into = (+parts.hour % 24) * 3600 + (+parts.minute) * 60 + (+parts.second);
+    return now + (86400 - into) * 1000;
+  } catch { return 0; }
+}
+
 const ERRORS = {
   key_groq: ['المفتاح الثاني ما يشتغل', 'ممكن انحذف أو انتهى. اربطه من جديد.', 'link'],
   key_gemini: ['المفتاح الأول ما يشتغل', 'ممكن انحذف أو انتهى. اربطه من جديد.', 'link'],
@@ -185,7 +197,7 @@ const ERRORS = {
   busy: ['خوادم الذكاء مزدحمة هسه', 'گوگل وكروك مضغوطين هسه، والمشكلة مو بمفاتيحك. الأجزاء المكتملة محفوظة، ودوس «أكمل التحويل» بعد دقيقتين ويكمل من مكانه.', 'retry'],
   no_engine: ['خلصت حصة اليوم بمفاتيحك', 'المقاطع المكتملة محفوظة. أضف مفتاح آخر من حساب ثاني وارفع نفس الملف ويكمل من مكانه، أو جرّب بعدين.', 'link'],
   daily_limit: ['خلص رصيد اليوم', 'المقاطع المكتملة محفوظة. ارجع ارفع نفس الملف بعدين ويكمل من مكانه، أو اطلب ساعات أكثر من المسؤول.', 'support'],
-  rate_limit: ['المفتاح مضغوط الآن', 'المقاطع المكتملة محفوظة. أضف مفتاح آخر للمفتاح الثاني، أو جرّب بعد شوية بنفس الملف ويكمل من مكانه.', 'retry+link'],
+  rate_limit: ['حصة المفتاح الثاني لهالساعة خلصت', 'Groq يعطي كل حساب حصة صوت محدودة بالساعة. المقاطع المكتملة محفوظة وتكمل من نفس المكان. مفتاح Groq من حساب ثاني يخليه يكمل هسه.', 'retry+link'],
   locked: ['توقف الكود', 'الكود موقوف أو انتهت مدته. راجع المسؤول.', 'reload'],
   audio: ['مشكلة بالملف', 'ما قدرت أقرأ الصوت من هذا الملف. جرّب صيغة ثانية.', 'home'],
   file_gone: ['اختر الملف مرة ثانية', 'الموبايل سكّر وصول الموقع للملف بعد ما طلعت من الصفحة. اختر نفس التسجيل (ونفس ملف PDF إذا موجود) ويكمل من مكانه، الأجزاء المكتملة محفوظة.', 'pick'],
@@ -225,7 +237,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry, auto = 
   const controller = new AbortController();
   let running = true, waitTimer = null;
   // مراقب: إذا ما تقدم شي 8 دقائق والمحرك بس ينتظر حصة المفاتيح، نوقف برسالة واضحة بدل عدّ «لحظات ونكمل» بلا نهاية
-  let progressAt = Date.now(), waitedSince = 0, stalled = null;
+  let progressAt = Date.now(), waitedSince = 0, stalled = null, stalledMin = 0;
   const STALL_MS = 8 * 60_000;
   // الوقت المعروض وقت العمل الفعلي: ما قضاه الطالب خارج الموقع لا يُحسب
   const clock = () => (ctx.io.activeNow ? ctx.io.activeNow() : Date.now());
@@ -442,6 +454,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry, auto = 
       waitedSince ||= Date.now();
       if (Date.now() - progressAt > STALL_MS && !stalled) {
         stalled = e.what || 'wait';
+        stalledMin = Math.round((Date.now() - progressAt) / 60000);
         controller.abort();
         return;
       }
@@ -473,6 +486,8 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry, auto = 
     const [title, message, action] = ERRORS[code] || ['توقف التحويل', 'صار خطأ غير متوقع. الأجزاء المكتملة محفوظة، جرّب مرة ثانية.', 'retry'];
     let msg = message;
     if (code === 'daily_limit' && extra.retryAfter) msg += ` يرجع رصيدك كامل الساعة 12 بالليل (بعد ${fmtHM(extra.retryAfter)} ساعة).`;
+    if (code === 'rate_limit' && extra.retryAfter) msg += ` يرجع يشتغل الساعة ${clockAt(Date.now() + extra.retryAfter * 1000)} تقريباً.`;
+    if (code === 'no_engine') { const at = googleResetAt(); if (at) msg += ` حصة Google المجانية تتجدد كل يوم الساعة ${clockAt(at)}.`; }
     const actions = [];
     const want = action.split('+');
     const sup = ctx.session.support;
@@ -501,7 +516,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry, auto = 
 
   function failWith(e) {
     if (stalled) {
-      ctx.api('/api/diag', { method: 'POST', body: { m: `Stalled: waiting ${stalled} for ${Math.round((Date.now() - progressAt) / 60000)} min`, st: stageNow, b: ctx.appBuild || ctx.session.build } }).catch(() => {});
+      loadEngine().then((m) => ctx.api('/api/diag', { method: 'POST', body: { m: `Stalled: waiting ${stalled} ${stalledMin} min: ${m.engineReport?.() || ''}`, st: stageNow, b: ctx.appBuild || ctx.session.build } })).catch(() => {});
       fail('stalled');
       return;
     }
@@ -526,14 +541,27 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry, auto = 
     if (isPipelineError(e) && ['busy', 'no_engine', 'rate_limit'].includes(e.code)) {
       // توقف بسبب المزوّدين: تقرير كل نموذج (نجاح/429/5xx) يُسجَّل حتى يبين السبب بالسجل
       loadEngine().then((m) => ctx.api('/api/diag', { method: 'POST', body: { m: `${e.code}: ${m.engineReport?.() || ''}`, st: stageNow, b: ctx.appBuild || ctx.session.build } })).catch(() => {});
+      // حصة Groq للساعة ترجع خلال دقائق: عدّ تنازلي ويكمل وحده من نفس المكان إذا بقت الصفحة مفتوحة
+      if (e.code === 'rate_limit' && e.retryAfter && e.retryAfter <= 20 * 60 && auto && auto.n < 3 && body.isConnected) {
+        cleanup(); game?.close();
+        let left = Math.ceil(e.retryAfter) + 15;
+        status.textContent = `حصة المفتاح الثاني لهالساعة خلصت. أكمل وحدي الساعة ${clockAt(Date.now() + left * 1000)} من نفس المكان، خلي الصفحة مفتوحة`;
+        const release2 = keepAwake();
+        const t = setInterval(() => {
+          if (!body.isConnected) { clearInterval(t); release2(); return; }
+          if (--left <= 0) { clearInterval(t); release2(); auto.again(auto.n + 1); } else sub.textContent = `أكمل بعد ${fmtTime(left)}`;
+        }, 1000);
+        return;
+      }
       // ضغط مؤقت: يكمل وحده بعد دقيقتين (مرتين على الأكثر) قبل ما يطلب من الطالب شي
       if (e.code === 'busy' && auto && auto.n < 2 && body.isConnected) {
         cleanup(); game?.close();
         let left = 120;
         status.textContent = 'خوادم الذكاء مزدحمة، أكمل وحدي بعد شوية من نفس المكان';
+        const release2 = keepAwake(); // الشاشة تبقى مضاءة حتى لا يوقف قفل الهاتف العدّ
         const t = setInterval(() => {
-          if (!body.isConnected) { clearInterval(t); return; }
-          if (--left <= 0) { clearInterval(t); auto.again(auto.n + 1); } else sub.textContent = `أكمل بعد ${left} ثانية`;
+          if (!body.isConnected) { clearInterval(t); release2(); return; }
+          if (--left <= 0) { clearInterval(t); release2(); auto.again(auto.n + 1); } else sub.textContent = `أكمل بعد ${left} ثانية`;
         }, 1000);
         return;
       }

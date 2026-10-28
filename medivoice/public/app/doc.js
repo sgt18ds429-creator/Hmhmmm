@@ -495,7 +495,7 @@ export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
       return;
     }
     const why = error === 'pdf_limit' ? 'وصلت الحد اليومي لملفات PDF.'
-      : error === 'pdf_quota' ? 'خادم التحويل مزدحم الآن.'
+      : error === 'pdf_quota' ? `خلصت دقائق خادم PDF المجانية لهاليوم (ترجع الساعة ${new Date(Math.ceil(Date.now() / 86400000) * 86400000).toLocaleTimeString('ar-IQ', { hour: 'numeric', minute: '2-digit' })}).`
       : error === 'pdf_busy' ? 'خادم التحويل مشغول الآن.'
       : error === 'too_large' ? 'الملزمة كبيرة على الخادم (صور كثيرة).'
       : error === 'network' ? 'انقطع الاتصال.' : error === 'timeout' ? 'خادم التحويل تأخر كثيراً.' : 'تعذّر تجهيز الملف على الخادم.';

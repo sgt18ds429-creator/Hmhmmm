@@ -283,11 +283,16 @@ export async function start(MV, root) {
             ctx.caps = null;
             ctx.ribbon.kick(0.8);
             const now = r.data.keys[id]?.count || 1;
-            ctx.toast(!adding ? `تم ربط ${PROVIDERS[r.data.linked]?.name || p.name}` : now > (state.count || 1) ? 'انضاف المفتاح.' : 'هذا المفتاح مربوط من قبل. أضف مفتاح من حساب ثاني.', 'ok');
+            if (r.data.shared > 0) {
+              // نفس المفتاح عند طلاب ثانيين: الحصة المجانية تنقسم بينهم وتخلص بسرعة
+              ctx.toast(`انربط، بس هذا المفتاح نفسه مربوط عند ${r.data.shared === 1 ? 'طالب ثاني' : `${r.data.shared} طلاب ثانيين`}، فحصته تنقسم بينكم. الأفضل مفتاح من حساب جديد.`, 'err');
+            } else ctx.toast(!adding ? `تم ربط ${PROVIDERS[r.data.linked]?.name || p.name}` : now > (state.count || 1) ? 'انضاف المفتاح.' : 'هذا المفتاح مربوط من قبل. أضف مفتاح من حساب ثاني.', 'ok');
             render();
           } else {
             const e = r.data?.error;
-            ctx.toast(e === 'bad_key' ? 'المفتاح غير صحيح. انسخه كاملاً.' : e === 'too_many_keys' ? 'الحد 6 مفاتيح.' : e === 'provider_down' ? 'تعذّر التحقق من المفتاح الآن. جرّب بعد قليل.' : 'تعذّر الحفظ. تأكد من الإنترنت.', 'err');
+            ctx.toast(e === 'bad_key' ? 'المفتاح غير صحيح. انسخه كاملاً.'
+              : e === 'key_restricted' ? 'Google قافل الاستخدام المجاني لهذا المفتاح (الحساب اللي انسوّى منه). سوّ مفتاح من حساب Google ثاني.'
+              : e === 'too_many_keys' ? 'الحد 6 مفاتيح.' : e === 'provider_down' ? 'تعذّر التحقق من المفتاح الآن. جرّب بعد قليل.' : 'تعذّر الحفظ. تأكد من الإنترنت.', 'err');
           }
         }
         async function paste() {

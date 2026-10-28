@@ -34,9 +34,10 @@ await page.waitForSelector('.view', { timeout: 15000 });
 await page.waitForTimeout(1200); await shot('02-link');
 
 step('link keys');
-for (const [name, key] of [['Gemini', process.env.GEMINI_KEY], ['Groq', process.env.GROQ_KEY]]) {
+// البطاقات «المفتاح الأول» (Gemini) ثم «المفتاح الثاني» (Groq)
+for (const [nth, key] of [[0, process.env.GEMINI_KEY], [1, process.env.GROQ_KEY]]) {
   if (!key) continue;
-  const input = page.locator('.prov', { has: page.locator('h3', { hasText: name }) }).locator('input.input').first();
+  const input = page.locator('.prov').nth(nth).locator('input.input').first();
   await input.fill(key);
   await input.press('Enter');
   await page.waitForSelector('.toast.ok', { timeout: 30000 });

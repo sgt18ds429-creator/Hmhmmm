@@ -66,7 +66,7 @@ export function engineReport() {
   if (!e) return '';
   const dead = new Set([e.stt, e.llm, e.gem, e.tx].flatMap((l) => l.items.filter((m) => m.dead).map((m) => m.id)));
   const short = (id) => id.replace(/^gemini-/, 'g').replace(/^whisper-large-v3/, 'w3').replace(/^openai\/gpt-oss-/, 'oss').replace(/-flash/, 'f').replace(/-lite/, 'L');
-  return Object.entries(e.modelStats).map(([id, s]) => `${short(id)}${dead.has(id) ? '✗' : ''}:${s.ok}/${s.r429}/${s.r5xx}/${s.other}${s.why?.[0] ? `(${s.why[0].slice(0, 24)})` : ''}`).join(' ');
+  return Object.entries(e.modelStats).map(([id, s]) => `${short(id)}${dead.has(id) ? '✗' : ''}:${s.ok}/${s.r429}/${s.r5xx}/${s.other}${s.why?.[0] ? `(${s.why[0].slice(0, 24)})` : s.why429 ? `(${s.why429})` : ''}`).join(' ');
 }
 
 export class Engine {
@@ -106,6 +106,13 @@ export class Engine {
       // للتشخيص: رمز الحالة وبداية رسالة الخطأ
       const msg = String(res.data?.error?.message || res.data?.error || '').slice(0, 80);
       (m.why || (m.why = [])).length < 4 && m.why.push(`${res.status} ${msg}`);
+    } else if (k === 'r429' && !m.why429) {
+      // نوع الحد: Groq يذكره بين قوسين (ASH حصة صوت الساعة، ASD اليوم، RPM/RPD طلبات الدقيقة/اليوم)، و Google بـ quotaId
+      const err = res.data?.error || {};
+      const text = typeof err === 'string' ? err : JSON.stringify(err);
+      const kind = (text.match(/\((A[SH]D|ASH|RP[MD]|TP[MD])\)/) || [])[1] || (/PerDay|per day|daily/i.test(text) ? 'day' : /PerMinute|per minute/i.test(text) ? 'min' : '');
+      const wait = (text.match(/try again in ((?:\d+h)?(?:\d+m)?(?:\d+(?:\.\d+)?s)?)/) || [])[1] || (res.retryAfter ? `${Math.round(res.retryAfter)}s` : '');
+      m.why429 = `429 ${kind} ${wait}`.trim().slice(0, 20);
     }
   }
 
@@ -211,7 +218,8 @@ export class Engine {
         if (wait === null) return null;
         // إذا الانتظار طويل ويوجد Gemini نكمل بدونه
         if (wait > 45_000 && this.hasGemini) return null;
-        if (wait > 40 * 60_000) throw new PipelineError('rate_limit', 'groq audio limit', { retryAfter: Math.ceil(wait / 1000) });
+        // بلا Gemini و Groq حدّه بعد دقائق (حصة صوت الساعة): نوقف بموعد واضح بدل انتظار بلا تقدم يقطعه مراقب التوقف
+        if (wait > 3 * 60_000) throw new PipelineError('rate_limit', 'groq audio limit', { retryAfter: Math.ceil(wait / 1000) });
         await this.pause(wait + 500, 'stt');
         continue;
       }

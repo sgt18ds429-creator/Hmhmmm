@@ -200,6 +200,7 @@ export class MediVoiceStore extends DurableObject {
       CREATE INDEX IF NOT EXISTS attempts_key ON attempts(key, ts);
       CREATE TABLE IF NOT EXISTS admin_sessions (id TEXT PRIMARY KEY, exp INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS key_health (code TEXT NOT NULL, k TEXT NOT NULL, until INTEGER NOT NULL, PRIMARY KEY (code, k));
+      CREATE TABLE IF NOT EXISTS key_notes (code TEXT NOT NULL, hint TEXT NOT NULL, note TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY (code, hint, note));
       CREATE TABLE IF NOT EXISTS moves (token TEXT PRIMARY KEY, secret TEXT, ip TEXT, created INTEGER NOT NULL, size INTEGER NOT NULL DEFAULT 0, claimed INTEGER, done INTEGER);
       CREATE TABLE IF NOT EXISTS move_parts (token TEXT NOT NULL, n INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (token, n));
     `);
@@ -250,6 +251,7 @@ export class MediVoiceStore extends DurableObject {
     this.sql.exec("DELETE FROM attempts WHERE (ts < ? AND key NOT LIKE 'mv:%') OR ts < ?", now - DAY, now - 31 * DAY);
     this.sql.exec('DELETE FROM admin_sessions WHERE exp < ?', now);
     this.sql.exec('DELETE FROM key_health WHERE until < ?', now);
+    this.sql.exec('DELETE FROM key_notes WHERE ts < ?', now - 30 * DAY);
     this.sql.exec('DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT 3000)');
     // نقلات قديمة: بياناتها تُحذف بعد يوم، وسجلها (هل وصلت؟) بعد شهر
     this.sql.exec('DELETE FROM move_parts WHERE token IN (SELECT token FROM moves WHERE created < ? OR done IS NOT NULL)', now - DAY);
@@ -572,6 +574,7 @@ export class MediVoiceStore extends DurableObject {
   /** خطأ غير متوقع أثناء تحويل عند الطالب: يُسجَّل للتشخيص (لا يظهر في سجل النشاط)، 12 بالساعة لكل كود */
   clientError(code, detail) {
     if (!this.#allow(`diag:${code}`, 3600_000, 12)) return;
+    this.#hit(`diag:${code}`);
     this.#event('client_error', { code, detail });
   }
 
@@ -581,6 +584,24 @@ export class MediVoiceStore extends DurableObject {
   /** يتذكّر حالة مفتاح+نموذج (حصة نفدت أو مفتاح ملغى) حتى موعدها، لكل خوادم Cloudflare */
   noteKey(code, k, until) {
     this.sql.exec('INSERT INTO key_health (code, k, until) VALUES (?, ?, ?) ON CONFLICT(code, k) DO UPDATE SET until = MAX(until, excluded.until)', code, String(k).slice(0, 120), until);
+  }
+
+  /**
+   * ملاحظة دائمة عن مفتاح كما رآه الخادم: restricted (Google قفل الحصة المجانية لمشروعه)، invalid (مرفوض)،
+   * blocked (Groq رفض الحساب)، أو org:<حساب Groq> (من رسالة حد Groq: مفاتيح بنفس الحساب تتشارك نفس الحصة).
+   * تظهر للمسؤول على الكود حتى يبدّل المفتاح قبل ما يشتكي الطالب.
+   */
+  keyNote(code, hint, note) {
+    this.sql.exec('INSERT INTO key_notes (code, hint, note, ts) VALUES (?, ?, ?, ?) ON CONFLICT(code, hint, note) DO UPDATE SET ts = excluded.ts',
+      code, String(hint).slice(0, 20), String(note).slice(0, 80), Date.now());
+  }
+  /** ملاحظات مفاتيح لم تعد مربوطة بالكود تُحذف */
+  #pruneNotes(code) {
+    const c = this.#row('SELECT gemini_hint, groq_hint FROM codes WHERE code = ?', code);
+    const keep = new Set([c?.gemini_hint, c?.groq_hint].flatMap((x) => String(x || '').split(' · ')).filter(Boolean));
+    for (const r of this.#all('SELECT DISTINCT hint FROM key_notes WHERE code = ?', code)) {
+      if (!keep.has(r.hint)) this.sql.exec('DELETE FROM key_notes WHERE code = ? AND hint = ?', code, r.hint);
+    }
   }
 
   /**
@@ -606,8 +627,13 @@ export class MediVoiceStore extends DurableObject {
     if (all.length > MAX_GEMINI_KEYS) return { ok: false, status: 400, error: 'too_many_keys' };
     this.sql.exec(`UPDATE codes SET ${col}_enc = ?, ${col}_hint = ? WHERE code = ?`, await this.#seal(JSON.stringify(all)), all.map(hintOf).join(' · '), c.code.code);
     this.sql.exec('DELETE FROM key_health WHERE code = ?', c.code.code);
+    this.#pruneNotes(c.code.code);
     this.#event('key_linked', { code: c.code.code, detail: provider });
-    return { ok: true, session: this.#sessionPayload(this.#row('SELECT * FROM codes WHERE code = ?', c.code.code)) };
+    // نفس المفتاح مربوط بأكواد ثانية: حصته المجانية تنقسم بينهم (ينبَّه من يربطه)
+    const added = new Set(list.map(hintOf));
+    const shared = this.#all(`SELECT ${col}_hint AS h FROM codes WHERE code != ? AND ${col}_hint IS NOT NULL`, c.code.code)
+      .filter((r) => String(r.h).split(' · ').some((x) => added.has(x))).length;
+    return { ok: true, shared, session: this.#sessionPayload(this.#row('SELECT * FROM codes WHERE code = ?', c.code.code)) };
   }
 
   removeKey(deviceId, provider) {
@@ -616,6 +642,7 @@ export class MediVoiceStore extends DurableObject {
     if (provider === 'groq') this.sql.exec('UPDATE codes SET groq_enc = NULL, groq_hint = NULL WHERE code = ?', c.code.code);
     else this.sql.exec('UPDATE codes SET gemini_enc = NULL, gemini_hint = NULL WHERE code = ?', c.code.code);
     this.sql.exec('DELETE FROM key_health WHERE code = ?', c.code.code);
+    this.#pruneNotes(c.code.code);
     return { ok: true, session: this.#sessionPayload(this.#row('SELECT * FROM codes WHERE code = ?', c.code.code)) };
   }
 
@@ -677,6 +704,29 @@ export class MediVoiceStore extends DurableObject {
       expired: !!(c.expires_at && now > c.expires_at),
       devices: byCode[c.code] || [],
     }));
+    // تنبيهات المفاتيح لكل كود: مفتاح Gemini قفلت Google حصته، مفتاح مرفوض، مفتاح نفسه مربوط بأكواد ثانية،
+    // ومفاتيح Groq من نفس الحساب (حصة الساعة واليوم مشتركة بينها)
+    const linked = new Map(); // hint → أكواد
+    for (const c of list) for (const p of ['gemini', 'groq']) for (const hint of String(c[`${p}_hint`] || '').split(' · ').filter(Boolean)) {
+      if (!linked.has(hint)) linked.set(hint, new Set());
+      linked.get(hint).add(c.code);
+    }
+    const notes = this.#all('SELECT code, hint, note FROM key_notes');
+    const orgs = new Map(); // حساب Groq → أكواد
+    for (const n of notes) if (n.note.startsWith('org:') && linked.get(n.hint)?.has(n.code)) {
+      if (!orgs.has(n.note)) orgs.set(n.note, new Set());
+      orgs.get(n.note).add(n.code);
+    }
+    for (const c of list) {
+      const mine = new Set(String(c.gemini_hint || '').split(' · ').concat(String(c.groq_hint || '').split(' · ')).filter(Boolean));
+      const has = (note) => notes.filter((n) => n.code === c.code && n.note === note && mine.has(n.hint)).length;
+      const shared = new Set(), sameOrg = new Set();
+      for (const hint of mine) for (const other of linked.get(hint) || []) if (other !== c.code) shared.add(other);
+      for (const n of notes) if (n.code === c.code && n.note.startsWith('org:') && mine.has(n.hint)) for (const other of orgs.get(n.note) || []) if (other !== c.code) sameOrg.add(other);
+      const named = (set) => [...set].map((x) => list.find((y) => y.code === x)?.label || displayCode(x));
+      const warn = { restricted: has('restricted'), invalid: has('invalid') + has('blocked'), shared: named(shared), same_org: named(sameOrg) };
+      if (warn.restricted || warn.invalid || warn.shared.length || warn.same_org.length) c.warn = warn;
+    }
     for (const c of list) { delete c.groq_hint; delete c.gemini_hint; }
     const days = this.#all(`
       SELECT CAST((ts + ?) / ? AS INTEGER) AS day,
@@ -704,6 +754,33 @@ export class MediVoiceStore extends DurableObject {
       // تشخيص النقل بين الروابط (لا يظهر في اللوحة)
       moves: this.#all('SELECT created, size, claimed, done, ip FROM moves ORDER BY created DESC LIMIT 40'),
     };
+  }
+
+  /**
+   * تشخيص للمسؤول (لا يظهر في اللوحة): السجل كاملاً بصفحات وحسب النوع، والمفاتيح المشتركة بين الأكواد (بآخر 4 حروف
+   * من كل مفتاح)، وما تعلّمه الخادم عن المفاتيح (حصة نفدت، مرفوض)، وأحجام الجداول، والاستخدام بالساعة اليوم.
+   */
+  async adminDiag(token, { type = '', before = '', limit = '' } = {}) {
+    if (!(await this.#admin(token))) return { ok: false, status: 401, error: 'unauthorized' };
+    const where = [], args = [];
+    if (type) { where.push('type = ?'); args.push(String(type).slice(0, 40)); }
+    if (parseInt(before, 10) > 0) { where.push('id < ?'); args.push(parseInt(before, 10)); }
+    const lim = Math.min(Math.max(parseInt(limit, 10) || 300, 1), 1000);
+    const events = this.#all(`SELECT id, ts, type, code, ip, country, detail FROM events ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY id DESC LIMIT ?`, ...args, lim)
+      .map((e) => ({ ...e, code: e.code ? displayCode(e.code) : null }));
+    const share = { gemini: {}, groq: {} };
+    for (const c of this.#all('SELECT code, gemini_hint, groq_hint FROM codes')) {
+      for (const p of ['gemini', 'groq']) for (const h of String(c[`${p}_hint`] || '').split(' · ').filter(Boolean)) (share[p][`…${h.slice(-4)}`] ||= []).push(displayCode(c.code));
+    }
+    const health = this.#all('SELECT code, k, until FROM key_health WHERE until > ? ORDER BY until DESC', Date.now())
+      .map((r) => ({ code: displayCode(r.code), k: String(r.k).replace(/^[^…|]*…/, '…'), until: r.until }));
+    const sizes = {};
+    for (const t of ['codes', 'devices', 'usage', 'events', 'attempts', 'key_health', 'key_notes', 'moves', 'move_parts']) sizes[t] = this.#row(`SELECT COUNT(*) AS n FROM ${t}`).n;
+    sizes.move_bytes = this.#row('SELECT COALESCE(SUM(LENGTH(data)), 0) AS b FROM move_parts').b;
+    try { sizes.db_bytes = this.sql.databaseSize; } catch {}
+    const hours = this.#all('SELECT CAST((ts - ?) / ? AS INTEGER) AS h, kind, COUNT(*) AS n, SUM(sec) AS sec, COUNT(DISTINCT code) AS users FROM usage WHERE ts >= ? GROUP BY h, kind ORDER BY h', dayStart(), HOUR, dayStart());
+    const notes = this.#all('SELECT code, hint, note, ts FROM key_notes ORDER BY ts DESC').map((n) => ({ ...n, code: displayCode(n.code), hint: `…${String(n.hint).slice(-4)}` }));
+    return { ok: true, now: Date.now(), build: BUILD, events, share, health, notes, sizes, hours };
   }
 
   async adminCreateCodes(token, { count = 1, label = '', note = '', days = null, max_devices = 1, daily_hours = null } = {}) {
@@ -766,6 +843,8 @@ export class MediVoiceStore extends DurableObject {
     const code = normalizeCode(rawCode);
     this.sql.exec('DELETE FROM devices WHERE code = ?', code);
     this.sql.exec('DELETE FROM usage WHERE code = ?', code);
+    this.sql.exec('DELETE FROM key_health WHERE code = ?', code);
+    this.sql.exec('DELETE FROM key_notes WHERE code = ?', code);
     this.sql.exec('DELETE FROM codes WHERE code = ?', code);
     this.#event('code_deleted', { code });
     return { ok: true };
@@ -1030,7 +1109,26 @@ function mergeHealth(auth) {
   }
 }
 /** يُستدعى عند تعلّم حالة جديدة: تُحفظ في قاعدة البيانات دون انتظار */
-const learn = (ctx, db, code) => (key, model, until) => { try { ctx.waitUntil(db.noteKey(code, `${hintOf(key)}|${model}`, until)); } catch {} };
+const noted = new Map(); // ملاحظات أُرسلت لقاعدة البيانات قريباً: لا تُكرَّر مع كل طلب
+const learn = (ctx, db, code) => Object.assign(
+  (key, model, until) => { try { ctx.waitUntil(db.noteKey(code, `${hintOf(key)}|${model}`, until)); } catch {} },
+  {
+    code,
+    note(key, note) {
+      const id = `${code}|${hintOf(key)}|${note}`;
+      if ((noted.get(id) || 0) > Date.now()) return;
+      remember(noted, id, 30 * MIN);
+      try { ctx.waitUntil(db.keyNote(code, hintOf(key), note)); } catch {}
+    },
+  });
+/** سطر تشخيص لرد مزوّد غير ناجح (يظهر في wrangler tail): الكود وآخر حروف المفتاح والنموذج وبداية الرسالة */
+const upLog = (onLearn, provider, key, model, status, text) => {
+  try { console.log('up', JSON.stringify({ c: onLearn?.code || '', p: provider, k: key.slice(-4), m: model, s: status, t: String(text || '').replace(/\s+/g, ' ').slice(0, 260) })); } catch {}
+};
+/** حساب Groq من رسالة حدّه: «… in organization `org_…` …» */
+const groqOrg = (text) => (String(text).match(/organization\s+`?(org_[A-Za-z0-9]+)/) || [])[1] || '';
+/** Google قفل الحصة المجانية لمشروع المفتاح (لا يرجع إلا بتفعيل الدفع أو مراجعة من Google) */
+const geminiRestrictedText = (text) => /free tier is not available|denied access|quota tier unavailable|project (has been )?restricted/i.test(String(text));
 
 /** خطأ يخص المفتاح نفسه (لا الطلب ولا النموذج): مفتاح غير صالح أو ملغى أو بلا صلاحية. */
 const keyRejected = (status, text) => status === 401
@@ -1067,8 +1165,11 @@ async function geminiWithKeys(keys, model, body, onLearn = () => {}) {
       return upstreamError(504, 'upstream timeout');
     }
     if (up.ok) return up;
-    if (up.status !== 429 && up.status !== 400 && up.status !== 401 && up.status !== 403) return up; // 5xx/404: لا يخص المفتاح
+    if (up.status !== 429 && up.status !== 400 && up.status !== 401 && up.status !== 403) { upLog(onLearn, 'gemini', key, model, up.status, ''); return up; } // 5xx/404: لا يخص المفتاح
     const text = await up.clone().text().catch(() => '');
+    upLog(onLearn, 'gemini', key, model, up.status, text);
+    if (up.status === 403 && geminiRestrictedText(text)) onLearn.note?.(key, 'restricted');
+    else if (keyRejected(up.status, text)) onLearn.note?.(key, 'invalid');
     if (up.status === 429) {
       // 429 قد تكون حصة الدقيقة (مؤقتة) أو حصة اليوم؛ في الحالتين المفتاح التالي أفضل الآن
       // قد يذكر الرد حدّي الدقيقة واليوم معاً: ذكر اليوم يكفي (المفتاح لن ينفع لهذا النموذج حتى التجدد)
@@ -1147,9 +1248,13 @@ async function groqWithKeys(keys, url, contentType, body, model = '', onLearn = 
       return upstreamError(504, 'upstream timeout');
     }
     if (up.ok) return up;
+    const text = await up.clone().text().catch(() => '');
+    upLog(onLearn, 'groq', key, model, up.status, text);
     if (up.status === 429) {
+      // مفاتيح Groq من نفس الحساب تتشارك حصة الساعة واليوم: الحساب يُحفظ حتى يشوفه المسؤول
+      const org = groqOrg(text);
+      if (org) onLearn.note?.(key, `org:${org}`);
       // «request too large» يخص الطلب لا المفتاح: مفتاح آخر لن يقبله أيضاً
-      const text = await up.clone().text().catch(() => '');
       if (/request too large|reduce your message/i.test(text)) return up;
       const wait = parseFloat(up.headers.get('retry-after')) || 0;
       // حد طويل (ساعات الصوت أو رموز اليوم): يُتذكّر لهذا المفتاح والنموذج حتى موعده
@@ -1159,8 +1264,8 @@ async function groqWithKeys(keys, url, contentType, body, model = '', onLearn = 
       last = up;
       continue;
     }
-    if (up.status === 401) { if (keys.length > 1) { remember(deadKeys, key, DEAD_MS); onLearn(key, '*', Date.now() + DEAD_MS); } last = up; continue; } // مفتاح ملغى أو محذوف
-    if (up.status === 403) { last = up; continue; } // حساب مقيّد أو نموذج غير متاح له: نجرب حساباً آخر
+    if (up.status === 401) { onLearn.note?.(key, 'invalid'); if (keys.length > 1) { remember(deadKeys, key, DEAD_MS); onLearn(key, '*', Date.now() + DEAD_MS); } last = up; continue; } // مفتاح ملغى أو محذوف
+    if (up.status === 403) { if (!/model/i.test(text)) onLearn.note?.(key, 'blocked'); last = up; continue; } // حساب مقيّد أو نموذج غير متاح له: نجرب حساباً آخر
     return up;
   }
   return soonest || last;
@@ -1169,12 +1274,35 @@ async function groqWithKeys(keys, url, contentType, body, model = '', onLearn = 
 async function verifyKey(provider, key) {
   try {
     const signal = AbortSignal.timeout(15_000);
-    const res = provider === 'groq'
-      ? await fetch('https://api.groq.com/openai/v1/models', { headers: { authorization: `Bearer ${key}` }, signal })
-      : await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1', { headers: { 'x-goog-api-key': key }, signal });
-    if (res.ok) return { ok: true };
-    if (res.status === 401 || res.status === 403 || res.status === 400) return { ok: false, error: 'bad_key' };
-    return { ok: false, error: 'provider_down', status: res.status };
+    if (provider === 'groq') {
+      const res = await fetch('https://api.groq.com/openai/v1/models', { headers: { authorization: `Bearer ${key}` }, signal });
+      if (res.ok) return { ok: true };
+      if (res.status === 401 || res.status === 403 || res.status === 400) return { ok: false, error: 'bad_key' };
+      return { ok: false, error: 'provider_down', status: res.status };
+    }
+    const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=300', { headers: { 'x-goog-api-key': key }, signal });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      if (res.status === 403 && geminiRestrictedText(text)) return { ok: false, error: 'key_restricted' };
+      if (res.status === 401 || res.status === 403 || res.status === 400) return { ok: false, error: 'bad_key' };
+      return { ok: false, error: 'provider_down', status: res.status };
+    }
+    // قائمة النماذج تشتغل حتى لمشروع قفلت Google حصته المجانية («The Gemini API free tier is not available for this
+    // project»)، فطلب صغير جداً بأخف نموذج يكشفه قبل ما يوصل المفتاح للطالب. حد الدقيقة أو اليوم أو ضغط مؤقت لا يرفضه
+    const list = await res.json().catch(() => null);
+    const names = (list?.models || []).filter((m) => (m.supportedGenerationMethods || []).includes('generateContent')).map((m) => String(m.name).replace(/^models\//, ''));
+    const plain = (n) => !/preview|exp|tts|image|audio|live|embed|thinking/.test(n);
+    const lite = names.filter((n) => /flash-lite/.test(n) && plain(n)).sort().pop() || names.filter((n) => /flash/.test(n) && plain(n)).sort().pop();
+    if (!lite) return { ok: true };
+    const probe = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${lite}:generateContent`, {
+      method: 'POST', headers: { 'x-goog-api-key': key, 'content-type': 'application/json' }, signal: AbortSignal.timeout(20_000),
+      body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'Reply with: OK' }] }], generationConfig: { maxOutputTokens: 16, temperature: 0 } }),
+    });
+    if (probe.ok) return { ok: true };
+    const text = await probe.text().catch(() => '');
+    if (probe.status === 403 && geminiRestrictedText(text)) return { ok: false, error: 'key_restricted' };
+    if (keyRejected(probe.status, text)) return { ok: false, error: 'bad_key' };
+    return { ok: true };
   } catch {
     return { ok: false, error: 'provider_down' };
   }
@@ -1226,6 +1354,7 @@ async function handleApi(request, env, ctx, url) {
       return json({ ok: true }, 200, { 'set-cookie': setCookie(ADMIN_COOKIE, '', { maxAge: 0, sameSite: 'Strict' }) });
     }
     if (path === '/api/admin/overview' && method === 'GET') return reply(await db.adminOverview(token));
+    if (path === '/api/admin/diag' && method === 'GET') return reply(await db.adminDiag(token, Object.fromEntries(url.searchParams)));
     if (path === '/api/admin/codes' && method === 'POST') return reply(await db.adminCreateCodes(token, body));
     if (path === '/api/admin/settings' && method === 'PUT') { const r = await db.adminSaveSettings(token, body); if (r.ok) forgetTheme(); return reply(r); }
     if (path === '/api/admin/password' && method === 'POST') return reply(await db.adminChangePassword(token, body.current, body.next));
@@ -1311,11 +1440,11 @@ async function handleApi(request, env, ctx, url) {
     if (!(await db.isActive(id))) return json({ error: 'locked' }, 401);
     for (const key of keys) {
       const v = await verifyKey(provider, key);
-      if (!v.ok) return json({ error: v.error, provider, hint: key.slice(0, 4) + '…' + key.slice(-4) }, v.error === 'bad_key' ? 400 : 502);
+      if (!v.ok) return json({ error: v.error, provider, hint: key.slice(0, 4) + '…' + key.slice(-4) }, v.error === 'bad_key' || v.error === 'key_restricted' ? 400 : 502);
     }
     const r = await db.setKey(id, provider, keys, { add: body.add === true });
     forgetAuth(id);
-    return r.ok ? json({ ...r.session, linked: provider }) : json({ error: r.error }, r.status);
+    return r.ok ? json({ ...r.session, linked: provider, shared: r.shared || 0 }) : json({ error: r.error }, r.status);
   }
 
   if (path === '/api/keys' && method === 'DELETE') {

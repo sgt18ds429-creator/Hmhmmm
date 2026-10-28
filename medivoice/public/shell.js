@@ -120,7 +120,9 @@ export function toast(message, kind = '') {
   el.className = `toast ${kind}`;
   el.textContent = message;
   $('#toasts').append(el);
-  setTimeout(() => { el.classList.add('bye'); setTimeout(() => el.remove(), 320); }, kind === 'err' ? 5200 : 3200);
+  // الرسالة الطويلة تبقى وقتاً يكفي لقراءتها
+  const ms = Math.min(10_000, Math.max(kind === 'err' ? 5200 : 3200, String(message).length * 70));
+  setTimeout(() => { el.classList.add('bye'); setTimeout(() => el.remove(), 320); }, ms);
 }
 
 export function fingerprint() {

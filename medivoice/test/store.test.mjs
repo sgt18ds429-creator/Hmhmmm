@@ -423,3 +423,94 @@ test('تسجيل خروج الزبون: يرجع لصفحة الكود، ورج�
   assert.equal(ov.codes[0].devices[0].out, false);
   assert.equal(ov.events.filter((e) => e.type === 'device_moved').length, 0, 'ما انحسب نقل');
 });
+
+test('مشاكل المفاتيح للمسؤول: مفتاح Gemini قفلت Google حصته، مفتاح مشترك، ومفاتيح Groq من نفس الحساب', async () => {
+  const { MediVoiceStore } = await loadModule();
+  const store = makeStore(MediVoiceStore);
+  const { token } = await store.adminLogin('admin-pass-123', '10.0.0.9');
+  const made = await store.adminCreateCodes(token, { count: 3, label: 'طالب' });
+  const [a, b, c] = made.created;
+  for (const [i, code] of made.created.entries()) await store.activate(`dev-${i}`, code, { ...META, screen: `${400 + i}x900` });
+  const gem = (n) => `AIza${String(n).repeat(35)}`;
+  const grq = (n) => `gsk_${String(n).repeat(40)}`;
+  await store.setKey('dev-0', 'gemini', [gem(1), gem(2)]);
+  const shared = await store.setKey('dev-1', 'gemini', [gem(2)]); // نفس مفتاح الطالب الأول
+  assert.equal(shared.shared, 1, 'من يربطه يُنبَّه أنه مربوط عند طالب ثاني');
+  await store.setKey('dev-1', 'groq', [grq(3)]);
+  await store.setKey('dev-2', 'groq', [grq(4)]);
+  const hint = (k) => `${k.slice(0, 4)}…${k.slice(-4)}`;
+  store.keyNote(compact(a), hint(gem(1)), 'restricted');
+  store.keyNote(compact(b), hint(grq(3)), 'org:org_SAME');
+  store.keyNote(compact(c), hint(grq(4)), 'org:org_SAME');
+  const ov = await store.adminOverview(token);
+  const by = Object.fromEntries(ov.codes.map((x) => [x.display, x]));
+  assert.equal(by[a].warn.restricted, 1);
+  assert.deepEqual(by[a].warn.shared, ['طالب 2']);
+  assert.deepEqual(by[b].warn.shared, ['طالب 1']);
+  assert.deepEqual(by[b].warn.same_org, ['طالب 3']);
+  assert.deepEqual(by[c].warn.same_org, ['طالب 2']);
+  assert.equal(ov.codes.some((x) => 'gemini_hint' in x || 'groq_hint' in x), false, 'أجزاء المفاتيح ما تطلع للوحة');
+  // تبديل المفتاح المقفول يمسح تنبيهه
+  await store.setKey('dev-0', 'gemini', [gem(5)]);
+  const ov2 = await store.adminOverview(token);
+  assert.equal(ov2.codes.find((x) => x.display === a).warn, undefined, 'ما بقى تنبيه (ولا مشترك بعد التبديل)');
+  // حذف كود يمسح ملاحظاته
+  await store.adminDeleteCode(token, compact(c));
+  const ov3 = await store.adminOverview(token);
+  assert.equal(ov3.codes.find((x) => x.display === b).warn?.same_org, undefined);
+});
+
+test('بروكسي: رد Google «free tier is not available» يُسجَّل للمفتاح، وحد Groq يسجّل حسابه (org)', async () => {
+  const worker = (await loadModule()).default;
+  const realFetch = globalThis.fetch, realRandom = Math.random;
+  Math.random = () => 0;
+  const notes = [];
+  globalThis.fetch = async (url) => {
+    if (/googleapis/.test(url)) return new Response(JSON.stringify({ error: { code: 403, message: 'The Gemini API free tier is not available for this project. Please set up billing to upgrade to the paid tier.', status: 'PERMISSION_DENIED' } }), { status: 403, headers: { 'content-type': 'application/json' } });
+    return new Response(JSON.stringify({ error: { message: 'Rate limit reached for model `whisper-large-v3` in organization `org_01abcXYZ` service tier `on_demand` on seconds of audio per hour (ASH): Limit 7200, Used 7100, Requested 480. Please try again in 9m31s.', type: 'seconds', code: 'rate_limit_exceeded' } }), { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '571' } });
+  };
+  const ctx = { waitUntil(p) { p?.catch?.(() => {}); } };
+  try {
+    const env = proxyEnv(['AIzaRESTRICTED0000000000000000000wxyz'], { keyNote: async (code, hint, note) => notes.push([code, hint, note]), noteKey: async () => {} });
+    const r = await worker.fetch(new Request('https://mv.test/api/gemini?model=gemini-x&sec=0', { method: 'POST', headers: { cookie: `mv_dev=${'g'.repeat(40)}`, 'x-mv': '1', 'content-type': 'application/json' }, body: '{}' }), env, ctx);
+    assert.equal(r.status, 403, 'المتصفح يستلم نفس رد Google فيكشفه');
+    const s = await worker.fetch(sttReq('h'.repeat(40)), env, ctx);
+    assert.equal(s.status, 429);
+    await new Promise((res) => setTimeout(res, 5));
+    assert.deepEqual(notes, [['c', 'AIza…wxyz', 'restricted'], ['c', 'AIza…wxyz', 'org:org_01abcXYZ']]);
+  } finally { globalThis.fetch = realFetch; Math.random = realRandom; }
+});
+
+test('ربط مفتاح Gemini قفلت Google حصته المجانية يُرفض برسالة واضحة، وحد الدقيقة لا يرفض مفتاحاً سليماً', async () => {
+  const worker = (await loadModule()).default;
+  const realFetch = globalThis.fetch;
+  let mode = 'restricted';
+  const probes = [];
+  globalThis.fetch = async (url, init) => {
+    if (/\/models\?/.test(url)) return new Response(JSON.stringify({ models: [
+      { name: 'models/gemini-3.5-flash', supportedGenerationMethods: ['generateContent'] },
+      { name: 'models/gemini-3.1-flash-lite', supportedGenerationMethods: ['generateContent'] },
+      { name: 'models/gemini-3.5-flash-lite', supportedGenerationMethods: ['generateContent'] },
+      { name: 'models/gemini-3.5-flash-lite-preview-tts', supportedGenerationMethods: ['generateContent'] },
+    ] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    probes.push(url.match(/models\/([^:]+):/)[1]);
+    if (mode === 'restricted') return new Response(JSON.stringify({ error: { code: 403, message: 'The Gemini API free tier is not available for this project.', status: 'PERMISSION_DENIED' } }), { status: 403 });
+    if (mode === 'minute') return new Response(JSON.stringify({ error: { code: 429, message: 'quota' } }), { status: 429 });
+    return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'OK' }] } }] }), { status: 200 });
+  };
+  let saved = 0;
+  const env = { STORE: { idFromName: () => 'x', get: () => ({ isActive: async () => true, setKey: async () => { saved++; return { ok: true, shared: 0, session: { active: true } }; } }) } };
+  const link = () => worker.fetch(new Request('https://mv.test/api/keys', { method: 'POST', headers: { cookie: `mv_dev=${'k'.repeat(40)}`, 'x-mv': '1', 'content-type': 'application/json' }, body: JSON.stringify({ key: `AIza${'q'.repeat(35)}` }) }), env, { waitUntil() {} });
+  try {
+    const r = await link();
+    assert.equal(r.status, 400);
+    assert.equal((await r.json()).error, 'key_restricted');
+    assert.equal(saved, 0, 'ما انحفظ');
+    assert.deepEqual(probes, ['gemini-3.5-flash-lite'], 'طلب واحد بأخف نموذج عادي');
+    mode = 'minute';
+    assert.equal((await link()).status, 200, 'حد الدقيقة ما يعني المفتاح خربان');
+    mode = 'ok';
+    assert.equal((await link()).status, 200);
+    assert.equal(saved, 2);
+  } finally { globalThis.fetch = realFetch; }
+});
