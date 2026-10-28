@@ -651,6 +651,9 @@ export async function runLecture({ file, meta, cfg, caps, io, emit = () => {}, s
   try {
     info = await probeAudio(file);
   } catch (e) {
+    // الموبايل سحب وصول الصفحة للملف: الخطأ يمر كما هو حتى تطلب الشاشة اختيار الملف من جديد (مو «صيغة غير مدعومة»)
+    const gone = [e, e?.cause].some((x) => /^(NotFoundError|NotReadableError)$/.test(x?.name || '') || /can ?not be found|could not be read/i.test(String(x?.message || '')));
+    if (gone) throw e?.cause && !/^(NotFoundError|NotReadableError)$/.test(e?.name || '') ? e.cause : e;
     throw e instanceof AudioError ? new PipelineError('audio', e.message, { audio: e.code }) : new PipelineError('audio', 'تعذّر قراءة الملف', { audio: 'unsupported' });
   }
   const dual = caps.groq; // Whisper متاح: نستخدم التداخل والقطع عند السكتات
@@ -775,6 +778,8 @@ export async function runLecture({ file, meta, cfg, caps, io, emit = () => {}, s
     await chain.catch(() => {});
     await Promise.allSettled([...running]);
     if (e instanceof PipelineError) throw e;
+    const gone = [e, e?.cause].find((x) => /^(NotFoundError|NotReadableError)$/.test(x?.name || '') || /can ?not be found|could not be read/i.test(String(x?.message || '')));
+    if (gone) throw gone; // الموبايل سحب وصول الصفحة للملف: الشاشة تطلب اختياره من جديد
     if (e instanceof AudioError) throw new PipelineError(e.code === 'aborted' ? 'aborted' : 'audio', e.message, { audio: e.code });
     throw e;
   }

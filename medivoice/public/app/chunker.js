@@ -40,7 +40,8 @@ export async function probeAudio(blob) {
     try {
       track = await input.getPrimaryAudioTrack();
     } catch (e) {
-      throw new AudioError('unsupported', 'صيغة الملف غير مدعومة');
+      // السبب الأصلي يبقى (ملف سحب الموبايل وصول الصفحة له يختلف عن صيغة غير مدعومة)
+      throw Object.assign(new AudioError('unsupported', 'صيغة الملف غير مدعومة'), { cause: e });
     }
     if (!track) throw new AudioError('no-audio', 'الملف لا يحتوي على صوت');
     const codec = track.codec;

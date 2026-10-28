@@ -43,6 +43,20 @@ function toggle(label, hint, checked, onChange) {
 }
 
 // ───────────── تفاصيل المحاضرة ─────────────
+/** الموبايل سحب وصول الصفحة للملف (NotFoundError بسفاري الآيفون، NotReadableError بغيره) */
+const lostFile = (e) => [e, e?.cause].some((x) => /^(NotFoundError|NotReadableError)$/.test(x?.name || '') || /can ?not be found|could not be read|NotReadable/i.test(String(x?.message || '')));
+
+/**
+ * نسخة من الملف داخل الصفحة نفسها. ملف مختار من «الملفات» أو iCloud بالآيفون يصير غير مقروء بعد ما الصفحة تروح
+ * للخلفية أو تتحدث (The object can not be found here)، فالتحويل والاستئناف وحفظ نسخة الاستئناف يشتغلون على النسخة.
+ * الاسم والحجم والتاريخ نفسها، فالتحويل يبقى يكمل من مكانه. الملفات الضخمة جداً تبقى كما هي (ذاكرة الهاتف).
+ */
+async function ownCopy(f) {
+  if (!f || f.size > 700e6) return f;
+  return new File([await f.arrayBuffer()], f.name, { type: f.type, lastModified: f.lastModified });
+}
+const GONE_MSG = 'ما كدرت أقرأ الملف من مكانه. إذا هو بـ iCloud نزّله للموبايل أول (افتحه مرة بتطبيق الملفات)، بعدين اختاره مرة ثانية.';
+
 export function viewNew(ctx, el, { file, recId = null }) {
   ctx.setBar('sub', { title: 'محاضرة جديدة' });
   ctx.ribbon.set({ alpha: 0 });
@@ -55,7 +69,11 @@ export function viewNew(ctx, el, { file, recId = null }) {
   const startBtn = h('button', { class: 'btn wide', disabled: true, onclick: start }, 'ابدأ التحويل');
   const warn = h('div');
   // ملف PDF المحاضرة (للنوع المتكامل)
-  const pdfInput = h('input', { type: 'file', accept: '.pdf,application/pdf', hidden: true, onchange: () => { const f = pdfInput.files?.[0]; pdfInput.value = ''; if (f) { pdfFile = f; paintPdf(); } } });
+  const pdfInput = h('input', { type: 'file', accept: '.pdf,application/pdf', hidden: true, onchange: () => {
+    const f = pdfInput.files?.[0];
+    pdfInput.value = '';
+    if (f) ownCopy(f).then((c) => { pdfFile = c; paintPdf(); }).catch(() => ctx.toast(GONE_MSG, 'err'));
+  } });
   const pdfBox = h('div', { class: 'stack', hidden: true });
   function paintPdf() {
     clear(pdfBox);
@@ -129,7 +147,7 @@ export function viewNew(ctx, el, { file, recId = null }) {
   });
   db.getPref('subjects', []).then((list) => { for (const s of list || []) subjects.append(h('option', { value: s })); });
 
-  loadEngine().then(({ probeAudio }) => probeAudio(file)).then((i) => {
+  ownCopy(file).then((c) => { file = c; return loadEngine(); }).then(({ probeAudio }) => probeAudio(file)).then((i) => {
     info = i;
     const u = ctx.session.usage;
     const left = Math.max(0, u.limit_sec - u.used_sec);
@@ -140,7 +158,8 @@ export function viewNew(ctx, el, { file, recId = null }) {
     paintStart();
   }).catch((e) => {
     fileMeta.textContent = fmtSize(file.size);
-    const msg = e?.code === 'no-audio' ? 'هذا الملف ما بيه صوت.'
+    const msg = lostFile(e) ? GONE_MSG
+      : e?.code === 'no-audio' ? 'هذا الملف ما بيه صوت.'
       : e?.code === 'codec' ? 'ترميز الصوت بهذا الملف ما مدعوم (مثل تسجيلات الآيفون بجودة Lossless أو صيغة AMR القديمة). بالآيفون: الإعدادات ← المذكرات الصوتية ← جودة الصوت ← مضغوط، أو حوّل الملف إلى m4a أو mp3.'
       : e?.code === 'empty' ? 'الملف فارغ أو التسجيل ما اكتمل.'
       : 'ما قدرت أقرأ هذا الملف. جرّب صيغة m4a أو mp3 أو wav أو mp4.';
@@ -167,6 +186,8 @@ const ERRORS = {
   rate_limit: ['المفتاح مضغوط الآن', 'المقاطع المكتملة محفوظة. أضف مفتاح آخر للمفتاح الثاني، أو جرّب بعد شوية بنفس الملف ويكمل من مكانه.', 'retry+link'],
   locked: ['توقف الكود', 'الكود موقوف أو انتهت مدته. راجع المسؤول.', 'reload'],
   audio: ['مشكلة بالملف', 'ما قدرت أقرأ الصوت من هذا الملف. جرّب صيغة ثانية.', 'home'],
+  file_gone: ['اختر الملف مرة ثانية', 'الموبايل سكّر وصول الموقع للملف بعد ما طلعت من الصفحة. اختر نفس التسجيل (ونفس ملف PDF إذا موجود) ويكمل من مكانه، الأجزاء المكتملة محفوظة.', 'pick'],
+  stalled: ['مفاتيحك مضغوطة هسه', 'صار وقت طويل والمزوّد ما يرد لأن حصة مفاتيحك مضغوطة. الأجزاء المكتملة محفوظة. جرّب بعد شوية بنفس الملف ويكمل من مكانه، وإضافة مفتاح ثاني تسرّع التحويل.', 'retry+link'],
   empty: ['ماكو كلام بالتسجيل', 'ما لقيت كلام واضح. تأكد إنه تسجيل محاضرة وصوته مسموع.', 'home'],
   not_lecture: ['هذا التسجيل مو محاضرة', 'ما لقيت بيه شرح علمي حتى أكتبه ملزمة مشروحة.', 'home'],
   network: ['انقطع الاتصال', 'المقاطع المكتملة محفوظة. تأكد من الإنترنت وكمّل.', 'retry'],
@@ -201,6 +222,9 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry, auto = 
   ctx.setBar('sub', { title });
   const controller = new AbortController();
   let running = true, waitTimer = null;
+  // مراقب: إذا ما تقدم شي 8 دقائق والمحرك بس ينتظر حصة المفاتيح، نوقف برسالة واضحة بدل عدّ «لحظات ونكمل» بلا نهاية
+  let progressAt = Date.now(), waitedSince = 0, stalled = null;
+  const STALL_MS = 8 * 60_000;
   // الوقت المعروض وقت العمل الفعلي: ما قضاه الطالب خارج الموقع لا يُحسب
   const clock = () => (ctx.io.activeNow ? ctx.io.activeNow() : Date.now());
   const t0 = clock();
@@ -412,12 +436,21 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry, auto = 
     } else if (e.type === 'wait') {
       let left = e.seconds;
       clearInterval(waitTimer);
-      const paint = () => { sub.textContent = `لحظات ونكمل… ${left} ثانية`; };
+      waitedSince ||= Date.now();
+      if (Date.now() - progressAt > STALL_MS && !stalled) {
+        stalled = e.what || 'wait';
+        controller.abort();
+        return;
+      }
+      // انتظار طويل متكرر: نقول السبب، والحل اللي يسرّعه
+      const long = Date.now() - waitedSince > 90_000;
+      const paint = () => { sub.textContent = long ? `مفاتيحك مضغوطة، ننتظر دورها… ${left} ثانية (مفتاح ثاني يسرّع)` : `لحظات ونكمل… ${left} ثانية`; };
       paint();
       waitTimer = setInterval(() => { left--; if (left <= 0) { clearInterval(waitTimer); waitTimer = null; } else paint(); }, 1000);
     } else if (e.type === 'resume') {
       clearInterval(waitTimer); waitTimer = null;
     }
+    if (e.type !== 'wait' && e.type !== 'resume' && e.type !== 'note') { progressAt = Date.now(); waitedSince = 0; }
   }
 
   function cleanup() {
@@ -442,6 +475,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry, auto = 
     const sup = ctx.session.support;
     if (want.includes('retry')) actions.push(h('button', { class: 'btn', onclick: retry }, 'أكمل التحويل'));
     if (want.includes('link')) actions.push(h('button', { class: want[0] === 'link' ? 'btn' : 'btn ghost', onclick: () => ctx.go('link', {}, { replace: true }) }, want[0] === 'link' ? 'ربط المفاتيح' : 'إضافة مفتاح'));
+    if (want.includes('pick')) actions.push(h('button', { class: 'btn', onclick: () => { ctx.go('home', {}, { replace: true }); setTimeout(ctx.pickFile, 250); } }, 'اختر الملف'));
     if (want.includes('reload')) actions.push(h('button', { class: 'btn', onclick: () => location.reload() }, 'تحديث'));
     if (want.includes('support') && sup?.url) actions.push(h('a', { class: 'btn', href: sup.url, target: '_blank', rel: 'noopener' }, icon('external'), 'اطلب ساعات أكثر'));
     actions.push(h('button', { class: 'btn ghost', onclick: () => history.back() }, 'رجوع'));
@@ -463,7 +497,17 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry, auto = 
   }
 
   function failWith(e) {
+    if (stalled) {
+      ctx.api('/api/diag', { method: 'POST', body: { m: `Stalled: waiting ${stalled} for ${Math.round((Date.now() - progressAt) / 60000)} min`, st: stageNow, b: ctx.session.build } }).catch(() => {});
+      fail('stalled');
+      return;
+    }
     if (e?.name === 'AbortError' || e?.code === 'aborted') { cleanup(); game?.close(); return; }
+    if (lostFile(e)) {
+      ctx.api('/api/diag', { method: 'POST', body: { m: `${e?.name}: ${e?.message}`.slice(0, 160), st: stageNow, b: ctx.session.build } }).catch(() => {});
+      fail('file_gone');
+      return;
+    }
     console.error(e);
     if (!isPipelineError(e)) {
       // خطأ غير متوقع: يُسجَّل للتشخيص، ويكمل التحويل وحده من مكانه (مرتين على الأكثر) قبل أي رسالة
