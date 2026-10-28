@@ -253,6 +253,7 @@ function tabCodes(view) {
       stat(String(t.today_users || 0), '', 'مستخدم نشط اليوم'),
       stat(String(t.lectures || 0), '', 'محاضرة محوّلة')),
     h('button', { class: 'btn wide', onclick: openCreate }, icon('plus'), 'كود جديد'),
+    d.codes.some((c) => c.gemini || c.groq) ? h('button', { class: 'btn ghost wide', onclick: openKeyCheck }, icon('shield'), 'فحص مفاتيح الطلاب') : null,
     h('div', { class: 'tools' },
       h('div', { class: 'sec-title' }, h('h2', { class: 'h-section' }, 'الأكواد'), h('small', null, `${d.codes.length} كود`)),
       d.codes.length > 4 ? h('div', { class: 'search' }, icon('search'), search) : null,
@@ -415,6 +416,49 @@ function openCreate() {
         field('ملاحظة', note))),
     btn) });
   name.focus();
+}
+
+/**
+ * فحص مفاتيح كل الطلاب من الخادم قبل ما تطلع المشكلة عندهم: Gemini هل قفلت Google حصته المجانية، و Groq هل
+ * المفتاح شغّال. النتيجة تظهر على بطاقة كل طالب (تحذير أحمر). ثلاثة طلاب بنفس الوقت.
+ */
+function openKeyCheck() {
+  const list = state.data.codes.filter((c) => c.status === 'active' && !c.expired && (c.gemini || c.groq));
+  const text = h('p', { class: 'dim' }, `أفحص مفاتيح ${list.length} طالب من الخادم: هل Google قافل الحصة المجانية لمفتاح Gemini، وهل مفتاح Groq شغّال. الفحص ما يستهلك من حصصهم إلا طلب صغير لكل مفتاح.`);
+  const bar = h('div', { class: 'check-bar', hidden: true }, h('i'));
+  const out = h('div', { class: 'stack' });
+  const startBtn = h('button', { class: 'btn wide', onclick: run }, icon('shield'), 'ابدأ الفحص');
+  let stopped = false;
+  sheet({ title: 'فحص مفاتيح الطلاب', body: h('div', { class: 'stack lg' }, text, bar, out, startBtn), onClose: () => { stopped = true; } });
+
+  async function run() {
+    startBtn.hidden = true;
+    bar.hidden = false;
+    const queue = [...list], bad = [];
+    let done = 0, failed = 0;
+    const worker = async () => {
+      while (queue.length && !stopped) {
+        const c = queue.shift();
+        const r = await api(`/api/admin/codes/${c.code}/check-keys`, { method: 'POST' });
+        done++;
+        bar.firstChild.style.width = `${Math.round((done / list.length) * 100)}%`;
+        text.textContent = `فحصت ${done} من ${list.length}…`;
+        if (!r.ok || !r.data?.results) { failed++; continue; }
+        const restricted = r.data.results.filter((x) => x.provider === 'gemini' && x.state === 'restricted').length;
+        const invalid = r.data.results.filter((x) => x.state === 'invalid').length;
+        if (restricted || invalid) bad.push({ c, restricted, invalid });
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]);
+    if (stopped) return;
+    text.textContent = (bad.length ? `خلص الفحص: ${bad.length} طالب مفاتيحهم تحتاج تبديل.` : 'خلص الفحص: كل المفاتيح شغّالة.')
+      + (failed ? ` (${failed} ما انفحصوا، جرّب بعدين)` : '');
+    clear(out).append(...bad.map(({ c, restricted, invalid }) => h('div', { class: 'key-warn' },
+      h('b', null, icon('warn'), c.label || c.display),
+      h('span', null, [restricted ? `Google قافل ${restricted === 1 ? 'مفتاح Gemini' : `${restricted} من مفاتيح Gemini`}، سوّ مفتاح من حساب Google ثاني` : '',
+        invalid ? (invalid === 1 ? 'مفتاح مرفوض (انحذف أو انقفل)' : `${invalid} مفاتيح مرفوضة`) : ''].filter(Boolean).join('. ')))));
+    await load(true);
+  }
 }
 
 function openCreated(list) {

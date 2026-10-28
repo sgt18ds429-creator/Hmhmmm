@@ -535,3 +535,36 @@ test('فحص الربط الإضافي لا يمنع ربط مفتاح سليم 
     assert.equal(r.status, 200);
   } finally { globalThis.fetch = realFetch; }
 });
+
+test('فحص مفاتيح طالب من لوحة التحكم: المفاتيح ما تطلع للمتصفح، المقفول يُسجَّل، والسليم تنمسح ملاحظته القديمة', async () => {
+  const { MediVoiceStore, default: worker } = await loadModule();
+  const store = makeStore(MediVoiceStore);
+  const { token } = await store.adminLogin('admin-pass-123', '10.0.0.9');
+  const made = await store.adminCreateCodes(token, { label: 'طالب' });
+  await store.activate('dev-k', made.created[0], META);
+  const good = `AIza${'g'.repeat(35)}`, bad = `AIza${'b'.repeat(35)}`, grq = `gsk_${'q'.repeat(40)}`;
+  await store.setKey('dev-k', 'gemini', [good, bad]);
+  await store.setKey('dev-k', 'groq', [grq]);
+  const code = compact(made.created[0]);
+  store.keyNote(code, `${good.slice(0, 4)}…${good.slice(-4)}`, 'restricted'); // ملاحظة قديمة: Google رجّع الحصة بعدها
+  assert.equal((await store.adminKeysFor('wrong', code)).ok, false, 'بلا دخول المسؤول ما يطلع شي');
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const key = init?.headers?.['x-goog-api-key'] || String(init?.headers?.authorization || '').slice(7);
+    if (/\/models\?/.test(url)) return new Response(JSON.stringify({ models: [{ name: 'models/gemini-3.5-flash-lite', supportedGenerationMethods: ['generateContent'] }] }), { status: 200 });
+    if (/groq/.test(url)) return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    if (key === bad) return new Response(JSON.stringify({ error: { code: 403, message: 'The Gemini API free tier is not available for this project.' } }), { status: 403 });
+    return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'OK' }] } }] }), { status: 200 });
+  };
+  const env = { STORE: { idFromName: () => 'x', get: () => store } };
+  try {
+    const r = await worker.fetch(new Request(`https://mv.test/api/admin/codes/${code}/check-keys`, { method: 'POST', headers: { cookie: `mv_adm=${token}`, 'x-mv': '1' } }), env, { waitUntil() {} });
+    assert.equal(r.status, 200);
+    const j = await r.json();
+    assert.deepEqual(j.results.map((x) => [x.provider, x.state]), [['gemini', 'ok'], ['gemini', 'restricted'], ['groq', 'ok']]);
+    assert.ok(j.results.every((x) => /^….{4}$/.test(x.hint)), 'آخر 4 حروف فقط');
+    assert.ok(!JSON.stringify(j).includes(good) && !JSON.stringify(j).includes(bad));
+  } finally { globalThis.fetch = realFetch; }
+  const w = (await store.adminOverview(token)).codes[0].warn;
+  assert.equal(w.restricted, 1, 'المقفول فقط (السليم انمسحت ملاحظته)');
+});

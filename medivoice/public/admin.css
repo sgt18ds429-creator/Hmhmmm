@@ -51,6 +51,8 @@
 .cc-line .icon { width: 16px; height: 16px; color: var(--text-3); }
 .cc-line span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cc-line time { margin-inline-start: auto; flex: none; color: var(--text-3); font-size: 0.8rem; }
+.check-bar { height: 6px; background: var(--track); border-radius: 99px; overflow: hidden; direction: ltr; }
+.check-bar i { display: block; width: 0; height: 100%; background: var(--grad); border-radius: 99px; transition: width 0.4s var(--ease); }
 .cc-warn { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; color: var(--rose); background: var(--rose-bg); border-radius: 10px; font-size: 0.84rem; line-height: 1.5; }
 .cc-warn .icon { flex: none; width: 16px; height: 16px; margin-top: 2px; }
 .cc-warn span { min-width: 0; }

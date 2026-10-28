@@ -795,6 +795,23 @@ export class MediVoiceStore extends DurableObject {
     return { ok: true, now: Date.now(), build: BUILD, events, share, health, notes, sizes, hours };
   }
 
+  /** للفحص من الخادم فقط (المفاتيح ما تطلع للمتصفح): مفاتيح كود واحد */
+  async adminKeysFor(token, rawCode) {
+    if (!(await this.#admin(token))) return { ok: false, status: 401, error: 'unauthorized' };
+    const c = this.#row('SELECT code, gemini_enc, groq_enc FROM codes WHERE code = ?', normalizeCode(rawCode));
+    if (!c) return { ok: false, status: 404, error: 'not_found' };
+    return { ok: true, code: c.code, gemini: parseKeys(await this.#open(c.gemini_enc)), groq: parseKeys(await this.#open(c.groq_enc)) };
+  }
+  /** نتيجة فحص المفاتيح: مقفول/مرفوض يُسجَّل، والسليم تنمسح عنه ملاحظة قديمة */
+  async adminKeyResults(token, code, results = []) {
+    if (!(await this.#admin(token))) return { ok: false, status: 401, error: 'unauthorized' };
+    for (const r of results) {
+      if (r.state === 'ok') this.sql.exec("DELETE FROM key_notes WHERE hint = ? AND note IN ('restricted', 'invalid', 'blocked')", r.hint);
+      else if (r.state === 'restricted' || r.state === 'invalid') this.keyNote(code, r.hint, r.state);
+    }
+    return { ok: true };
+  }
+
   async adminCreateCodes(token, { count = 1, label = '', note = '', days = null, max_devices = 1, daily_hours = null } = {}) {
     if (!(await this.#admin(token))) return { ok: false, status: 401, error: 'unauthorized' };
     const cfg = this.#config();
@@ -1383,6 +1400,22 @@ async function handleApi(request, env, ctx, url) {
     }
     if (path === '/api/admin/overview' && method === 'GET') return reply(await db.adminOverview(token));
     if (path === '/api/admin/diag' && method === 'GET') return reply(await db.adminDiag(token, Object.fromEntries(url.searchParams)));
+    // فحص مفاتيح طالب واحد: كل مفتاح يُجرَّب من الخادم (Gemini: هل قفلت Google حصته المجانية؟ Groq: هل المفتاح صالح؟)
+    const ck = path.match(/^\/api\/admin\/codes\/([\w-]{8,14})\/check-keys$/);
+    if (ck && method === 'POST') {
+      const k = await db.adminKeysFor(token, ck[1]);
+      if (!k.ok) return reply(k);
+      const check = async (provider, key) => {
+        const v = await verifyKey(provider, key);
+        const state = v.ok ? 'ok' : v.error === 'key_restricted' ? 'restricted' : v.error === 'bad_key' ? 'invalid' : 'unknown';
+        return { provider, hint: hintOf(key), state };
+      };
+      const results = [];
+      for (const key of k.gemini.slice(0, MAX_GEMINI_KEYS)) results.push(await check('gemini', key));
+      for (const key of k.groq.slice(0, MAX_GEMINI_KEYS)) results.push(await check('groq', key));
+      await db.adminKeyResults(token, k.code, results);
+      return json({ ok: true, results: results.map((r) => ({ ...r, hint: `…${r.hint.slice(-4)}` })) });
+    }
     if (path === '/api/admin/codes' && method === 'POST') return reply(await db.adminCreateCodes(token, body));
     if (path === '/api/admin/settings' && method === 'PUT') { const r = await db.adminSaveSettings(token, body); if (r.ok) forgetTheme(); return reply(r); }
     if (path === '/api/admin/password' && method === 'POST') return reply(await db.adminChangePassword(token, body.current, body.next));
