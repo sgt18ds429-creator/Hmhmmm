@@ -4,7 +4,22 @@
   "description": "حوّل تسجيل المحاضرة إلى ملزمة PDF مشروحة بالتفصيل، بالمصطلحات الطبية وصور مطابقة للشرح",
   "lang": "ar",
   "dir": "rtl",
+  "id": "/",
   "start_url": "/",
+  "scope": "/",
+  "share_target": {
+    "action": "/share",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "files": [{
+        "name": "audio",
+        "accept": ["audio/*", "video/*", ".m4a", ".mp3", ".wav", ".ogg", ".oga", ".opus", ".aac", ".flac", ".amr", ".3gp", ".mp4", ".webm", ".mkv", ".mov"]
+      }]
+    }
+  },
   "display": "standalone",
   "background_color": "#0C0618",
   "theme_color": "#0C0618",

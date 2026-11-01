@@ -1643,6 +1643,9 @@ export default {
     try {
       if (url.pathname.startsWith('/api/')) return await handleApi(request, env, ctx, url);
 
+      // «مشاركة ← ميدي فويز» بالأندرويد يستلمها عامل الخدمة (public/sw.js) على الجهاز. وصلت هنا = العامل ما اشتغل بعد:
+      // ترجع للموقع برسالة «شاركه مرة ثانية» بدل صفحة خطأ (الملف نفسه ما يُقرأ ولا يُحفظ بالخادم)
+      if (url.pathname === '/share' && request.method === 'POST') return bounce('/#mv-share-fail');
       if (request.method !== 'GET' && request.method !== 'HEAD') return new Response('Method Not Allowed', { status: 405 });
       let path = url.pathname;
       if (path === '/') path = '/index.html';

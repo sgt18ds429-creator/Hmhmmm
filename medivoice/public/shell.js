@@ -409,6 +409,10 @@ async function leaveIntro(intro, dest) {
     }
     return;
   }
+  // عامل الخدمة: يستلم «مشاركة ← ميدي فويز» بالأندرويد (public/sw.js). وطلب التثبيت يُحفظ حتى يُعرض بزر «تثبيت»
+  addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); MV.installPrompt = e; });
+  addEventListener('appinstalled', () => { MV.installPrompt = null; });
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
   // الافتتاحية بمدتها الكاملة أول فتح (حسب لوحة التحكم)؛ وإذا فُتح الموقع خلال آخر 12 ساعة فنسخة أقصر
   let lastIntro = 0;
   try { lastIntro = Number(localStorage.getItem('mv-intro-at')) || 0; } catch { /* تخزين ممنوع */ }

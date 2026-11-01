@@ -191,6 +191,9 @@ export async function start(MV, root) {
     const pendingBox = h('div', { class: 'stack' });
     list.before(pendingBox);
     paintPending(pendingBox).catch(() => {});
+    if (!noKeys && await takeShared()) return;
+    const tip = shareTip();
+    if (tip) slab.after(rise(tip));
 
     const items = await db.listLectures().catch(() => null);
     if (items === null) {
@@ -206,6 +209,82 @@ export async function start(MV, root) {
         h('small', null, [LIST_LABEL[it.mode] || 'نص مفرّغ', it.subject, fmtDuration(it.duration), `${it.words.toLocaleString('en-US')} كلمة`, fmtAgo(it.createdAt)].filter(Boolean).join('  ·  ')));
       if (i < 12) { card.classList.add('rise'); card.style.setProperty('--i', String(order + i)); }
       list.append(card);
+    });
+  }
+
+  // ── «مشاركة ← ميدي فويز» بالأندرويد ──
+  // عامل الخدمة (public/sw.js) يحفظ التسجيل المشارَك على الجهاز ويفتح الموقع على #mv-share. الرئيسية تاخذه وتفتح
+  // شاشة التحويل بيه مباشرة. إذا الطالب بعده ما فعّل أو ما ربط مفاتيحه، يبقى ينتظره لحد ما يوصل للرئيسية (يومين).
+  async function takeShared() {
+    const tag = /^#mv-share(?:-(\w+))?$/.exec(location.hash);
+    if (tag) history.replaceState(history.state, '', location.pathname + location.search);
+    if (tag?.[1] === 'fail') ctx.toast('ما وصل التسجيل. شاركه مرة ثانية.', 'err');
+    else if (tag?.[1] === 'empty') ctx.toast('ما وصل ملف صوت. شارك التسجيل نفسه، مو رابط.', 'err');
+    if (typeof caches === 'undefined') return false;
+    try {
+      const box = await caches.open('mv-shared');
+      const res = await box.match('/__mv-shared');
+      if (!res) return false;
+      const at = Number(res.headers.get('x-mv-at')) || 0;
+      const blob = await res.blob();
+      await box.delete('/__mv-shared');
+      if (!blob.size || Date.now() - at > 2 * 86400_000) return false;
+      let name = '';
+      try { name = decodeURIComponent(res.headers.get('x-mv-name') || ''); } catch { /* اسم غريب */ }
+      const type = blob.type || res.headers.get('content-type') || '';
+      if (!name) name = `تسجيل.${/mp4|m4a/.test(type) ? 'm4a' : /ogg|opus/.test(type) ? 'ogg' : /mpeg/.test(type) ? 'mp3' : 'audio'}`;
+      if (ctx.view !== 'home') return false;
+      go('new', { file: new File([blob], name, { type, lastModified: at || Date.now() }) });
+      return true;
+    } catch (e) {
+      console.error('shared file', e);
+      ctx.toast('ما وصل التسجيل. شاركه مرة ثانية.', 'err');
+      return false;
+    }
+  }
+
+  /**
+   * بالأندرويد: شريط يعلّم الطالب يثبّت الموقع حتى يطلع «ميدي فويز» بقائمة المشاركة، وبعد التثبيت يذكّره مرة بالطريقة.
+   * يختفي إذا سدّه. الآيفون ما يدعم المشاركة للمواقع، فما يطلعله.
+   */
+  function shareTip() {
+    if (MV.fingerprint().os !== 'Android') return null;
+    const installed = matchMedia?.('(display-mode: standalone)')?.matches || matchMedia?.('(display-mode: minimal-ui)')?.matches;
+    const key = installed ? 'mv-tip-share' : 'mv-tip-install';
+    try { if (localStorage.getItem(key)) return null; } catch { /* تخزين ممنوع */ }
+    let row;
+    const hide = () => { try { localStorage.setItem(key, '1'); } catch { /* تخزين ممنوع */ } row.remove(); };
+    const close = h('button', { class: 'icon-btn', 'aria-label': 'إخفاء', onclick: hide }, icon('close'));
+    if (installed) {
+      row = h('div', { class: 'banner info' }, icon('share'),
+        h('span', null, 'تكدر ترسل أي تسجيل للموقع مباشرة: افتحه بالمسجل أو الواتساب أو التيليكرام، اضغط «مشاركة» واختار «ميدي فويز».'), close);
+    } else {
+      row = h('div', { class: 'banner info' }, icon('share'),
+        h('span', null, 'ثبّت ميدي فويز على الشاشة الرئيسية، وبعدها ترسل أي تسجيل للموقع بزر «مشاركة» من المسجل أو الواتساب، بدون ما تدوّر عليه.'),
+        h('button', { class: 'btn small', onclick: install }, 'تثبيت'), close);
+    }
+    return row;
+  }
+
+  async function install() {
+    const p = MV.installPrompt;
+    if (p) {
+      MV.installPrompt = null;
+      try {
+        await p.prompt();
+        const { outcome } = await p.userChoice;
+        if (outcome === 'accepted') ctx.toast('انضاف ميدي فويز للشاشة الرئيسية. افتحه من أيقونته.', 'ok');
+        return;
+      } catch { /* نعرض الخطوات */ }
+    }
+    // متصفح داخل تطبيق (تيليكرام، إنستغرام، فيسبوك) ما يكدر يثبّت
+    const inApp = /Telegram|Instagram|FBAN|FBAV|FB_IAB|Line\/|; wv\)/i.test(navigator.userAgent);
+    sheet({
+      title: 'تثبيت ميدي فويز',
+      body: h('div', { class: 'stack' },
+        inApp ? h('p', null, 'انت فاتح الموقع من داخل تطبيق. افتحه بـ Chrome أول: اضغط النقاط ⋮ فوك واختار «فتح في Chrome» أو «فتح في المتصفح».') : null,
+        h('p', null, 'بـ Chrome: اضغط النقاط ⋮ فوك على اليسار، واختار «إضافة إلى الشاشة الرئيسية» أو «تثبيت التطبيق».'),
+        h('p', null, 'بعدها افتح التسجيل من أي تطبيق، اضغط «مشاركة»، واختار «ميدي فويز».')),
     });
   }
 
