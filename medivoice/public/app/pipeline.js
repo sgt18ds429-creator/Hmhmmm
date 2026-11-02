@@ -2274,7 +2274,7 @@ async function checkMcqs(engine, notes, qs, inLang) {
  * النسخة العربية من أسئلة MCQ (تُحفظ على كل سؤال بـ b.ar): نفس الخيارات بنفس الترتيب، فمفتاح الإجابات واحد.
  * سؤال ما ترجم صح يُعاد مرة، وإذا بقي يظهر بالإنجليزية في ملف العربية (لا يضيع).
  */
-async function mcqArabic(engine, blocks) {
+export async function mcqArabic(engine, blocks) {
   const items = blocks.filter((b) => b.t === 'mcq');
   if (!items.length) return;
   const isAr = (t) => langOf([t.q, ...t.opts, t.why].join(' ')) === 'ar';

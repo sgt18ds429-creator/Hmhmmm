@@ -2,7 +2,7 @@
 
 import { h, icon, clear, sheet, confirm, fmtSize, countOf } from './ui.js';
 import { splitInline, inlineRuns, blockText, stripMarkup, countWords, uid, isNotes, MODE_LABEL, qualityGate } from './text.js';
-import { NOTE_TYPES } from './run.js';
+import { NOTE_TYPES, loadEngine } from './run.js';
 import { buildPdfHtml, buildPdfParts, pdfLangs, fmtDate, fmtDuration, dirOf } from './pdf.js';
 import { pagedRuntime } from './paged.js';
 import { brandAssets } from '../brand.js';
@@ -288,6 +288,22 @@ export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
     for (const b of currentBlocks()) { if (!b.id) b.id = uid(); list.append(blockEl(b)); }
   }
   renderAll();
+
+  // ملزمة High-Yield انعملت قبل ما تصير الأسئلة بلغتين: أسئلتها تنترجم للعربي مرة وحدة بالخلفية عند فتحها وتنحفظ
+  // (نفس ترتيب الخيارات، فمفتاح الإجابات ما يتغير). إذا ما نجحت تبقى بالإنجليزية وتنجرب بالفتحة الجاية
+  const untranslated = () => doc.blocks.filter((b) => b.t === 'mcq' && !b.ar);
+  if (doc.meta?.mode === 'highyield' && untranslated().length && pdfLangs(doc).includes('ar') && !mem) {
+    (async () => {
+      const [caps, m] = await Promise.all([ctx.caps || ctx.loadCaps(), loadEngine()]);
+      if (!caps?.gemini && !caps?.groq) return;
+      await m.mcqArabic(new m.Engine(ctx.io, caps), untranslated());
+      if (untranslated().length === doc.blocks.filter((b) => b.t === 'mcq').length) return;
+      save();
+      if (!el.isConnected) return;
+      if (viewLang() !== 'en') renderAll();
+      ctx.toast('صارت أسئلة الاختيار بالعربي بالنسخة العربية.', 'ok');
+    })().catch((e) => console.error('mcq ar', e));
+  }
 
   function blockMenu(b) {
     const opts = [];
