@@ -121,6 +121,12 @@ function makeIO({ section = (user, n) => null, verify = () => ({ choice: 'A', co
         calls.mcq++;
         return gemResponse(JSON.stringify(mcq ? mcq(user) : { questions: Array.from({ length: 8 }, (_, i) => ({ q: `Question ${i + 1} about [[pneumothorax]]?`, options: ['A', 'B', 'C', 'D'], answer: i % 4, why: 'Because' })) }));
       }
+      if (system.includes('أسئلة امتحانات الكليات الطبية')) {
+        // النسخة العربية من الأسئلة: نفس الترتيب والخيارات
+        calls.mcqAr = (calls.mcqAr || 0) + 1;
+        const { questions } = JSON.parse(user.slice(user.indexOf('{"questions"'), user.lastIndexOf('}') + 1).split('\n\nأخرج')[0]);
+        return gemResponse(JSON.stringify({ questions: questions.map((q) => ({ q: `سؤال بالعربي عن ${q.q}`, options: q.options.map((o) => `خيار ${o}`), why: `لأن ${q.why}` })) }));
+      }
       if (system.includes('medical translator') || system.includes('مترجم طبي')) {
         // ترجمة وهمية تحافظ على الترميز سطراً بسطر
         calls.translate = (calls.translate || 0) + 1;
@@ -583,11 +589,30 @@ test('High-Yield: أسئلة MCQ في آخر الملزمة بدل قائمة ا
   const qs = doc.blocks.filter((b) => b.t === 'mcq');
   assert.equal(qs.length, 8);
   assert.equal(qs[0].opts.length, 4);
+  // نسخة عربية لكل سؤال بنفس ترتيب الخيارات
+  assert.equal(calls.mcqAr, 1);
+  assert.ok(qs.every((q) => q.ar && q.ar.opts.length === 4 && /^سؤال بالعربي/.test(q.ar.q)), 'كل سؤال بنسخته العربية');
+  assert.equal(qs[1].ar.opts[0], `خيار ${qs[1].opts[0]}`);
   const html = buildPdfHtml(doc, { paged: true });
   assert.match(html, /High-Yield/);
   assert.match(html, /class="mcq/);
-  assert.match(html, /Answer key/);
   assert.ok(!html.includes('?? '), 'الأسئلة لا تظهر بترميزها الخام');
+  // ملف العربية: الأسئلة بالعربي بحروف أ ب ج د. ملف الإنجليزية: بالإنجليزي. الملف المزدوج: كل جزء أسئلته بلغته
+  const ar = buildPdfHtml(doc, { paged: true, lang: 'ar' });
+  assert.match(ar, /أسئلة اختيار من متعدد للمراجعة/);
+  assert.match(ar, /مفتاح الإجابات/);
+  assert.match(ar, /سؤال بالعربي عن <span class="lt nw">Question 1 /);
+  assert.match(ar, /data-l="ب"/);
+  assert.ok(!ar.includes('Self-assessment MCQs'), 'ملف العربية بلا أسئلة إنجليزية');
+  if (doc.alt?.blocks?.length) {
+    const en = buildPdfHtml(doc, { paged: true, lang: 'en' });
+    assert.match(en, /Self-assessment MCQs/);
+    assert.match(en, /Answer key/);
+    assert.ok(!en.includes('سؤال بالعربي'), 'ملف الإنجليزية بلا أسئلة عربية');
+    const both = buildPdfHtml(doc, { paged: true });
+    assert.ok(both.includes("سؤال بالعربي عن <span class=\"lt nw\">Question 1 ") && both.includes('Self-assessment MCQs'), 'الملف المزدوج بالنسختين');
+    assert.ok(both.indexOf('أسئلة اختيار من متعدد للمراجعة') < both.indexOf('English edition'), 'أسئلة العربية بعد جزئها');
+  }
 });
 
 test('Integrated: الخطة تأخذ السلايدات، والكاتب يطلب صور السلايدات، وتُقصّ من صفحاتها', async () => {

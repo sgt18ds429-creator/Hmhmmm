@@ -12,7 +12,7 @@ import {
 import {
   whisperPrompt, audioPrompt, cleanupPrompt, mergeTranscriptsPrompt, glossaryPrompt, figuresPrompt, translatePrompt, translateExtrasPrompt,
   notesPlanPrompt, notesSectionPrompt, reviewPrompt, proofreadPrompt, figureTextPickPrompt, formalizePrompt,
-  reviewNotesPrompt, mcqPrompt, mcqTranslatePrompt, mcqCheckPrompt, figuresBatchPrompt, slideFiguresPrompt,
+  reviewNotesPrompt, mcqPrompt, mcqTranslatePrompt, mcqArabicPrompt, mcqCheckPrompt, figuresBatchPrompt, slideFiguresPrompt,
 } from './prompts.js';
 import { findCandidates } from './images.js';
 
@@ -1432,8 +1432,11 @@ export async function complete(doc, engine, { io, emit = () => {}, review = fals
     doc.blocks.push(...extra);
     doc.stats.words = doc.blocks.reduce((n, b) => n + countWords(blockText(b)), 0);
   }
+  // ملف العربية أسئلته بالعربي وملف الإنجليزية بالإنجليزي: نسخة عربية لكل سؤال (b.ar) بالتوازي مع إكمال الترجمة
+  const arMcq = qs && (lang === 'ar' || translating) ? safe(mcqArabic(engine, qs)) : null;
   if (tr) await safe(finishAlt(doc, engine, tr, kp || [], body));
   else doc.alt = null;
+  await arMcq;
   // الترجمة لا تسقط بصمت: يُبلَّغ الطالب إذا تعذّرت كلها أو بعضها
   if (translating && !doc.alt?.blocks?.length) emit({ type: 'note', code: 'translate_failed' });
   else if (doc.alt?.partial) emit({ type: 'note', code: 'translate_partial' });
@@ -2265,6 +2268,29 @@ async function checkMcqs(engine, notes, qs, inLang) {
     if (fixed.q && opts.length === 4 && ans >= 0 && ans < 4 && inLang(fixed)) out.push(fixed);
   });
   return out;
+}
+
+/**
+ * النسخة العربية من أسئلة MCQ (تُحفظ على كل سؤال بـ b.ar): نفس الخيارات بنفس الترتيب، فمفتاح الإجابات واحد.
+ * سؤال ما ترجم صح يُعاد مرة، وإذا بقي يظهر بالإنجليزية في ملف العربية (لا يضيع).
+ */
+async function mcqArabic(engine, blocks) {
+  const items = blocks.filter((b) => b.t === 'mcq');
+  if (!items.length) return;
+  const isAr = (t) => langOf([t.q, ...t.opts, t.why].join(' ')) === 'ar';
+  const ask = async (list) => {
+    const r = await engine.json({ ...mcqArabicPrompt(list.map((q) => ({ q: q.q, options: q.opts, why: q.why }))), maxTokens: 12000, groqTokens: 5000, prefer: 'gemini' });
+    const out = Array.isArray(r?.questions) && r.questions.length === list.length ? r.questions : [];
+    list.forEach((q, i) => {
+      const t = out[i];
+      const opts = (Array.isArray(t?.options) ? t.options : []).map(squash);
+      const v = { q: squash(t?.q), opts, why: squash(t?.why) };
+      if (v.q && opts.length === 4 && opts.every(Boolean) && isAr(v)) q.ar = v;
+    });
+  };
+  await ask(items);
+  const missing = items.filter((q) => !q.ar);
+  if (missing.length && !engine.late(1)) await ask(missing);
 }
 
 /** أسئلة MCQ من الملزمة (للنوع High-Yield): يرجع كتلاً تُلحق بآخر الملزمة، أو null. */

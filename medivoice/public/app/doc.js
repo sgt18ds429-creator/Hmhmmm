@@ -196,7 +196,12 @@ export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
     return node;
   }
 
-  /** الكتل المعروضة الآن: الأصل، أو الترجمة ومعها أسئلة الاختيار (بالإنجليزية) من الأصل */
+  /** لغة النسخة المعروضة الآن: أسئلة الاختيار تظهر بها (العربية من b.ar، والإنجليزية من السؤال نفسه) */
+  const viewLang = () => (view === 'alt' ? doc.alt.lang : mainLang);
+  const MCQ_HEAD = { ar: 'أسئلة اختيار من متعدد للمراجعة', en: 'Self-assessment MCQs' };
+  const isMcqHead = (b) => b.t === 'h' && (b.text === MCQ_HEAD.ar || b.text === MCQ_HEAD.en);
+
+  /** الكتل المعروضة الآن: الأصل، أو الترجمة ومعها أسئلة الاختيار من الأصل (تُعرض بلغة الترجمة) */
   function currentBlocks() {
     if (view !== 'alt') return doc.blocks;
     const mcqAt = doc.blocks.findIndex((b) => b.t === 'mcq');
@@ -210,7 +215,8 @@ export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
   function blockEl(b) {
     const grip = h('button', { class: 'grip', 'aria-label': 'خيارات الفقرة', onclick: () => blockMenu(b) }, icon('dots'));
     let node;
-    if (b.t === 'h') node = h('div', { class: `blk ${b.level === 3 ? 'h3' : 'h2'}` }, grip, textNode(b, null));
+    if (isMcqHead(b)) node = h('div', { class: 'blk h2' }, grip, h('span', { class: 'txt', dir: viewLang() === 'en' ? 'ltr' : 'rtl' }, MCQ_HEAD[viewLang() === 'en' ? 'en' : 'ar']));
+    else if (b.t === 'h') node = h('div', { class: `blk ${b.level === 3 ? 'h3' : 'h2'}` }, grip, textNode(b, null));
     else if (b.t === 'p') node = h('div', { class: 'blk p' }, grip, textNode(b, null));
     else if (b.t === 'note') node = h('div', { class: 'blk note' }, grip, h('span', { class: 'tag' }, 'مهم'), textNode(b, null));
     else if (b.t === 'ul' || b.t === 'ol') node = h('div', { class: b.box ? 'blk box' : 'blk' }, grip, h(b.t, { dir: dirOf(b.items.join(' ')), style: b.t === 'ol' && b.start > 1 ? { counterReset: `n ${b.start - 1}` } : null }, b.items.map((_, i) => h('li', null, textNode(b, i)))));
@@ -228,19 +234,21 @@ export async function viewDoc(ctx, el, { id, fresh, mem = null }) {
 
   // سؤال اختيار من متعدد: اضغط خياراً يظهر الصحيح والتعليل
   function mcqEl(b, grip) {
-    const letters = ['a', 'b', 'c', 'd'];
-    const dir = dirOf(b.q);
+    // النسخة العربية بالعربي (إذا انترجم السؤال)، والإنجليزية بالإنجليزي
+    const t = viewLang() !== 'en' && b.ar ? b.ar : b;
+    const dir = dirOf(t.q);
     const en = dir === 'ltr';
-    const why = h('p', { class: 'mcq-why', hidden: true, dir: dirOf(b.why || b.q) });
-    const opts = b.opts.map((o, i) => h('button', { type: 'button', class: 'mcq-opt', onclick: () => reveal(i) }, h('b', null, letters[i]), fill(h('span', { dir: dirOf(o) }), o)));
+    const letters = en ? ['a', 'b', 'c', 'd'] : ['أ', 'ب', 'ج', 'د'];
+    const why = h('p', { class: 'mcq-why', hidden: true, dir: dirOf(t.why || t.q) });
+    const opts = t.opts.map((o, i) => h('button', { type: 'button', class: 'mcq-opt', onclick: () => reveal(i) }, h('b', null, letters[i]), fill(h('span', { dir: stripMarkup(String(o).replace(/\[\[[^\]]*\]\]/g, '')).trim() ? dirOf(o) : dir }), o)));
     function reveal(i) {
       opts.forEach((el, k) => { el.classList.toggle('right', k === b.ans); el.classList.toggle('wrong', k === i && i !== b.ans); el.disabled = true; });
       const verdict = i === b.ans ? (en ? 'Correct. ' : 'صح. ') : (en ? `Correct answer: ${letters[b.ans]}. ` : `الجواب الصحيح: ${letters[b.ans]}. `);
-      clear(why).append(h('b', null, verdict), ...splitInline(b.why || '').map((p) => (p.term ? h('span', { class: 't' }, p.text) : p.text)));
+      clear(why).append(h('b', null, verdict), ...splitInline(t.why || '').map((p) => (p.term ? h('span', { class: 't' }, p.text) : p.text)));
       why.hidden = false;
     }
     const n = doc.blocks.filter((x) => x.t === 'mcq').indexOf(b) + 1;
-    return h('div', { class: 'blk mcq', dir }, grip, h('div', { class: 'mcq-q', dir }, h('span', { class: 'mcq-n' }, `${n}`), fill(h('span'), b.q)), h('div', { class: 'mcq-opts' }, opts), why);
+    return h('div', { class: 'blk mcq', dir }, grip, h('div', { class: 'mcq-q', dir }, h('span', { class: 'mcq-n' }, `${n}`), fill(h('span'), t.q)), h('div', { class: 'mcq-opts' }, opts), why);
   }
 
   function figEl(b, grip) {

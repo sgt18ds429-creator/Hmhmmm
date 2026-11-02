@@ -29,7 +29,8 @@ function sampleDoc(mode = 'notes', { alt = true } = {}) {
   ];
   if (mode === 'highyield') {
     blocks.push({ id: id(), t: 'h', level: 2, text: 'أسئلة اختيار من متعدد للمراجعة' });
-    blocks.push({ id: id(), t: 'mcq', q: 'Which projection magnifies the heart?', opts: ['PA', 'AP', 'Lateral', 'Oblique'], ans: 1, why: 'The heart is farther from the detector in AP.' });
+    blocks.push({ id: id(), t: 'mcq', q: 'Which projection magnifies the heart?', opts: ['PA', 'AP', 'Lateral', 'Oblique'], ans: 1, why: 'The heart is farther from the detector in AP.',
+      ar: { q: 'أي إسقاط يُكبّر صورة القلب؟', opts: ['[[PA]]', '[[AP]]', 'الجانبي', 'المائل'], why: 'القلب أبعد عن الكاشف في [[AP]].' } });
   }
   const altBlocks = [
     { id: id(), t: 'h', level: 2, text: 'Introduction to chest X-ray' },
@@ -95,7 +96,11 @@ test('تنزيل كل لغة وحدها: العربية بمصطلحاتها، �
   assert.match(ar, /class="t[^"]*">chest X-ray</, 'المصطلحات الإنجليزية داخل النص العربي');
   assert.doesNotMatch(ar, /Introduction to chest X-ray/, 'لا نص من النسخة الإنجليزية');
   assert.doesNotMatch(ar, /class="part/, 'لا فاصل لغات');
-  assert.match(ar, /Self-assessment MCQs/, 'الأسئلة (بالإنجليزية) تبقى');
+  assert.match(ar, /أسئلة اختيار من متعدد للمراجعة/, 'الأسئلة بالعربي في ملف العربية');
+  assert.match(ar, /أي إسقاط يُكبّر صورة القلب؟/);
+  assert.match(ar, /مفتاح الإجابات/);
+  assert.match(ar, /<td class="a">ب<\/td>/, 'مفتاح الإجابة بحروف عربية ونفس الجواب');
+  assert.doesNotMatch(ar, /Which projection magnifies the heart\?|Self-assessment MCQs/, 'لا أسئلة إنجليزية بملف العربية');
   assert.match(ar, /قاموس المصطلحات/);
   assert.match(ar, /· AR</, 'نوع الملزمة بلا AR + EN');
 
@@ -106,13 +111,22 @@ test('تنزيل كل لغة وحدها: العربية بمصطلحاتها، �
   assert.doesNotMatch(en, /مقدمة عن/, 'لا نص من النسخة العربية');
   assert.doesNotMatch(en, /class="part/);
   assert.match(en, /Which projection magnifies the heart\?/, 'الأسئلة من الملزمة الأصلية');
+  assert.match(en, /<td class="a">b<\/td>/);
+  assert.doesNotMatch(en, /أي إسقاط يُكبّر صورة القلب/, 'لا أسئلة عربية بملف الإنجليزية');
   assert.match(en, /Glossary of terms/);
   assert.match(en, />Subject</);
   assert.match(en, /15 October 2026/);
   assert.match(en, /Figure 1/);
   assert.match(en, /· EN</);
   // الأسئلة لا تتكرر في الملف الكامل
+  // الملف الكامل: كل جزء أسئلته بلغته، مرة وحدة
   assert.equal((both.match(/Which projection magnifies the heart\?/g) || []).length, 1);
+  assert.equal((both.match(/أي إسقاط يُكبّر صورة القلب؟/g) || []).length, 1);
+  assert.ok(both.indexOf('أي إسقاط يُكبّر') < both.indexOf('English edition') && both.indexOf('Which projection') > both.indexOf('English edition'), 'أسئلة كل جزء بعده');
+  // سؤال ما انترجم: يظهر بالإنجليزية بملف العربية بدل ما يضيع
+  const old = sampleDoc('highyield');
+  for (const b of old.blocks) delete b.ar;
+  assert.match(buildPdfHtml(old, { brand: BRAND, lang: 'ar' }), /Which projection magnifies the heart\?/);
 });
 
 /** نص ملف PDF مع محتوى تدفقاته المضغوطة (لفحص القواميس داخل تدفقات الكائنات أيضاً) */

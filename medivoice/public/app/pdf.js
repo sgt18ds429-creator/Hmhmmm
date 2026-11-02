@@ -161,7 +161,7 @@ ul.box { margin: 2mm 0 5mm; padding: 4mm 5mm 2.4mm; border-radius: 3.4mm; border
 .mcq .q b { flex: none; min-width: 6.6mm; height: 6.6mm; line-height: 6.6mm; text-align: center; border-radius: 2mm; background: ${GRAD}; color: #fff; font: 600 8.5pt/6.6mm 'IBM Plex Sans', sans-serif; margin-top: 1mm; }
 .mcq ol { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: .9mm 5mm; counter-reset: none; }
 .mcq ol li { padding-inline-start: 7.2mm; margin: 0; font-size: 10.2pt; counter-increment: none; }
-.mcq ol li::before { content: attr(data-l); position: absolute; inset-inline-start: 0; top: .3mm; width: 5.3mm; height: 5.3mm; border-radius: 50%; border: .35mm solid #b9aadb; color: #5b21b6; background: #fff; font: 600 8pt/4.8mm 'IBM Plex Sans', sans-serif; text-align: center; }
+.mcq ol li::before { content: attr(data-l); position: absolute; inset-inline-start: 0; top: .3mm; width: 5.3mm; height: 5.3mm; border-radius: 50%; border: .35mm solid #b9aadb; color: #5b21b6; background: #fff; font: 600 8pt/4.8mm 'IBM Plex Sans', 'IBM Plex Sans Arabic', sans-serif; text-align: center; }
 table.tbl, table.answers, table.gloss { width: 100%; border-collapse: separate; border-spacing: 0; border: .3mm solid #e3dbf7; border-radius: 3mm; overflow: hidden; margin: 2mm 0 5mm; }
 .tbl { font-size: 10pt; line-height: 1.7; }
 .tbl th, .answers th, .gloss th { text-align: start; font-weight: 700; color: #fff; background: ${GRAD}; padding: 2mm 2.8mm; vertical-align: bottom; font-size: 9.6pt; }
@@ -173,7 +173,7 @@ th .t, .en th .t { color: #fff; }
 .answers { font-size: 9.6pt; line-height: 1.65; }
 .answers td { padding: 1.7mm 2.6mm; vertical-align: top; border-bottom: .25mm solid #ebe5fa; }
 .answers td.n { width: 10mm; font: 600 9.5pt 'IBM Plex Sans', sans-serif; color: #5b21b6; }
-.answers td.a { width: 11mm; font: 700 10pt 'IBM Plex Sans', sans-serif; color: #2a1a4d; text-align: center; }
+.answers td.a { width: 11mm; font: 700 10pt 'IBM Plex Sans', 'IBM Plex Sans Arabic', sans-serif; color: #2a1a4d; text-align: center; }
 .gloss { table-layout: fixed; font-size: 9.7pt; line-height: 1.7; }
 .gloss th.en { width: 30%; }
 .gloss th.ar { width: 24%; }
@@ -336,21 +336,36 @@ export function buildPdfParts(doc, opts = {}) {
     return `<div class="part${en ? ' en' : ''}" dir="${en ? 'ltr' : 'rtl'}" data-dir="${en ? 'ltr' : 'rtl'}"><div><b>${en ? 'English edition' : 'النسخة العربية'}</b>${subtitle ? `<span dir="${dirOf(subtitle)}">${inlineHtml(subtitle)}</span>` : ''}</div><div class="pbars">${bars}</div></div>`;
   };
 
-  const body = both
-    ? [partBanner(mainLang, ''), ...renderPart(doc.blocks, mainLang), partBanner(alt.lang, alt.title || ''), ...renderPart(alt.blocks, alt.lang)]
-    : altOnly ? renderPart(alt.blocks, alt.lang) : renderPart(doc.blocks, mainLang);
-
-  // الأسئلة بالإنجليزية في الملزمة الأصلية (الترجمة لا تحملها): تظهر في كل ملف، مرة واحدة
+  // أسئلة الاختيار بلغة كل ملف: ملف العربية بالعربي (b.ar، والسؤال اللي ما انترجم يبقى بالإنجليزية)، وملف
+  // الإنجليزية بالإنجليزي. الأسئلة في الملزمة الأصلية فقط (الترجمة لا تحملها)، ومفتاح الإجابات واحد بالملفين
   const seenQ = new Set();
   const mcqs = [...doc.blocks, ...(alt?.blocks || [])].filter((b) => b.t === 'mcq' && b.q && Array.isArray(b.opts) && !seenQ.has(b.q) && seenQ.add(b.q));
-  const mcqHtml = mcqs.length ? `
-<h2 class="plain en section-break" dir="ltr" data-dir="ltr"><span class="hx">Self-assessment MCQs</span></h2>
-${mcqs.map((b, i) => `<div class="mcq en" dir="${dirOf(b.q)}"><div class="q"><b>${i + 1}</b><span>${inlineHtml(b.q)}</span></div><ol>${b.opts.map((o, k) => `<li data-l="${L[k]}" style="position:relative" dir="${dirOf(o)}">${inlineHtml(o)}</li>`).join('')}</ol></div>`).join('\n')}
-<h2 class="plain en section-break" dir="ltr"><span class="hx">Answer key</span></h2>
-<table class="answers en" dir="ltr">
-  <thead><tr><th>Q</th><th>Answer</th><th>Explanation</th></tr></thead>
-  <tbody>${mcqs.map((b, i) => `<tr><td class="n">${i + 1}</td><td class="a">${esc(L[b.ans] || '?')}</td><td dir="${dirOf(b.why || '')}">${inlineHtml(b.why || '')}</td></tr>`).join('')}</tbody>
-</table>` : '';
+  const MQ = {
+    en: { head: 'Self-assessment MCQs', key: 'Answer key', q: 'Q', a: 'Answer', why: 'Explanation', L },
+    ar: { head: 'أسئلة اختيار من متعدد للمراجعة', key: 'مفتاح الإجابات', q: 'السؤال', a: 'الجواب', why: 'التعليل', L: ['أ', 'ب', 'ج', 'د'] },
+  };
+  const mcqSection = (lang) => {
+    if (!mcqs.length) return '';
+    const en = lang === 'en';
+    const m = MQ[en ? 'en' : 'ar'], d = en ? 'ltr' : 'rtl', c = en ? ' en' : '';
+    const tx = (b) => (!en && b.ar?.q && b.ar.opts?.length === 4 ? b.ar : b);
+    // خيار هو مصطلح فقط ([[Pneumothorax]]) ياخذ اتجاه سؤاله، حتى ما ينقلب مكانه
+    const od = (o, qd) => (stripMarkup(String(o).replace(/\[\[[^\]]*\]\]/g, '')).trim() ? dirOf(o) : qd);
+    return `
+<h2 class="plain${c} section-break" dir="${d}" data-dir="${d}"><span class="hx">${m.head}</span></h2>
+${mcqs.map((b, i) => { const t = tx(b); const ql = dirOf(t.q) === 'ltr' ? MQ.en.L : m.L; return `<div class="mcq${dirOf(t.q) === 'ltr' ? ' en' : ''}" dir="${dirOf(t.q)}"><div class="q"><b>${i + 1}</b><span>${inlineHtml(t.q)}</span></div><ol>${t.opts.map((o, k) => `<li data-l="${ql[k]}" style="position:relative" dir="${od(o, dirOf(t.q))}">${inlineHtml(o)}</li>`).join('')}</ol></div>`; }).join('\n')}
+<h2 class="plain${c} section-break" dir="${d}"><span class="hx">${m.key}</span></h2>
+<table class="answers${c}" dir="${d}">
+  <thead><tr><th>${m.q}</th><th>${m.a}</th><th>${m.why}</th></tr></thead>
+  <tbody>${mcqs.map((b, i) => { const t = tx(b); return `<tr><td class="n">${i + 1}</td><td class="a">${esc((dirOf(t.q) === 'ltr' ? MQ.en.L : m.L)[b.ans] || '?')}</td><td dir="${dirOf(t.why || '')}">${inlineHtml(t.why || '')}</td></tr>`; }).join('')}</tbody>
+</table>`;
+  };
+
+  // الملف بلغتين: كل جزء أسئلته بلغته بعده. الملف بلغة واحدة: الأسئلة بآخره
+  const body = both
+    ? [partBanner(mainLang, ''), ...renderPart(doc.blocks, mainLang), mcqSection(mainLang), partBanner(alt.lang, alt.title || ''), ...renderPart(alt.blocks, alt.lang), mcqSection(alt.lang)]
+    : altOnly ? renderPart(alt.blocks, alt.lang) : renderPart(doc.blocks, mainLang);
+  const mcqHtml = both ? '' : mcqSection(fileLang);
 
   const terms = doc.terms || [];
   const gloss = terms.length ? `

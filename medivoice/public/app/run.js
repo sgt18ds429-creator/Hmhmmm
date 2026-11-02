@@ -390,7 +390,7 @@ function runScreen(ctx, el, { title, stages: stageNames, weights, retry, auto = 
       else if (e.name === 'glossary') { setStage('figures'); status.textContent = 'أجهّز قاموس المصطلحات'; P.write = 1; P.extra = Math.max(P.extra, 0.05); }
       else if (e.name === 'figures') { setStage('figures'); status.textContent = 'أجهّز القاموس وأختار صوراً مطابقة للشرح'; P.write = 1; P.extra = Math.max(P.extra, 0.07); }
       else if (e.name === 'images') { status.textContent = 'أبحث عن صور مطابقة للشرح في المصادر المفتوحة'; P.extra = Math.max(P.extra, 0.09); }
-      else if (e.name === 'mcq') { status.textContent = 'أكتب أسئلة الاختيار من متعدد بالإنجليزية'; }
+      else if (e.name === 'mcq') { status.textContent = 'أكتب أسئلة الاختيار من متعدد بالعربي والإنجليزي'; }
       else if (e.name === 'translate') { status.textContent = e.to === 'ar' ? 'أكتب النسخة العربية من الملزمة' : 'أكتب النسخة الإنجليزية من الملزمة'; }
       else if (e.name === 'gate') { status.textContent = 'أفحص كل صفحات الملزمة قبل التسليم: لا تكرار ولا فقرات ناقصة'; P.write = 1; P.extra = Math.max(P.extra, 0.13); }
       else if (e.name === 'done') { setStage('done'); P.write = 1; P.extra = 0.14; }
